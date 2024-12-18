@@ -1,7 +1,7 @@
 [project]
 name = "seispy"
 version = "0.1.0"
-description = "Add your description here"
+description = "SeisPy: seismic data processing."
 authors = [
     { name = "Sonder Merak", email = "merak19981999@gmail.com" }
 ]
@@ -20,6 +20,9 @@ build-backend = "hatchling.build"
 [tool.rye]
 managed = true
 dev-dependencies = []
+
+[tool.rye.scripts]
+halo = "rye run marimo run src/halo.py"
 
 [tool.hatch.metadata]
 allow-direct-references = true
