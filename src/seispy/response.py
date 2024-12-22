@@ -89,7 +89,7 @@ def remove_response(src_dir, dest_dir, resp, target_patterns=["*.sac"]):
 
     # copy structure
     ic("copying structure")
-    paeher.copy_structure(src_path, dest_path)
+    pather.copy_structure(src_path, dest_path)
 
     # remove response
     ic("removing response")

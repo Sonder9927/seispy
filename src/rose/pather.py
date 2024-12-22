@@ -1,6 +1,22 @@
 from pathlib import Path
 
 
+def find_last_subdirs(path: Path) -> list[Path | None]:
+    """Find the last subdirectory in a path."""
+    if not path.is_dir():
+        return []
+
+    subdirs = [child for child in path.iterdir() if child.is_dir()]
+    if not subdirs:
+        return [path]
+
+    last_subdirs = []
+    for subdir in subdirs:
+        last_subdirs.extend(find_last_subdirs(subdir))  # 递归调用
+
+    return last_subdirs
+
+
 def glob(dir, method, patterns, exclude_parts=None, include_parts=None) -> list[Path]:
     """Glob files in a directory with given patterns and exclude patterns."""
     targets = []
