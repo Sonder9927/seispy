@@ -79,7 +79,7 @@ def simple_resp(resp_all, outfile, sta_list: list[str]):
 
 
 def deconvolution_by_day(
-    src_dir, resp, target_pattern="*.sac", remove_src=True
+    src_dir, resp, resample=None, target_pattern="*.sac", remove_src=True
 ) -> None:
     src_path = Path(src_dir)
     last_subdirs = pather.find_last_subdirs(src_path)
@@ -96,6 +96,7 @@ def deconvolution_by_day(
                 subdir,
                 target_pattern,
                 inv,
+                resample,
                 remove_src,
             )
             for subdir in tqdm(last_subdirs)
@@ -109,10 +110,10 @@ def deconvolution_by_day(
     ic("All Removed Response with NO errors!")
 
 
-def targets_remove_response(dir, pattern, inv, remove_src) -> str | None:
+def targets_remove_response(dir, pattern, inv, resample, remove_src) -> str | None:
     try:
         for target in dir.glob(pattern):
-            st = stream_removed_response(target, inv)
+            st = stream_removed_response(target, inv, resample)
             dest_sac = target.with_suffix(".deconv.sac")
             st.write(str(dest_sac), format="SAC")
             if remove_src:
@@ -124,7 +125,7 @@ def targets_remove_response(dir, pattern, inv, remove_src) -> str | None:
     return None
 
 
-def stream_removed_response(file: str, inv):
+def stream_removed_response(file: str, inv, resample):
     st = obspy.read(file)
     st.merge(method=1, fill_value="interpolate")
     for tr in st:
@@ -135,6 +136,8 @@ def stream_removed_response(file: str, inv):
             output="DISP",
         )
         tr.data *= 1e9
+        if resample is not None:
+            tr.resample(resample)
     return st
 
 

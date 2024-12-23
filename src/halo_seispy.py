@@ -18,7 +18,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import marimo as mo
     import seispy
@@ -42,7 +42,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(seispy):
     # sort to a new directory
     seispy.sort_to("data/sac_src", "data/sac_dest", "*.SAC")
@@ -53,7 +53,7 @@ def _(seispy):
 def _(mo):
     mo.md(
         """
-        ### Merge Data
+        ### Merge Data by Days
 
         利用 `seispy.merge_by_day` 按照 `channel` 合并每一天的数据，输出到当前文件夹，并**删除原文件**。
 
@@ -66,7 +66,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(halo):
     # check traces before `merge`
     halo.check_merge_prior("data/sac_dest/NZ/NZ37/2024/001")
@@ -89,7 +89,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(seispy):
     # run merging
     seispy.merge_by_day("data/sac_dest/")
@@ -102,7 +102,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(halo):
     # check merged result
     halo.check_merge_result(
@@ -144,7 +144,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(halo):
     halo.check_deconv_prior(
         "data/response_contract/NZ37.BHZ.2024.001.rmpz.sac",
@@ -158,20 +158,51 @@ def _(halo):
 def _(mo):
     mo.md(
         r"""
-        结论：
+        差异在于参数 `water_level`：
 
         obspy 的 `remove_response` 参数 `water_level` 会影响仪器响应去除过程中的频率响应，特别是在处理极点和零点时。这个参数在 obspy 中用于避免数值不稳定问题，尤其是在处理极点时，防止极点接近零时导致的数值爆炸。设置一个适当的 `water_level` 值可以确保去响应操作的稳定性。然而，当 `water_level` 设置为 `None` 时，obspy 会采用默认行为，去掉水位平衡的影响，这样就避免了与 SAC 可能产生的差异，得到一致的结果。
 
-        ## Remove Response to New Directory
-        最后利用 `seispy.response.deconvolution_by_day` 去仪器响应，默认搜索 `pattern` 为 `*.sac`，完成后将**删除原文件**，若不想删除则将参数 `remove_src` 参数设置为 `False`。
+        ### Comparison of Resample Results between SAC and ObsPy
 
-        也可以提前复制保存一份数据。
+        原始数据是 100Hz，目标降采样到 1Hz，以上述文件 `NZ37.BHZ.2024.001.rmpz.sac` 为例，sac 降采样得到 `NZ37.BHZ.2024.001.1Hz.sac`。sac 命令为：
+
+        ```sac
+        r NZ37.BHZ.2024.001.rmpz.sac
+        decimate 5; decimate5; decimate 4
+        w NZ37.BHZ.2024.001.1Hz.sac
+        q
+        ```
+        与 obspy 的 `resample` 处理对比：
         """
     )
     return
 
 
+@app.cell(hide_code=True)
+def _(halo):
+    halo.check_resample(
+        "data/response_contract/NZ37.BHZ.2024.001.rmpz.sac", 
+        "data/response_contract/NZ37.BHZ.2024.001.1Hz.sac",
+    )
+    return
+
+
 @app.cell
+def _(mo):
+    mo.md(
+        """
+        ### Remove Response by Days
+        最后利用 `seispy.response.deconvolution_by_day` 去仪器响应，默认搜索 `pattern` 为 `*.sac`。
+
+        完成后将**删除原文件**，若不想删除则将参数 `remove_src` 参数设置为 `False`。也可以提前复制保存一份数据。
+
+        如需顺便完成降采样操作，则指定参数 `resample`，默认是 `None`。
+        """
+    )
+    return
+
+
+@app.cell(hide_code=True)
 def _(seispy):
     # run deconvolution
     seispy.response.deconvolution_by_day(
@@ -186,14 +217,16 @@ def _(mo):
         r"""
         检查结果：
 
-        1. 前文所述 sac 去仪器响应的文件 `data/response_contract/NZ37.BHZ.2024.001.sac`
+        1. 前文所述 sac 去仪器响应的文件 `data/response_contract/NZ37.BHZ.2024.001.rmpz.sac`
         2. 对应 obspy 去仪器响应结果 `data/sac_dest/NZ/NZ37/2024/001/NZ.NZ37..BHZ.D.2024.001.merged.deconv.sac`
+
+        二者都没做降采样。
         """
     )
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(halo):
     # check deconvolution result
     halo.check_deconv_result(
@@ -218,9 +251,10 @@ def _(mo):
         seispy.merge_by_day("data/sac_dest/")
         # run deconvolution
         seispy.response.deconvolution_by_day(
-            "data/sac_dest", "data/response_contract/NZ_example.xml"
+            "data/sac_dest", resp="data/response_contract/NZ_example.xml", resample=1.0
         )
         ```
+        **降采样需要指定采样率 `resample`，默认是 `None`。**
         """
     )
     return
