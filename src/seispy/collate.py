@@ -7,7 +7,7 @@ import obspy
 from icecream import ic
 from tqdm import tqdm
 
-from rose import pather
+from rose import pather, write_errors
 
 
 def merge_by_day(src: str | Path, remove_src: bool = True) -> None:
@@ -17,14 +17,15 @@ def merge_by_day(src: str | Path, remove_src: bool = True) -> None:
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(_merge_targets, day, remove_src)
-            for day in days if day
+            for day in tqdm(days) if day
         }
         for future in as_completed(futures):
             future = future.result()
             if future:
                 errs.append(future)
-    ic(f"All done. Merged in `{src}`.")
-    ic(errs)
+    if errs:
+        write_errors(errs)
+    ic("All Merged with NO errors!")
 
 
 def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):

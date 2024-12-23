@@ -11,3 +11,4 @@ wheels/
 
 # text data
 data/sac_*
+data/response_*

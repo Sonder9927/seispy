@@ -23,7 +23,7 @@ managed = true
 dev-dependencies = []
 
 [tool.rye.scripts]
-halo = "rye run marimo run src/halo.py"
+halo = "rye run marimo run src/halo-seispy.py"
 
 [tool.hatch.metadata]
 allow-direct-references = true

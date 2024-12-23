@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def find_last_subdirs(path: Path) -> list[Path | None]:
+def find_last_subdirs(path: Path) -> list[Path]:
     """Find the last subdirectory in a path."""
     if not path.is_dir():
         return []
@@ -12,7 +12,7 @@ def find_last_subdirs(path: Path) -> list[Path | None]:
 
     last_subdirs = []
     for subdir in subdirs:
-        last_subdirs.extend(find_last_subdirs(subdir))  # 递归调用
+        last_subdirs.extend(find_last_subdirs(subdir))
 
     return last_subdirs
 

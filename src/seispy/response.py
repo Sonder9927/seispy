@@ -12,7 +12,7 @@ from obspy import UTCDateTime
 from obspy.clients.fdsn import Client
 from tqdm import tqdm
 
-from rose import pather
+from rose import pather, write_errors
 
 
 def download_resp():
@@ -38,11 +38,6 @@ def combine_resp(responses, outfile, starttime=(2023, 1, 1)):
     combined_inv = None
     for resp in responses:
         inv = obspy.read_inventory(resp)
-        for nt in inv:
-            for st in nt:
-                for cha in st:
-                    if not cha.location_code:
-                        cha.location_code = "01"
 
         if combined_inv is None:
             combined_inv = inv
@@ -83,60 +78,62 @@ def simple_resp(resp_all, outfile, sta_list: list[str]):
     simple_inv.write(outfile, format="STATIONXML")
 
 
-def remove_response(src_dir, dest_dir, resp, target_patterns=["*.sac"]):
+def deconvolution_by_day(
+    src_dir, resp, target_pattern="*.sac", remove_src=True
+) -> None:
     src_path = Path(src_dir)
-    dest_path = Path(dest_dir)
-
-    # copy structure
-    ic("copying structure")
-    pather.copy_structure(src_path, dest_path)
+    last_subdirs = pather.find_last_subdirs(src_path)
 
     # remove response
-    ic("removing response")
-    errs = []
+    ic("reading response ...")
     inv = obspy.read_inventory(resp)
-    with ProcessPoolExecutor() as executor:
+    ic("removing response ...")
+    errs = []
+    with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(
-                subdir_remove_response,
-                idir,
+                targets_remove_response,
+                subdir,
+                target_pattern,
                 inv,
-                target_patterns,
-                pather.path_relative(src_path, idir, dest_path),
+                remove_src,
             )
-            for idir in src_path.iterdir()
-            if idir.is_dir()
+            for subdir in tqdm(last_subdirs)
         }
         for future in as_completed(futures):
             result = future.result()
-            errs += result
+            if result:
+                errs.append(result)
+    if errs:
+        write_errors(errs)
+    ic("All Removed Response with NO errors!")
 
 
-def subdir_remove_response(dir, inv, patterns, dest_dir: Path):
-    # remove response
-    ic(f"removing response in {dir} ...")
-    targets = pather.glob(dir, "rglob", patterns, exclude_parts=["soh"])
-    errs = []
-    for target in tqdm(targets):
-        dir_to_target = target.relative_to(dir)
-        dest_file = dest_dir / dir_to_target
-        dest_sac = dest_file.with_suffix(".sac")
-        try:
+def targets_remove_response(dir, pattern, inv, remove_src) -> str | None:
+    try:
+        for target in dir.glob(pattern):
             st = stream_removed_response(target, inv)
-            st.remove_response(inventory=inv)
+            dest_sac = target.with_suffix(".deconv.sac")
             st.write(str(dest_sac), format="SAC")
-        except Exception as e:
-            errs.append((dest_file.name, e))
-            ic(f"Error occered at {target}")
-    time.sleep(2)
-    return errs
+            if remove_src:
+                target.unlink()
+    except Exception as e:
+        return f"Error occered at {target} : {e}\n"
+
+    time.sleep(1)
+    return None
 
 
-def stream_removed_response(file, inv):
+def stream_removed_response(file: str, inv):
     st = obspy.read(file)
     st.merge(method=1, fill_value="interpolate")
     for tr in st:
-        tr.reamove_response(inventory=inv, pre_filt=[0.003, 0.006, 1, 2], output="DISP")
+        tr.remove_response(
+            inventory=inv,
+            water_level=None,
+            pre_filt=[0.003, 0.006, 1, 2],
+            output="DISP",
+        )
         tr.data *= 1e9
     return st
 
