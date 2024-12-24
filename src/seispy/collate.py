@@ -10,14 +10,24 @@ from tqdm import tqdm
 from rose import pather, write_errors
 
 
-def merge_by_day(src: str | Path, remove_src: bool = True) -> None:
+def merge_by_day(
+    src: str | Path, pattern: str = "*.SAC", remove_src: bool = True
+) -> None:
+    """merge sac files by day
+
+    Parameters:
+        src: source directory.
+        pattern: search pattern.
+        remove_src: whether remove source files after mergeing.
+    """
     src_path = Path(src)
     days = pather.find_last_subdirs(src_path)
     errs = []
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
-            executor.submit(_merge_targets, day, remove_src)
-            for day in tqdm(days) if day
+            executor.submit(_merge_targets, day, pattern, remove_src)
+            for day in tqdm(days)
+            if day
         }
         for future in as_completed(futures):
             future = future.result()
@@ -66,8 +76,8 @@ def _copy_targets(targets: list[Path], dest_path: Path):
     time.sleep(1)
 
 
-def _merge_targets(day: Path, remove_src: bool) -> str | None:
-    sacs = list(day.glob("*.SAC"))
+def _merge_targets(day: Path, pattern, remove_src: bool) -> str | None:
+    sacs = list(day.glob(pattern))
     try:
         st = obspy.Stream()
         for sac in sacs:

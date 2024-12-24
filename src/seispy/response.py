@@ -79,8 +79,23 @@ def simple_resp(resp_all, outfile, sta_list: list[str]):
 
 
 def deconvolution_by_day(
-    src_dir, resp, resample=None, target_pattern="*.sac", remove_src=True
+    src_dir: str | Path,
+    resp: str,
+    resample: float | None = None,
+    pattern: str = "*.sac",
+    remove_src: bool = True,
 ) -> None:
+    """deconvolution by day
+
+    remove response by days directory
+
+    Parameters:
+        src_dir: source directory
+        resp: response file
+        resample: resample to given delta if it isn't None.
+        pattern: search pattern
+        remove_src: remove source file after deconvolution
+    """
     src_path = Path(src_dir)
     last_subdirs = pather.find_last_subdirs(src_path)
 
@@ -94,7 +109,7 @@ def deconvolution_by_day(
             executor.submit(
                 targets_remove_response,
                 subdir,
-                target_pattern,
+                pattern,
                 inv,
                 resample,
                 remove_src,
@@ -110,7 +125,9 @@ def deconvolution_by_day(
     ic("All Removed Response with NO errors!")
 
 
-def targets_remove_response(dir, pattern, inv, resample, remove_src) -> str | None:
+def targets_remove_response(
+    dir: Path, pattern, inv, resample, remove_src
+) -> str | None:
     try:
         for target in dir.glob(pattern):
             st = stream_removed_response(target, inv, resample)
@@ -122,10 +139,18 @@ def targets_remove_response(dir, pattern, inv, resample, remove_src) -> str | No
         return f"Error occered at {target} : {e}\n"
 
     time.sleep(1)
-    return None
 
 
-def stream_removed_response(file: str, inv, resample):
+def stream_removed_response(file: str | Path, inv, resample: float | None = None):
+    """remove response from sac file
+
+    Args:
+        file: target file
+        inv (Inventory): inventory
+        resample: resample result of deconvolution.
+    Returns:
+        Stream: stream of deconvolution
+    """
     st = obspy.read(file)
     st.merge(method=1, fill_value="interpolate")
     for tr in st:

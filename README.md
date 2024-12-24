@@ -4,14 +4,15 @@ SeisPy: seismic data processing with ObsPy.
 
 # Content
 
-- seismogram
+- sort data and merge
 - preprocessing
-- instrument response
+- remove instrument response
+- resample
 
-Command to see the content:
+open `public/halo-seispy.html` to see the content or run command:
 
 ```sh
 rye run halo
 # or
-rye run marimo runr src/halo.py
+rye run marimo run src/halo_seispy.py
 ```
