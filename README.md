@@ -1,4 +1,4 @@
-# seispy
+# SeisPy
 
 SeisPy: seismic data processing with ObsPy.
 
@@ -9,7 +9,7 @@ SeisPy: seismic data processing with ObsPy.
 - remove instrument response
 - resample
 
-open `public/halo-seispy.html` to see the content or run command:
+Download halo-seispy.html from release to see the content or run command:
 
 ```sh
 rye run halo
