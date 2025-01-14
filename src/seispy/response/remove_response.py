@@ -8,97 +8,15 @@ from pathlib import Path
 
 import obspy
 from icecream import ic
-from obspy import UTCDateTime
-from obspy.clients.fdsn import Client
-from tqdm import tqdm
-
 from rose import pather, write_errors
-
-
-def download_response():
-    client = Client("GEONET")
-    starttime = UTCDateTime(2023, 1, 1)
-    endtime = UTCDateTime(2024, 12, 12)
-
-    client.get_stations(
-        network="NZ",
-        starttime=starttime,
-        endtime=endtime,
-        level="response",
-        filename="response.xml",
-        format="xml",
-        minlatitude=-45,
-        maxlatitude=-30,
-        minlongitude=170,
-        maxlongitude=180,
-    )
-
-
-def combine_responses(
-    responses: list[str | Path], outfile=None, starttime=(2023, 1, 1)
-):
-    """combine respons files
-
-    Args:
-        responses: response files
-        outfile (_type_): output file
-        starttime (tuple, optional): shift stream's starttime.
-
-    Raises:
-        ValueError: No response found
-
-    Returns:
-        _type_: stream
-    """
-    combined_inv = None
-    for resp in responses:
-        inv = obspy.read_inventory(resp)
-
-        if combined_inv is None:
-            combined_inv = inv
-        else:
-            combined_inv += inv
-    if combined_inv is None:
-        raise ValueError("no response found")
-    if starttime:
-        combined_inv = _shift_starttime(combined_inv, starttime)
-    if outfile:
-        combined_inv.write(outfile, format="STATIONXML")
-    return combined_inv
-
-
-def simple_response(resp_all, outfile, sta_list: list[str]):
-    inv = obspy.read_inventory(resp_all)
-    simple_inv = obspy.core.inventory.inventory.Inventory(
-        networks=[], source=inv.source
-    )
-
-    net = inv[0]
-    new_net = obspy.core.inventory.network.Network(
-        code=net.code,
-        description=net.description,
-        start_date=net.start_date,
-        end_date=net.end_date,
-        total_number_of_stations=net.total_number_of_stations,
-        selected_number_of_stations=net.selected_number_of_stations,
-    )
-
-    for sta in net:
-        if sta.code in sta_list:
-            # sta.channels=[
-            #     cha for cha in sta.channels if not cha.code.startswith("LH")
-            # ]
-            new_net.stations.append(sta)
-
-    if new_net.stations:
-        simple_inv.networks.append(new_net)
-    simple_inv.write(outfile, format="STATIONXML")
+from tqdm import tqdm
 
 
 def deconvolution_last_subdirs(
     src_dir: str | Path,
     resp: str,
     resample: float | None = None,
+    method: str = "obspy",
     pattern: str = "*.sac",
     remove_src: bool = True,
 ) -> None:
@@ -110,21 +28,23 @@ def deconvolution_last_subdirs(
         src_dir: source directory
         resp: response file
         resample: resample to given delta if it isn't None.
+        method: method of data processing
         pattern: search pattern at last subdirectory
         remove_src: remove source file after deconvolution
     """
     src_path = Path(src_dir)
     last_subdirs = pather.find_last_subdirs(src_path)
 
+    # read response if method is obspy
+    inv = obspy.read_inventory(resp) if method == "obspy" else resp
+
     # remove response
-    ic("reading response ...")
-    inv = obspy.read_inventory(resp)
     ic("removing response ...")
     errs = []
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(
-                targets_remove_response,
+                deconv_by_method(method),
                 subdir,
                 pattern,
                 inv,
@@ -148,8 +68,17 @@ def deconvolution_last_subdirs(
         ic("All Removed Response with NO errors!")
 
 
-def targets_remove_response(
-    dir: Path, pattern, inv, resample, remove_src
+def deconv_by_method(method):
+    method = method.lower()
+    if method == "obspy":
+        return obspy_deconv
+    if method == "sac":
+        return sac_deconv
+    raise ValueError(f"Unknown method: {method}")
+
+
+def obspy_deconv(
+    dir: Path, pattern: str, inv, resample, remove_src: bool
 ) -> str | None:
     try:
         for target in dir.glob(pattern):
@@ -160,6 +89,33 @@ def targets_remove_response(
                 target.unlink()
     except Exception as e:
         return f"Error occered at {target} : {e}\n"
+
+    time.sleep(1)
+
+
+def sac_deconv(
+    dir: Path, pattern: str, pzs: str, resample, remove_src: bool
+) -> str | None:
+    import os
+    import subprocess
+
+    if resample is not None:
+        ic("resample is not supported by `sac` method")
+
+    cmd = ""
+    for target in dir.glob(pattern):
+        cmd += f"r {target}\n"
+        cmd += "rmean; rtr; taper \n"
+        cmd += f"trans from pol s {pzs} to none freq 0.003 0.006 1 2\n"
+        cmd += "mul 1.0e9 \n"
+        if remove_src:
+            cmd += "w over \n"
+        else:
+            cmd += f"w {target.with_suffix('.deconv.sac')}\n"
+    cmd += "q\n"
+
+    os.putenv("SAC_DISPLAY_COPYRIGHT", "0")
+    subprocess.Popen(["sac"], stdin=subprocess.PIPE).communicate(cmd.encode())
 
     time.sleep(1)
 
@@ -192,11 +148,3 @@ def stream_removed_response(file: str | Path, inv, resample: float | None = None
         if resample is not None:
             tr.resample(resample)
     return st
-
-
-def _shift_starttime(inv, starttime):
-    for net in inv:
-        for sta in net:
-            for cha in sta:
-                cha.start_date = obspy.UTCDateTime(*starttime)
-    return inv

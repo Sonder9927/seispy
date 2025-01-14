@@ -1,5 +1,5 @@
 data/sac_*
-data/response_*
+data/diff_*
 
 # Python-generated files
 __pycache__/
