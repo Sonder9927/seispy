@@ -19,6 +19,7 @@ def deconvolution_last_subdirs(
     method: str = "obspy",
     pattern: str = "*.sac",
     remove_src: bool = True,
+    max_workers: int = 5,
 ) -> None:
     """deconvolution last subdirs (days)
 
@@ -31,6 +32,7 @@ def deconvolution_last_subdirs(
         method: method of data processing
         pattern: search pattern at last subdirectory
         remove_src: remove source file after deconvolution
+        max_workers: max workers for parallel processing
     """
     src_path = Path(src_dir)
     last_subdirs = pather.find_last_subdirs(src_path)
@@ -41,7 +43,7 @@ def deconvolution_last_subdirs(
     # remove response
     ic("removing response ...")
     errs = []
-    with ProcessPoolExecutor(max_workers=5) as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
                 deconv_by_method(method),
@@ -88,9 +90,9 @@ def obspy_deconv(
             if remove_src:
                 target.unlink()
     except Exception as e:
-        return f"Error occered at {target} : {e}\n"
+        return f"Error occered at {target.parent} : {e}\n"
 
-    time.sleep(1)
+    time.sleep(0.1)
 
 
 def sac_deconv(
@@ -117,13 +119,13 @@ def sac_deconv(
     os.putenv("SAC_DISPLAY_COPYRIGHT", "0")
     subprocess.Popen(["sac"], stdin=subprocess.PIPE).communicate(cmd.encode())
 
-    time.sleep(1)
+    time.sleep(0.1)
 
 
 def stream_removed_response(file: str | Path, inv, resample: float | None = None):
     """remove response from sac file
 
-    Args:
+    Parameters:
         file: target file
         inv (Inventory): inventory
         resample: resample result of deconvolution.

@@ -80,7 +80,7 @@ def _copy_targets(targets: list[Path], dest_path: Path):
         dest_file = dest_path / net / sta / year / day / target.name
         dest_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(target, dest_file)
-    time.sleep(1)
+    time.sleep(0.1)
 
 
 def _merge_targets(day: Path, pattern, remove_src: bool) -> str | None:
@@ -105,7 +105,7 @@ def _merge_targets(day: Path, pattern, remove_src: bool) -> str | None:
     if remove_src:
         for sac in sacs:
             sac.unlink()
-    time.sleep(1)
+    time.sleep(0.1)
 
 
 if __name__ == "__main__":

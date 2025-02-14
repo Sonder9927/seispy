@@ -9,31 +9,33 @@ from obspy import UTCDateTime
 from obspy.clients.fdsn import Client
 
 
-def download_response():
-    client = Client("GEONET")
-    starttime = UTCDateTime(2023, 1, 1)
-    endtime = UTCDateTime(2024, 12, 12)
+def download_response(filename, client="GEONET", network="NZ", **kwargs):
+    client = Client(client)
+    start = kwargs.get("starttime") or (2023, 1, 1)
+    starttime = UTCDateTime(*start)
+    end = kwargs.get("endtime") or (2024, 12, 12)
+    endtime = UTCDateTime(*end)
 
     client.get_stations(
-        network="NZ",
+        network=network,
         starttime=starttime,
         endtime=endtime,
         level="response",
-        filename="response.xml",
+        filename=filename,
         format="xml",
-        minlatitude=-45,
-        maxlatitude=-30,
-        minlongitude=170,
-        maxlongitude=180,
+        minlatitude=kwargs.get("minlatitude") or -50,
+        maxlatitude=kwargs.get("maxlatitude") or -30,
+        minlongitude=kwargs.get("minlongitude") or 160,
+        maxlongitude=kwargs.get("maxlongitude") or 180,
     )
 
 
 def combine_responses(
     responses: list[str | Path], outfile=None, starttime=(2023, 1, 1)
 ):
-    """combine respons files
+    """combine response files
 
-    Args:
+    Parameters:
         responses: response files
         outfile (_type_): output file
         starttime (tuple, optional): shift stream's starttime.
