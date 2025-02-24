@@ -5,9 +5,8 @@ from pathlib import Path
 
 import obspy
 from icecream import ic
-from tqdm import tqdm
-
 from rose import pather, write_errors
+from tqdm import tqdm
 
 
 def merge_by_day(
@@ -40,7 +39,8 @@ def merge_by_day(
                 errs.append(future)
     if errs:
         write_errors(errs)
-    ic("All Merged with NO errors!")
+    else:
+        ic("All Done with NO errors!")
 
 
 def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):

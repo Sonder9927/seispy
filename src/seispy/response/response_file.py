@@ -9,12 +9,10 @@ from obspy import UTCDateTime
 from obspy.clients.fdsn import Client
 
 
-def download_response(filename, client="GEONET", network="NZ", **kwargs):
+def download(filename, client="GEONET", network="NZ", **kwargs):
     client = Client(client)
-    start = kwargs.get("starttime") or (2023, 1, 1)
-    starttime = UTCDateTime(*start)
-    end = kwargs.get("endtime") or (2024, 12, 12)
-    endtime = UTCDateTime(*end)
+    starttime = kwargs.get("starttime") or UTCDateTime(2023, 1, 1)
+    endtime = kwargs.get("endtime") or UTCDateTime(2024, 12, 30)
 
     client.get_stations(
         network=network,
@@ -30,7 +28,7 @@ def download_response(filename, client="GEONET", network="NZ", **kwargs):
     )
 
 
-def combine_responses(
+def combine(
     responses: list[str | Path], outfile=None, starttime=(2023, 1, 1)
 ):
     """combine response files
@@ -62,7 +60,7 @@ def combine_responses(
     return combined_inv
 
 
-def simple_response(resp_all, sta_list: list[str], outfile=None):
+def extract(resp_all, sta_list: list[str], outfile=None):
     inv = obspy.read_inventory(resp_all)
     # simple_inv = obspy.core.inventory.inventory.Inventory(
     simple_inv = obspy.Inventory(networks=[], source=inv.source)

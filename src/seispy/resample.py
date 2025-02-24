@@ -33,7 +33,7 @@ def resample_last_subdirs(
             as_completed(futures),
             total=len(futures),
             mininterval=2,
-            desc="deconvolution at last subdirs",
+            desc="resample at last subdirs",
         ):
             result = future.result()
             if result:
@@ -41,7 +41,7 @@ def resample_last_subdirs(
     if errs:
         write_errors(errs)
     else:
-        ic("All Removed Response with NO errors!")
+        ic("All Resampled with NO errors!")
 
 
 def resample_by_method(method):
