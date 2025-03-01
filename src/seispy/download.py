@@ -29,7 +29,10 @@ class IRISDownloader:
             **config,  # 用户配置覆盖默认
         }
         self.client = Client(
-            "IRIS", user=self.config["email"], password=self.config["token"]
+            "IRIS",
+            user=self.config["email"],
+            password=self.config["token"],
+            # user_agent=f"SUSTech_SeismoLab/1.0 ({self.config['email']})",
         )
         self.executor = ThreadPoolExecutor(max_workers=self.config["max_workers"])
         # 日期有效性校验
@@ -62,7 +65,7 @@ class IRISDownloader:
         return (
             f"{stats.network}.{stats.station}.{loc_code}."
             f"{stats.channel}.{stats.mseed.dataquality}."
-            f"{stats.starttime.year}.{stats.starttime.julday:03d}"
+            f"{stats.starttime.year}.{stats.starttime.julday:03d}."
             f"{stats.starttime.strftime('%H%M%S')}.sac"
         )
 
@@ -92,6 +95,7 @@ class IRISDownloader:
         """下载单日数据"""
         day_str = day.strftime("%Y-%m-%d")
         try:
+            time.sleep(self.config["request_interval"])
             # 获取数据
             st = self.client.get_waveforms(
                 network=self.config["network"],
@@ -141,12 +145,12 @@ if __name__ == "__main__":
     config = {
         "email": "your_email@example.com",
         "token": "your_token",
-        "network": "1U",
+        "network": "net",
         "start_date": "2024-08-01",
         "end_date": "2024-08-08",
         "channel": "BHZ",
     }
 
     downloader = IRISDownloader(config)
-    downloader.run(output_dir="nz_1u/")
+    downloader.run(output_dir="data/")
     print("任务完成！使用命令 'tail -f download.log' 查看实时日志")
