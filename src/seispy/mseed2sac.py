@@ -78,7 +78,7 @@ def _mseed2sac(target: Path, dest_path: Path):
     # read stats
     starttime = stats.starttime
     year = str(starttime.year)
-    day = ("000" + str(starttime.julday))[-3:]
+    day = f"{starttime.julday:03d}"
     # dest dir
     dest_dir = dest_path / stats.network / stats.station / year / day
     dest_dir.mkdir(parents=True, exist_ok=True)
