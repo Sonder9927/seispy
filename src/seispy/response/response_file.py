@@ -58,54 +58,42 @@ def combine(responses: list[str | Path], outfile=None, starttime=(2023, 1, 1)):
     return combined_inv
 
 
-def filter(resp, sta_list: list[str], cha_list=[], outfile=None):
+def filter(resp, station_list: list[str], channel_list=[], outfile=None):
     """
     从 resp 文件中过滤特定台站和通道。
 
     :param resp: 原始 RESP/StationXML 文件路径
-    :param stationlist: 需要保留的台站列表（如 ["ST01", "ST02"]）
-    :param channels: 需要保留的通道列表（如 ["HHZ", "BHZ"]）
+    :param station_list: 需要保留的台站列表 (e.g. ["WEL", "KHZ"])
+    :param channel_list: 需要保留的通道列表 (e.g. ["HHZ", "HHE"])
     :param outfile: 过滤后的 XML 输出路径
     """
-    from obspy.core.inventory import Inventory, Network, Station
+    from obspy.core.inventory import Inventory
 
-    # 读取原始 XML
+    # 读取原始 resp
     inv = obspy.read_inventory(resp)
-    # 创建新的 Inventory 容器
-    filtered_networks = []
 
+    new_inv = Inventory(networks=[], source=inv.source)
     for net in inv:
-        filtered_stations = []
+        new_net = net.copy()
+        new_net.stations = []
         for sta in net:
-            if sta.code in sta_list:
-                if cha_list:
-                    # 筛选该台站的通道
-                    filtered_channels = [ch for ch in sta if ch.code in cha_list]
-                else:
-                    filtered_channels = sta.channels
+            if sta.code not in station_list:
+                continue
+            new_sta = sta.copy()
+            # 筛选该台站的通道
+            new_sta.channels = [ch for ch in sta.channels if ch.code in channel_list]
 
-                # 只有当台站包含需要的通道时才添加
-                if filtered_channels:
-                    new_station = Station(
-                        code=sta.code,
-                        latitude=sta.latitude,
-                        longitude=sta.longitude,
-                        elevation=sta.elevation,
-                        site=sta.site,
-                        channels=filtered_channels,
-                    )
-                    filtered_stations.append(new_station)
+            # 只保留有有效通道的台站
+            if new_sta.channels:
+                new_net.stations.append(new_sta)
 
-        if filtered_stations:
-            new_network = Network(code=net.code, stations=filtered_stations)
-            filtered_networks.append(new_network)
-
-    # 生成新的 Inventory
-    filtered_inventory = Inventory(networks=filtered_networks, source=inv.source)
+        # 只保留有有效台站的网络
+        if new_net.stations:
+            new_inv.networks.append(new_net)
 
     if outfile:
-        filtered_inventory.write(outfile, format="STATIONXML")
-    return filtered_inventory
+        new_inv.write(outfile, format="STATIONXML")
+    return new_inv
 
 
 def extract(resp_all, sta_list: list[str], outfile=None):

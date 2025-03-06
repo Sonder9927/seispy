@@ -14,15 +14,15 @@ dependencies = [
   "tqdm>=4.67.1",
 ]
 
-[tool.uv.sources]
-rose = { path = "packages/rose" }
-
 [project.scripts]
 seispy = "seispy:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+rose = { path = "packages/rose" }
 
 # [tool.uv.workspace]
 # members = ["packages/rose"]
