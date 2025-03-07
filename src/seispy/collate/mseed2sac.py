@@ -1,86 +1,139 @@
-import time
+# seispy/converter.py
+import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import wraps
 from pathlib import Path
-from typing import Iterable
+from typing import Union
 
 import obspy
 from icecream import ic
-from rose import batch_generator, logger, pather, write_errors
+from rose import batch_generator
 from tqdm import tqdm
+
+LOG_FILE_MSEED2SAC = "mseed2sac.log"
+
+
+def configure_logging(log_file=LOG_FILE_MSEED2SAC):
+    """日志配置装饰器工厂"""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            logger = logging.getLogger(func.__module__)
+
+            # 清除旧处理器避免重复
+            for handler in logger.handlers[:]:
+                logger.removeHandler(handler)
+
+            # 设置默认日志路径
+            final_log_file = Path(log_file)
+            final_log_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # 创建格式化器
+            formatter = logging.Formatter(
+                "%(asctime)s - %(processName)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+
+            file_handler = logging.FileHandler(final_log_file, mode="a")
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
+            logger.setLevel(logging.DEBUG)
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 def mseed2sac_dir(
-    src_dir: Path | str,
-    dest_dir: Path | str,
+    src_dir: Union[Path, str],
+    dest_dir: Union[Path, str],
     pattern: str = "*.miniseed",
     batch_size: int = 2000,
     max_workers: int = 5,
 ) -> None:
-    """主转换函数"""
-    _logger = logger(name="mseed2sac", log_file=Path("mseed2sac.log"))
-    _logger.info("Conversion process started")
-    dest_base = Path(dest_dir)
-    # 获取源目录下所有符合pattern的文件路径
-    file_paths = pather.glob(src_dir, "rglob", [pattern])
-    # 获取文件总数
-    total_files = len(file_paths)
-    _logger.debug(f"Total files to process: {total_files}")
+    """MiniSEED 转 SAC 主函数
 
-    # 使用ProcessPoolExecutor创建一个进程池，最大进程数为max_workers
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # 提交任务到进程池，每个任务处理一个batch
-        futures = {
-            executor.submit(process_batch, batch, dest_base, _logger)
-            for batch in batch_generator(file_paths, batch_size)
-        }
+    Args:
+        src_dir: 源目录路径
+        dest_dir: 目标目录路径
+        pattern: 文件匹配模式
+        batch_size: 每批处理文件数
+        max_workers: 最大并行进程数
+        log_file: 自定义日志文件路径（可选）
+    """
 
-        # 使用tqdm创建一个进度条，显示总文件数和当前进度
-        with tqdm(total=total_files, desc="Processing files") as progress:
-            # 遍历任务，获取任务结果并更新进度条
-            for future in as_completed(futures):
-                processed = future.result()
-                progress.update(processed)
+    @configure_logging()
+    def _main():
+        logger = logging.getLogger(__name__)
+        logger.info("Mseed2sac started")
 
-    # 打印转换完成信息
-    _logger.info("Conversion process completed")
-    ic("All conversions finished")
+        src_path = Path(src_dir)
+        dest_base = Path(dest_dir)
+        dest_base.mkdir(parents=True, exist_ok=True)
+
+        # 获取文件列表
+        file_paths = list(src_path.rglob(pattern))
+        total_files = len(file_paths)
+        logger.debug(f"Found {total_files} files")
+
+        # 多进程处理
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_process_batch, batch, dest_base)
+                for batch in batch_generator(file_paths, batch_size)
+            }
+
+            with tqdm(total=total_files, desc="Processing") as pbar:
+                for future in as_completed(futures):
+                    pbar.update(future.result())
+
+        logger.info("Conversion completed")
+        ic("All done!")
+
+    _main()
 
 
-def process_batch(file_paths: Iterable[Path], dest_dir: Path, _logger) -> int:
-    """处理文件批次并返回成功处理数量"""
-    success_count = 0
+@configure_logging()  # 子进程使用默认配置
+def _process_batch(file_paths: list[Path], dest_dir: Path) -> int:
+    """处理单个批次"""
+    logger = logging.getLogger(__name__)
+    success = 0
     for path in file_paths:
         try:
-            mseed2sac(path, dest_dir, _logger)
-            success_count += 1
+            mseed2sac(path, dest_dir)
+            success += 1
         except Exception as e:
-            _logger.error(f"Failed {path.name}: {str(e)}", exc_info=True)
-    return success_count
+            logger.error(f"Failed {path.name}: {str(e)}", exc_info=True)
+    return success
 
 
-def mseed2sac(mseed_path: Path, dest_base: Path, _logger=None):
+def mseed2sac(mseed_path: Path, dest_base: Path) -> None:
+    """转换单个文件"""
+    logger = logging.getLogger(__name__)
+
     stream = obspy.read(mseed_path)
     stream.merge(method=1, fill_value="interpolate")
 
     for trace in stream:
         stats = trace.stats
-        start_time = stats.starttime
+        start = stats.starttime
 
         dest_path = build_destination_path(
             network=stats.network,
             station=stats.station,
-            year=start_time.year,
-            julday=start_time.julday,
+            year=start.year,
+            julday=start.julday,
             location=stats.location,
             channel=stats.channel,
             data_quality=stats.mseed.dataquality,
             dest_base=dest_base,
-            suffix=".sac",
         )
 
         trace.write(str(dest_path), format="SAC")
-    if _logger:
-        _logger.debug(f"Converted: {mseed_path} -> {dest_path}")
+        logger.debug(f"Converted: {mseed_path.name} -> {dest_path}")
 
 
 def build_destination_path(
@@ -92,7 +145,6 @@ def build_destination_path(
     channel: str,
     data_quality: str,
     dest_base: Path,
-    suffix: str = ".sac",
 ) -> Path:
     """构建文件存储路径
 
@@ -119,110 +171,15 @@ def build_destination_path(
     >>> print(path)
     /data/XB/CD01/2023/123/XB.CD01.00.HHZ.D.2023.123.sac
     """
-    year_str = f"{year:04d}"
-    day_str = f"{julday:03d}"
-    dir_path = dest_base / network / station / year_str / day_str
+    dir_path = dest_base / f"{network}/{station}/{year:04d}/{julday:03d}"
     dir_path.mkdir(parents=True, exist_ok=True)
 
     filename = (
         f"{network}.{station}.{location}.{channel}."
-        f"{data_quality}.{year_str}.{day_str}{suffix}"
+        f"{data_quality}.{year:04d}.{julday:03d}.sac"
     )
-
     return dir_path / filename
 
 
-def mseed_dir_to_sac(src: str | Path, dest: str | Path, pattern: str = "*.mseed"):
-    """trans mseed files to sac and sort structure of destnation
-
-    Dest file name like `net.sta.khole.channel.D.year.day.sac`.
-
-    Parameters:
-        src_dir: source directory
-        dest_dir: destination directory
-        pattern: search pattern of target files
-
-    Examples:
-        >>>import seispy
-        >>>seispy.mseed_dir_to_sac('/path/src', '/path/dest', '*.miniseed')
-    """
-    src_path = Path(src)
-    dest_path = Path(dest)
-    targets = pather.glob(src_path, "rglob", [pattern])
-    ltargets = len(targets)
-    nbach = 2000
-    errs = []
-    with ProcessPoolExecutor(max_workers=5) as executor:
-        futures = {
-            executor.submit(_mseeds_to_sac, targets[i : i + nbach], dest_path)
-            for i in range(0, ltargets, nbach)
-        }
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            mininterval=2,
-            desc="Mseeds to sac ...",
-        ):
-            future = future.result()
-            if future:
-                errs += future
-    if errs:
-        write_errors(errs)
-    ic("All Converted with NO errors!")
-
-
-def _mseeds_to_sac(targets: list[Path], dest_path: Path):
-    errs = []
-    for target in targets:
-        try:
-            _mseed2sac(target, dest_path)
-        except Exception as err:
-            errs.append(f"Errors in {target}:\n  {err}\n")
-
-    if errs:
-        return errs
-
-    time.sleep(0.1)
-
-
-def _mseed2sac(target: Path, dest_path: Path):
-    """trans mseed file to sac
-
-    Dest file name like `net.sta.khole.channel.D.year.day.sac`.
-
-    Parameters:
-        target: target file
-        dest_dir: destination directory
-
-    """
-    # read stream
-    st = obspy.read(target)
-    st.merge(method=1, fill_value="interpolate")
-    stats = st[0].stats
-    # read stats
-    starttime = stats.starttime
-    year = str(starttime.year)
-    day = f"{starttime.julday:03d}"
-    # dest dir
-    dest_dir = dest_path / stats.network / stats.station / year / day
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    # dest file
-    file_parts = [
-        stats.network,
-        stats.station,
-        stats.location,
-        stats.channel,
-        stats.mseed.dataquality,
-        year,
-        day,
-        starttime.strftime("%H%M%S"),
-        "sac",
-    ]
-    dest_file = str(dest_dir / ".".join(file_parts))
-    # save
-    st.write(dest_file, format="SAC")
-
-
 if __name__ == "__main__":
-    # mseed_dir_to_sac("data/perm_test", "data/perm_dest", "*HH*.D")
     mseed2sac_dir("data/perm_test", "data/perm_dest", pattern="*HH*.D")
