@@ -1,32 +1,31 @@
 import logging
-from pathlib import Path
-from typing import Optional
 
+from concurrent_log_handler import ConcurrentRotatingFileHandler
 from icecream import ic
 
 
-def logger(
-    name: str, log_file: Optional[Path] = None, level: int = logging.INFO
-) -> logging.Logger:
-    """为单个模块创建独立日志配置
+def get_logger(name: str, file=None, level=logging.INFO) -> logging.Logger:
+    """获取或创建指定名称的logger，确保仅配置一次。
 
     Args:
         name: 模块唯一标识 (如 'log_name')
         log_file: 日志文件路径 (None表示不写文件)
         level: 日志级别
+
+    Returns:
+        logging.Logger: 日志记录器
     """
     logger = logging.getLogger(name)
-    logger.setLevel(level)
 
     # 避免重复添加处理器
     if not logger.handlers:
-        formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
+        logger.setLevel(level)
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-        if log_file:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(log_file)
+        if file:
+            file_handler = ConcurrentRotatingFileHandler(
+                file, mode="a", maxBytes=1024 * 1024 * 1, backupCount=5
+            )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
 

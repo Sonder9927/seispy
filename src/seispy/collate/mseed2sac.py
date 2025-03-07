@@ -1,50 +1,18 @@
 # seispy/converter.py
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import wraps
 from pathlib import Path
 from typing import Union
 
 import obspy
-from icecream import ic
-from rose import batch_generator
+from rose import batch_generator, get_logger
 from tqdm import tqdm
 
-LOG_FILE_MSEED2SAC = "mseed2sac.log"
-
-
-def configure_logging(log_file=LOG_FILE_MSEED2SAC):
-    """日志配置装饰器工厂"""
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            logger = logging.getLogger(func.__module__)
-
-            # 清除旧处理器避免重复
-            for handler in logger.handlers[:]:
-                logger.removeHandler(handler)
-
-            # 设置默认日志路径
-            final_log_file = Path(log_file)
-            final_log_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # 创建格式化器
-            formatter = logging.Formatter(
-                "%(asctime)s - %(processName)s - %(levelname)s - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-
-            file_handler = logging.FileHandler(final_log_file, mode="a")
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-
-            logger.setLevel(logging.DEBUG)
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+_LOG_MSEED2SAC = {
+    "name": "mseed2sac",
+    "file": "mseed2sac.log",
+    "level": logging.INFO,
+}
 
 
 def mseed2sac_dir(
@@ -65,41 +33,40 @@ def mseed2sac_dir(
         log_file: 自定义日志文件路径（可选）
     """
 
-    @configure_logging()
-    def _main():
-        logger = logging.getLogger(__name__)
-        logger.info("Mseed2sac started")
+    logger = get_logger(**_LOG_MSEED2SAC)
+    logger.info("Mseed2sac started")
 
-        src_path = Path(src_dir)
-        dest_base = Path(dest_dir)
-        dest_base.mkdir(parents=True, exist_ok=True)
+    src_path = Path(src_dir)
+    dest_base = Path(dest_dir)
+    dest_base.mkdir(parents=True, exist_ok=True)
 
-        # 获取文件列表
-        file_paths = list(src_path.rglob(pattern))
-        total_files = len(file_paths)
-        logger.debug(f"Found {total_files} files")
+    # 获取文件列表
+    file_paths = list(src_path.rglob(pattern))
+    total_files = len(file_paths)
+    logger.info(f"Found {total_files} files")
 
-        # 多进程处理
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_process_batch, batch, dest_base)
-                for batch in batch_generator(file_paths, batch_size)
-            }
+    # 多进程处理
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process_batch, batch, dest_base)
+            for batch in batch_generator(file_paths, batch_size)
+        }
 
-            with tqdm(total=total_files, desc="Processing") as pbar:
-                for future in as_completed(futures):
-                    pbar.update(future.result())
+        with tqdm(total=total_files, desc="Processing") as pbar:
+            success = 0
+            for future in as_completed(futures):
+                isuccess = future.result()
+                success += isuccess
+                pbar.update(isuccess)
+                pbar.set_postfix({"success": success})
 
-        logger.info("Conversion completed")
-        ic("All done!")
-
-    _main()
+    logger.info(f"Mseed2sac complete. Success: {success}/{total_files}")
+    print(f"All done! Check {_LOG_MSEED2SAC['file']}")
 
 
-@configure_logging()  # 子进程使用默认配置
 def _process_batch(file_paths: list[Path], dest_dir: Path) -> int:
     """处理单个批次"""
-    logger = logging.getLogger(__name__)
+    logger = get_logger(**_LOG_MSEED2SAC)
     success = 0
     for path in file_paths:
         try:
@@ -112,7 +79,7 @@ def _process_batch(file_paths: list[Path], dest_dir: Path) -> int:
 
 def mseed2sac(mseed_path: Path, dest_base: Path) -> None:
     """转换单个文件"""
-    logger = logging.getLogger(__name__)
+    logger = get_logger(**_LOG_MSEED2SAC)
 
     stream = obspy.read(mseed_path)
     stream.merge(method=1, fill_value="interpolate")
@@ -133,7 +100,7 @@ def mseed2sac(mseed_path: Path, dest_base: Path) -> None:
         )
 
         trace.write(str(dest_path), format="SAC")
-        logger.debug(f"Converted: {mseed_path.name} -> {dest_path}")
+    logger.debug(f"Converted: {mseed_path.name} -> {dest_path.parent}")
 
 
 def build_destination_path(
@@ -157,7 +124,6 @@ def build_destination_path(
     channel: 通道代码 (如"HHZ")
     data_quality: 数据质量标识
     dest_base: 基础存储路径
-    suffix: 文件扩展名 (默认.sac)
 
     Return:
     Path: 完整文件路径
