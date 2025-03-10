@@ -2,7 +2,7 @@ import logging
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple, Union
 
 from obspy import Stream, UTCDateTime
 from obspy.clients.fdsn import Client
@@ -33,15 +33,20 @@ class IRISDownloader:
             "request_interval": 0.2,  # 请求间隔（秒），控制QPS≈0.83
             **config,  # 用户配置覆盖默认
         }
-        self.client = Client(
-            "IRIS",
-            user=self.config["email"],
-            password=self.config["token"],
-            # user_agent=f"SUSTech_SeismoLab/1.0 ({self.config['email']})",
-        )
+        self.connection_params = {
+            "base_url": "IRIS",
+            "user": self.config["email"],
+            "password": self.config["token"],
+        }
+        # self.client = Client(
+        #     "IRIS",
+        #     user=self.config["email"],
+        #     password=self.config["token"],
+        #     # user_agent=f"SUSTech_SeismoLab/1.0 ({self.config['email']})",
+        # )
 
         self._validate_dates()
-        self._init_stations()
+        # self._init_stations()
         self.executor = ProcessPoolExecutor(max_workers=self.config["max_workers"])
 
     def _validate_dates(self):
@@ -58,27 +63,23 @@ class IRISDownloader:
             self.logger.error(error_msg)
             raise ValueError(error_msg)
 
-    def _init_stations(self):
+    def _get_stations(self) -> List[str]:
         """获取台站列表（如果用户未提供）"""
-        if "stations" not in self.config:
-            self.logger.info("正在自动获取台站列表...")
-            try:
-                inventory = self.client.get_stations(
-                    network=self.config["network"],
-                    station=self.config["station"],
-                    location=self.config["location"],
-                    channel=self.config["channel"],
-                    starttime=self.start_date,
-                    endtime=self.end_date,
-                    level="station",
-                )
-                self.config["stations"] = [
-                    sta.code for net in inventory for sta in net.stations
-                ]
-                self.logger.info(f"获取到{len(self.config['stations'])}个台站")
-            except Exception as e:
-                self.logger.error(f"获取台站列表失败: {str(e)}")
-                raise
+        self.logger.info("Fetching station list...")
+        client = self._create_client(self.connection_params)
+
+        try:
+            inventory = client.get_stations(
+                network=self.config["network"],
+                station=self.config["station"],
+                starttime=self.start_date,
+                endtime=self.end_date,
+                level="station",
+            )
+            return list({sta.code for net in inventory for sta in net.stations})
+        except Exception as e:
+            self.logger.error(f"Failed to get stations: {str(e)}")
+            raise
 
     def _dates(self) -> List[UTCDateTime]:
         """生成日期范围列表"""
@@ -98,7 +99,7 @@ class IRISDownloader:
         )
 
     def _process_single_station_day(
-        self, day: UTCDateTime, station: str, base_path: Path
+        self, client: Client, day: UTCDateTime, station: str, base_path: Path
     ) -> bool:
         """处理单个台站单日数据下载"""
         day_str = day.strftime("%Y-%m-%d")
@@ -113,14 +114,13 @@ class IRISDownloader:
 
         # 跳过已存在数据的目录
         if save_path.exists() and any(save_path.iterdir()):
-            self.logger.info(f"已存在: {station}/{day_str}")
+            self.logger.info(f"Exists: {station}/{day_str}")
             return True
 
         try:
             # 遵守API请求频率限制
             time.sleep(self.config["request_interval"])
 
-            self.logger.debug("Downloading")
             stream = self.client.get_waveforms(
                 network=self.config["network"],
                 station=station,
@@ -129,7 +129,6 @@ class IRISDownloader:
                 starttime=day,
                 endtime=day + 86400,
             )
-            self.logger.debug("Downloaded")
 
             if not isinstance(stream, Stream) or len(stream) == 0:
                 self.logger.warning(f"No Data: {station}/{day_str}")
@@ -150,6 +149,25 @@ class IRISDownloader:
             self.logger.error(f"Download failed: {station}/{day_str}: {str(e)}")
             return False
 
+    @staticmethod
+    def _create_client(params: Dict) -> Client:
+        """在子进程内创建客户端"""
+        return Client(
+            base_url=params["base_url"],
+            user=params["user"],
+            password=params["password"],
+            user_agent=f"IRISDownloader/1.0 ({params['user']})",
+            timeout=30,
+        )
+
+    @staticmethod
+    def _process_task(args: Tuple) -> bool:
+        """任务处理入口（静态方法避免序列化问题）"""
+        params, config, day, station, base_path = args
+        client = IRISDownloader._create_client(params)
+        downloader = IRISDownloader(config)
+        return downloader._process_single_station_day(client, day, station, base_path)
+
     def wave(self, output_dir: str):
         """启动下载任务"""
         base_path = Path(output_dir)
@@ -164,8 +182,8 @@ class IRISDownloader:
                 self.executor.submit(
                     self._process_single_station_day, day, station, base_path
                 )
-                for day in dates
                 for station in stations
+                for day in dates
             ]
 
             for future in as_completed(futures):
@@ -177,18 +195,20 @@ class IRISDownloader:
                     progress_bar.update(1)
 
         self.executor.shutdown()
-        self.logger.info(f"Mission complete. Check {LOG_FILE_DOWNLOAD} for details.")
+        self.logger.info("Mission complete.")
+        print(f"Mission complete. Check {LOG_FILE_DOWNLOAD} for details.")
 
     def response(self, outfile: str, **kwargs):
         self.logger.info("Download response start.")
         try:
-            inventory = self.client.get_stations(
+            inventory = self._create_client().get_stations(
                 network=self.config["network"], level="response", **kwargs
             )
             inventory.write(outfile, format="STATIONXML")
         except Exception as e:
             self.logger.error(f"Mission failed: {str(e)}")
-        self.logger.info(f"Mission complete. Check {LOG_FILE_DOWNLOAD} for details.")
+        self.logger.info("Mission complete.")
+        print(f"Mission complete. Check {LOG_FILE_DOWNLOAD} for details.")
 
 
 if __name__ == "__main__":

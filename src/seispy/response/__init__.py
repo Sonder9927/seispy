@@ -1,4 +1,5 @@
 from seispy.response.remove_response import (
+    deconvolution_by_station,
     deconvolution_last_subdirs,
     stream_removed_response,
 )
@@ -10,5 +11,6 @@ __all__ = [
     "filter",
     "extract",
     "deconvolution_last_subdirs",
+    "deconvolution_by_station",
     "stream_removed_response",
 ]
