@@ -1,6 +1,23 @@
 from pathlib import Path
 
 
+def binuse(command, bin_path: str = "bin") -> Path:
+    """get bin command
+
+    Parameters:
+        command: target command
+        bin_path: bin path
+
+    Returns:
+        bin command path
+    """
+    command_path = Path(bin_path) / command
+    if command_path.exists():
+        return command_path
+    else:
+        raise FileNotFoundError(f"{command=} not found in {bin_path}.")
+
+
 def find_last_subdirs(path: Path) -> list[Path]:
     """Find the last subdirectory in a path."""
     if not path.is_dir():

@@ -1,10 +1,10 @@
-from seispy import collate, response
-from seispy.download import IRISDownloader
-from seispy.resample import resample_last_subdirs
+# from seispy.download import IRISDownloader
+from seispy import collate, event, response
+from seispy.resample import resample_by_station
 
 
 def hello() -> str:
     return "Hello from seispy!"
 
 
-__all__ = ["hello", "response", "resample_last_subdirs", "collate", "IRISDownloader"]
+__all__ = ["hello", "response", "resample_by_station", "collate", "event"]

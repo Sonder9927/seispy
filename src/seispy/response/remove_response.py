@@ -1,7 +1,3 @@
-"""
-instrument responses from GEONET
-"""
-
 import logging
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -9,8 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 import obspy
-from icecream import ic
-from rose import get_logger, pather
+from rose import get_logger
 from tqdm import tqdm
 
 _LOG_DECONVOLUTION = {
@@ -43,7 +38,7 @@ def deconvolution_by_station(
         max_workers: max workers for parallel processing
     """
     logger = get_logger(**_LOG_DECONVOLUTION)
-    logger.info(f"Deconvolution started with {method=}")
+    logger.info(f"Deconvolution started with {method=} at {src_dir=}.")
 
     method = method.lower()
     src_path = Path(src_dir)
@@ -68,15 +63,16 @@ def deconvolution_by_station(
             for sta_path in station_paths
         }
         with tqdm(total=total, desc="Processing stations") as pbar:
-            postfix = {"success": 0, "failed": 0}
+            post = {"total": 0, "failed": 0}
             for future in as_completed(futures):
-                result = future.result()
-                postfix[result] += 1
+                batch_total, failed = future.result()
+                post["total"] += batch_total
+                post["failed"] += failed
                 pbar.update(1)
-                pbar.set_postfix(postfix)
+                pbar.set_postfix(post)
 
-    logger.info(f"Deconvolution complete with {postfix}")
-    ic(f"Deconvolution complete. Check `{_LOG_DECONVOLUTION['file']}` for details.")
+    logger.info(f"Deconvolution complete with {post}.")
+    print(f"Deconvolution complete. Check {_LOG_DECONVOLUTION['file']} for details.")
 
 
 def _get_response(method, resp, station):
@@ -87,64 +83,6 @@ def _get_response(method, resp, station):
     raise ValueError(f"Unknown method: {method}")
 
 
-def deconvolution_last_subdirs(
-    src_dir: str | Path,
-    resp: str,
-    resample: float | None = None,
-    method: str = "obspy",
-    pattern: str = "*.sac",
-    remove_src: bool = True,
-    max_workers: int = 5,
-) -> None:
-    """deconvolution last subdirs (days)
-
-    remove response by last directories
-
-    Parameters:
-        src_dir: source directory
-        resp: response file
-        resample: resample to given delta if it isn't None.
-        method: method of data processing
-        pattern: search pattern at last subdirectory
-        remove_src: remove source file after deconvolution
-        max_workers: max workers for parallel processing
-    """
-    logger = get_logger(**_LOG_DECONVOLUTION)
-    logger.info(f"Deconvolution started with {method=}")
-
-    src_path = Path(src_dir)
-    last_subdirs = pather.find_last_subdirs(src_path)
-    total_dirs = len(last_subdirs)
-    logger.info(f"Found {total_dirs} dirs.")
-
-    # read response if method is obspy
-    inv = obspy.read_inventory(resp) if method == "obspy" else resp
-
-    # remove response
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                deconv_by_method(method),
-                subdir,
-                pattern,
-                _get_response(method, inv, subdir.parent.parent.name),
-                resample,
-                remove_src,
-            )
-            for subdir in last_subdirs
-        }
-        with tqdm(total=total_dirs, desc="Processing") as pbar:
-            postfix = {"success": 0, "failed": 0}
-            for future in as_completed(futures):
-                result = future.result()
-                postfix[result] += 1
-                pbar.update(1)
-                pbar.set_postfix(postfix)
-
-    logger.info(f"Deconvolution complete with {postfix}")
-    ic(f"Deconvolution complete. Check {_LOG_DECONVOLUTION['file']}")
-
-
 def deconv_by_method(method) -> Callable:
     if method == "obspy":
         return obspy_deconv
@@ -153,10 +91,12 @@ def deconv_by_method(method) -> Callable:
     raise ValueError(f"Unknown method: {method}")
 
 
-def obspy_deconv(dir: Path, pattern, inv, resample, remove_src: bool) -> str:
+def obspy_deconv(dir: Path, pattern, inv, resample, remove_src: bool):
     logger = get_logger(**_LOG_DECONVOLUTION)
-    flag = "success"
+    total = 0
+    failed = 0
     for target in dir.rglob(pattern):
+        total += 1
         try:
             st = stream_removed_response(target, inv, resample)
             dest_sac = target.with_suffix(".deconv.sac")
@@ -165,14 +105,14 @@ def obspy_deconv(dir: Path, pattern, inv, resample, remove_src: bool) -> str:
             if remove_src:
                 target.unlink()
         except Exception as e:
+            failed += 1
             logger.error(f"Error occered at {target} : {e}")
-            flag = "failed"
 
     time.sleep(0.1)
-    return flag
+    return total, failed
 
 
-def sac_deconv(dir: Path, pattern, pzs, resample, remove_src) -> str:
+def sac_deconv(dir: Path, pattern, pzs, resample, remove_src):
     import os
     import subprocess
 
@@ -180,8 +120,10 @@ def sac_deconv(dir: Path, pattern, pzs, resample, remove_src) -> str:
     if resample is not None:
         logger.warning("resample is not supported by `sac` method")
 
+    total = 0
     cmd = ""
     for target in dir.rglob(pattern):
+        total += 1
         cmd += f"r {target}\n"
         cmd += "rmean; rtr; taper \n"
         cmd += f"trans from pol s {pzs} to none freq 0.003 0.006 1 2\n"
@@ -196,7 +138,7 @@ def sac_deconv(dir: Path, pattern, pzs, resample, remove_src) -> str:
     subprocess.Popen(["sac"], stdin=subprocess.PIPE).communicate(cmd.encode())
 
     time.sleep(0.1)
-    return "success"
+    return total, 0
 
 
 def stream_removed_response(file: str | Path, inv, resample=None):

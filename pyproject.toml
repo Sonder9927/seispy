@@ -10,6 +10,7 @@ dependencies = [
   "marimo>=0.10.12",
   "numpy<2.0",
   "obspy>=1.4.1",
+  "pandas>=2.2.3",
   "rose",
   "tqdm>=4.67.1",
 ]
