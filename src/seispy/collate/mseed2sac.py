@@ -71,6 +71,8 @@ def _process_batch(file_paths: list[Path], dest_dir: Path) -> int:
         try:
             mseed2sac(path, dest_dir)
             success += 1
+        except TypeError as e:
+            logger.error(f"Failed read {path.name}: {str(e)}")
         except Exception as e:
             logger.error(f"Failed {path.name}: {str(e)}", exc_info=True)
     return success

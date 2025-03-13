@@ -34,7 +34,7 @@ def resample_by_station(
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                resample_method(method), sta_path, pattern, delta, remove_src
+                _resample_method(method), sta_path, pattern, delta, remove_src
             )
             for sta_path in station_paths
         }
@@ -51,7 +51,7 @@ def resample_by_station(
     print(f"Resample complete. Check {_LOG_RESAMPLE['file']} for details.")
 
 
-def resample_method(method):
+def _resample_method(method):
     method = method.lower()
     if method == "obspy":
         ic("NOTE: using Obspy `resample` not `decimate`.")
