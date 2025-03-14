@@ -45,6 +45,11 @@ def cut_event_station(event, station, src_dir, dest_dir):
 
     # 获取所有可能相关的SAC文件路径
     sac_files = _target_paths(src_dir, station, year_jdays)
+    if not sac_files:
+        logger.warning(
+            f"No SAC files found for {station=} {event['start']=}."
+            "Expect sac name like `*.{year}.{jday}.*.sac`."
+        )
 
     # 通道数据容器
     channel_data = {}

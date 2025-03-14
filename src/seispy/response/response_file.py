@@ -14,18 +14,17 @@ def download(filename, client="GEONET", network="NZ", **kwargs):
     starttime = kwargs.get("starttime") or UTCDateTime(2023, 1, 1)
     endtime = kwargs.get("endtime") or UTCDateTime(2025, 1, 1)
 
-    client.get_stations(
+    inv = client.get_stations(
         network=network,
         starttime=starttime,
         endtime=endtime,
         level="response",
-        filename=filename,
-        format="xml",
         minlatitude=kwargs.get("minlatitude") or -50,
         maxlatitude=kwargs.get("maxlatitude") or -30,
         minlongitude=kwargs.get("minlongitude") or 160,
         maxlongitude=kwargs.get("maxlongitude") or 180,
     )
+    inv.write(filename, format="STATIONXML")
 
 
 def combine(responses: list[str | Path], outfile=None, starttime=(2023, 1, 1)):
@@ -81,7 +80,12 @@ def filter(resp, station_list: list[str], channel_list=[], outfile=None):
                 continue
             new_sta = sta.copy()
             # 筛选该台站的通道
-            new_sta.channels = [ch for ch in sta.channels if ch.code in channel_list]
+            if channel_list:
+                new_sta.channels = [
+                    ch for ch in sta.channels if ch.code in channel_list
+                ]
+            else:
+                new_sta.channels = sta.channels
 
             # 只保留有有效通道的台站
             if new_sta.channels:

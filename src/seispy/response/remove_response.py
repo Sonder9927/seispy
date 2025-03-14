@@ -77,7 +77,10 @@ def deconvolution_by_station(
 
 def _get_response(method, resp, station):
     if method == "obspy":
-        return resp.select(station=station)
+        inv = resp.select(station=station)
+        if len(inv):
+            return inv
+        raise ValueError(f"{station=} not found in the inventory.")
     if method == "sac":
         return resp
     raise ValueError(f"Unknown method: {method}")
