@@ -18,7 +18,7 @@ def mseed2sac_dir(
     src_dir: Union[Path, str],
     dest_dir: Union[Path, str],
     pattern: str = "*.miniseed",
-    batch_size: int = 2000,
+    batch_size: int = 1000,
     max_workers: int = 5,
 ) -> None:
     """MiniSEED 转 SAC 主函数

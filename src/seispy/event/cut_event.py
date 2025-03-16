@@ -97,6 +97,7 @@ def cut_event_station(event, station, src_dir, dest_dir):
                     "evlo": event["lon"],
                     "evdp": event["depth"],
                     "mag": event["mag"],
+                    "lcalda": 1,
                 }
             )
             out_name = f"{event_name}.{station}.{channel}.sac"
@@ -111,7 +112,7 @@ def _load_events(catalog, time_window):
             "latitude": float,
             "longitude": float,
             "depth": float,
-            "magnitude": float,
+            "mag": float,
         },
     )
 
@@ -216,6 +217,11 @@ def cut_events_per_station(
     with lst.open("w") as f:
         for sac in sta_path.rglob("*.sac"):
             f.write(str(sac) + "\n")
+            st = obspy.read(sac)
+            stats = st[0].stats
+            if not stats.location:
+                stats.location = "10"
+                st.write(str(sac), format="SAC")
 
     cmd_str = "echo shell start\n"
     cmd_str += f"{mktraceiodb} -L {done_lst} -O {db} -LIST {lst} -V\n"
