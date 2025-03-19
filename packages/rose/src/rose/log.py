@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
 from icecream import ic
@@ -23,8 +24,10 @@ def get_logger(name: str, file=None, level=logging.INFO) -> logging.Logger:
         formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
         if file:
+            file_dir = Path("logs")
+            file_dir.mkdir(parents=True, exist_ok=True)
             file_handler = ConcurrentRotatingFileHandler(
-                file, mode="a", maxBytes=1024 * 1024 * 1, backupCount=5
+                file_dir / file, mode="a", maxBytes=1024 * 1024 * 1, backupCount=5
             )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)

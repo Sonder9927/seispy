@@ -4,6 +4,7 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
 import obspy
 import pandas as pd
 from obspy import UTCDateTime
@@ -17,7 +18,7 @@ _LOG_CUTEVENT = {
 }
 
 
-def cut_events(catalog, src_dir, dest_dir, time_window=10800):
+def cut_events(src_dir, dest_dir, catalog, time_window=10800):
     logger = get_logger(**_LOG_CUTEVENT)
     logger.info("Start cutting events...")
 
@@ -28,7 +29,7 @@ def cut_events(catalog, src_dir, dest_dir, time_window=10800):
     logger.info(f"Found {len(stations)} stations and {len(events)} events.")
 
     total = len(events) * len(stations)
-    with tqdm(total=total, desc="Progressing...") as pbar:
+    with tqdm(total=total, desc="Processing...") as pbar:
         for event in events:
             for station in stations:
                 cut_event_station(event, station, src_dir, dest_dir)
@@ -57,12 +58,7 @@ def cut_event_station(event, station, src_dir, dest_dir):
     for sac_path in sac_files:
         try:
             # 精确读取所需数据段
-            st = obspy.read(
-                sac_path,
-                starttime=event["start"],
-                endtime=event["end"],
-                nearest_sample=True,
-            )
+            st = obspy.read(sac_path)
             tr = st[0]
 
             sta = tr.stats.station
@@ -89,19 +85,53 @@ def cut_event_station(event, station, src_dir, dest_dir):
         event_dir.mkdir(parents=True, exist_ok=True)
 
         for channel, stream in channel_data.items():
-            merged_st = stream.merge(method=1, fill_value="interpolate")
-            merged_tr = merged_st[0]
-            merged_tr.stats.sac.update(
-                {
-                    "evla": event["lat"],
-                    "evlo": event["lon"],
-                    "evdp": event["depth"],
-                    "mag": event["mag"],
-                    "lcalda": 1,
-                }
-            )
-            out_name = f"{event_name}.{station}.{channel}.sac"
-            merged_tr.write(str(event_dir / out_name), format="SAC")
+            try:
+                merged_st = stream.merge(method=1, fill_value="interpolate")
+                merged_tr = merged_st[0]
+                trimed_tr = _trimed_trace(merged_tr, event)
+                out_name = f"{event_name}.{station}.{channel}.sac"
+                trimed_tr.write(str(event_dir / out_name), format="SAC")
+            except Exception as e:
+                logger.error(f"{event_name} {channel} failed: {e}")
+
+
+def _trimed_trace(merged_tr, event):
+    # trim to event time window
+    trimed_tr = merged_tr.trim(event["start"], event["end"], nearest_sample=True)
+    delta = np.float32(trimed_tr.stats.delta)
+    merged_tr.stats.delta = delta
+
+    # header information
+    data = trimed_tr.data
+    npts = len(data)
+    if npts == 0:
+        raise ValueError("Empty data after trim")
+    start = trimed_tr.stats.starttime
+    time_offset = start - event["start"]
+
+    # update header
+    header_updates = {
+        "delta": delta,
+        "b": float(time_offset),
+        "e": float(time_offset) + (npts - 1) * delta,
+        "depmin": np.min(data),
+        "depmax": np.max(data),
+        "depmen": np.mean(data),
+        "evla": event["lat"],
+        "evlo": event["lon"],
+        "evdp": event["depth"],
+        "mag": event["mag"],
+        "lcalda": 1,
+        "nzyear": start.year,
+        "nzjday": start.julday,
+        "nzhour": start.hour,
+        "nzmin": start.minute,
+        "nzsec": start.second,
+        "nzmsec": start.microsecond // 1000,
+    }
+
+    trimed_tr.stats.sac.update(header_updates)
+    return trimed_tr
 
 
 def _load_events(catalog, time_window):
@@ -118,7 +148,7 @@ def _load_events(catalog, time_window):
 
     events = []
     for _, row in df.iterrows():
-        starttime = UTCDateTime(row["time"].isoformat())
+        starttime = UTCDateTime(int(row["time"].timestamp()))  # 对齐到整数秒
 
         events.append(
             {

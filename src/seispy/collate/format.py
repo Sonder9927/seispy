@@ -71,17 +71,13 @@ def format_per_event(event_data, src_path, dest_path, pattern, stations_dict):
             # station info
             sac.stla = station_info["latitude"]
             sac.stlo = station_info["longitude"]
-            if station_info.get("elevation"):
-                sac.stel = station_info["elevation"]
-            if station_info.get("depth"):
-                sac.stdp = station_info["depth"]
+            sac.stel = station_info.get("elevation", -12345)
+            sac.stdp = station_info.get("depth", -12345)
             # event info
             sac.evla = event_info["latitude"]
             sac.evlo = event_info["longitude"]
-            if event_info.get("elevation"):
-                sac.evel = event_info["elevation"]
-            if event_info.get("depth"):
-                sac.evdp = event_info["depth"]
+            sac.evel = event_info.get("elevation", -12345)
+            sac.evdp = event_info.get("depth", -12345)
             sac.mag = event_info["mag"]
             sac.lcalda = 1  # 0=FALSE, 1=TRUE
 
