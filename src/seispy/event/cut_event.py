@@ -18,20 +18,19 @@ _LOG_CUTEVENT = {
 }
 
 
-def cut_events(src_dir, dest_dir, catalog, time_window=10800):
+def cut_events(src_dir, dest_dir, event_csv, station_csv=None, time_window=10800):
     logger = get_logger(**_LOG_CUTEVENT)
     logger.info("Start cutting events...")
 
-    # load events
-    events = _load_events(catalog, time_window)
-    # get all stations under src_dir
-    stations = [d.name for d in Path(src_dir).iterdir() if d.is_dir()]
+    # load events and stations
+    events = _load_events(event_csv, time_window)
+    stations = _load_stations(src_dir, station_csv)
     logger.info(f"Found {len(stations)} stations and {len(events)} events.")
 
     total = len(events) * len(stations)
     with tqdm(total=total, desc="Processing...") as pbar:
-        for event in events:
-            for station in stations:
+        for station in stations:
+            for event in events:
                 cut_event_station(event, station, src_dir, dest_dir)
                 pbar.update(1)
     logger.info("Cut events complete.")
@@ -45,14 +44,15 @@ def cut_event_station(event, station, src_dir, dest_dir):
     year_jdays = _calculate_julian_dates(event["start"], event["end"])
 
     # 获取所有可能相关的SAC文件路径
-    sac_files = _target_paths(src_dir, station, year_jdays)
+    station_name = station["station"]
+    sac_files = _target_paths(src_dir, station_name, year_jdays)
     if not sac_files:
         logger.warning(
-            f"No SAC files found for {station=} {event['start']=}."
+            f"No SAC files found for {station_name=} {event['start']=}."
             "Expect sac name like `*.{year}.{jday}.*.sac`."
         )
 
-    # 通道数据容器
+    # collect all channels data
     channel_data = {}
 
     for sac_path in sac_files:
@@ -63,7 +63,7 @@ def cut_event_station(event, station, src_dir, dest_dir):
 
             sta = tr.stats.station
             # check station
-            if sta != station:
+            if sta != station["station"]:
                 logger.error(f"File name mismatch: {sac_path}.")
                 continue
 
@@ -78,7 +78,7 @@ def cut_event_station(event, station, src_dir, dest_dir):
         except Exception as e:
             logger.error(f"Error processing file {sac_path}: {e}")
 
-    # 保存结果
+    # save channel data
     if channel_data:
         event_name = event["start"].strftime("%Y%m%d%H%M%S")
         event_dir = Path(dest_dir) / event_name
@@ -88,28 +88,32 @@ def cut_event_station(event, station, src_dir, dest_dir):
             try:
                 merged_st = stream.merge(method=1, fill_value="interpolate")
                 merged_tr = merged_st[0]
-                trimed_tr = _trimed_trace(merged_tr, event)
-                out_name = f"{event_name}.{station}.{channel}.sac"
+                trimed_tr = _trimed_trace(merged_tr, event, station)
+                out_name = f"{event_name}.{station_name}.{channel}.sac"
                 trimed_tr.write(str(event_dir / out_name), format="SAC")
             except Exception as e:
                 logger.error(f"{event_name} {channel} failed: {e}")
 
 
-def _trimed_trace(merged_tr, event):
+def _trimed_trace(merged_tr, event, station):
+    # delta
+    delta = np.float16(merged_tr.stats.delta)
+    merged_tr.stats.delta = delta
     # trim to event time window
     trimed_tr = merged_tr.trim(event["start"], event["end"], nearest_sample=True)
-    delta = np.float32(trimed_tr.stats.delta)
-    merged_tr.stats.delta = delta
 
     # header information
     data = trimed_tr.data
     npts = len(data)
+    delta = trimed_tr.stats.delta
     if npts == 0:
         raise ValueError("Empty data after trim")
     start = trimed_tr.stats.starttime
     time_offset = start - event["start"]
 
     # update header
+    if not trimed_tr.stats.location:
+        trimed_tr.stats.location = "10"  # khole
     header_updates = {
         "delta": delta,
         "b": float(time_offset),
@@ -117,17 +121,25 @@ def _trimed_trace(merged_tr, event):
         "depmin": np.min(data),
         "depmax": np.max(data),
         "depmen": np.mean(data),
-        "evla": event["lat"],
-        "evlo": event["lon"],
-        "evdp": event["depth"],
-        "mag": event["mag"],
-        "lcalda": 1,
         "nzyear": start.year,
         "nzjday": start.julday,
         "nzhour": start.hour,
         "nzmin": start.minute,
         "nzsec": start.second,
         "nzmsec": start.microsecond // 1000,
+        # necessary info of event
+        "evla": event["latitude"],
+        "evlo": event["longitude"],
+        "evdp": event["depth"],
+        "mag": event["mag"],
+        "lcalda": 1,
+        # optional info of station
+        "stla": station.get("latitude", -12345),
+        "stlo": station.get("longitude", -12345),
+        "stel": station.get("elevation", -12345),
+        "stdp": station.get("depth", -12345),
+        # 参考时间 o 等
+        # "o": 0.0,
     }
 
     trimed_tr.stats.sac.update(header_updates)
@@ -154,13 +166,39 @@ def _load_events(catalog, time_window):
             {
                 "start": starttime,
                 "end": starttime + time_window,
-                "lat": float(row["latitude"]),
-                "lon": float(row["longitude"]),
+                "latitude": float(row["latitude"]),
+                "longitude": float(row["longitude"]),
                 "depth": float(row["depth"]),
                 "mag": float(row["mag"]),
             }
         )
     return events
+
+
+def _load_stations(src_dir, station_csv) -> list[dict]:
+    """
+    加载并验证台站信息
+
+    :param src_dir: 数据目录，子目录名为台站名
+    :param station_csv: 可选台站元数据CSV文件
+    :return: 台站信息字典列表
+    :raises ValueError: 当CSV与目录台站不匹配时
+    """
+    # get all stations under src_dir
+    target_stations = {d.name for d in Path(src_dir).iterdir() if d.is_dir()}
+    if not station_csv:
+        return [{"station": s} for s in target_stations]
+
+    df = pd.read_csv(station_csv)
+    csv_stations = set(df["station"])
+    miss_in_csv = target_stations - csv_stations
+    if miss_in_csv:
+        raise ValueError(
+            f"{len(miss_in_csv)} stations missiong in CSV:"
+            f"{sorted(miss_in_csv)[:5]}{'...' if len(miss_in_csv) > 5 else ''}"
+        )
+
+    return df[df["station"].isin(target_stations)].to_dict("records")
 
 
 def _calculate_julian_dates(start, end):
