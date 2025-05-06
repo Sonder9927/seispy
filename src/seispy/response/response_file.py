@@ -27,13 +27,13 @@ def download(filename, client="GEONET", network="NZ", **kwargs):
     inv.write(filename, format="STATIONXML")
 
 
-def combine(responses: list[str | Path], outfile=None, starttime=(2023, 1, 1)):
+def combine(responses: list[str | Path], outfile=None, starttime=None):
     """combine response files
 
     Parameters:
         responses: response files
-        outfile (_type_): output file
-        starttime (tuple, optional): shift stream's starttime.
+        outfile: output file
+        starttime: shift stream's starttime.
 
     Raises:
         ValueError: No response found

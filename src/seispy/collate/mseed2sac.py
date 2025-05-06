@@ -92,8 +92,7 @@ def mseed2sac(mseed_path: Path, dest_base: Path) -> None:
         dest_path = build_destination_path(
             network=stats.network,
             station=stats.station,
-            year=start.year,
-            julday=start.julday,
+            starttime=start,
             location=stats.location,
             channel=stats.channel,
             data_quality=stats.mseed.dataquality,
@@ -107,8 +106,7 @@ def mseed2sac(mseed_path: Path, dest_base: Path) -> None:
 def build_destination_path(
     network: str,
     station: str,
-    year: int,
-    julday: int,
+    starttime: obspy.UTCDateTime,
     location: str,
     channel: str,
     data_quality: str,
@@ -138,12 +136,16 @@ def build_destination_path(
     >>> print(path)
     /data/XB/CD01/2023/123/XB.CD01.00.HHZ.D.2023.123.sac
     """
+    year = starttime.year
+    julday = starttime.julday
+    time = starttime.strftime("%H%M%S")
+
     dir_path = dest_base / f"{network}/{station}/{year:04d}/{julday:03d}"
     dir_path.mkdir(parents=True, exist_ok=True)
 
     filename = (
         f"{network}.{station}.{location}.{channel}."
-        f"{data_quality}.{year:04d}.{julday:03d}.sac"
+        f"{data_quality}.{year:04d}.{julday:03d}.{time}.sac"
     )
     return dir_path / filename
 
