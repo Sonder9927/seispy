@@ -26,7 +26,7 @@ def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):
     src_path = Path(src)
     dest_path = Path(dest)
     targets = pather.glob(src_path, "rglob", [pattern])
-    batch_size = 10_000
+    batch_size = 2000
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(_copy_targets, batch, dest_path)
