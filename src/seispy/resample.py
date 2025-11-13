@@ -98,9 +98,9 @@ def resample_to(
     src_path = Path(src_dir)
     dest_path = Path(dest_dir)
     sac_paths = list(src_path.rglob(pattern))
-    bs = 2000
+    bs = 5000
     batches = [sac_paths[i: i + bs] for i in range(0, len(sac_paths), bs)]
-    total = len(batches)
+    total = len(sac_paths)
     logger.info(f"Found {total} stations.")
 
     # resample
@@ -111,8 +111,8 @@ def resample_to(
         }
         with tqdm(total=total, desc="Resampling...") as pbar:
             for future in as_completed(futures):
-                future.result()
-                pbar.update(1)
+                batch_num = future.result()
+                pbar.update(batch_num)
 
 
 def sac_resample_to(
@@ -136,6 +136,7 @@ def sac_resample_to(
     subprocess.Popen(["sac"], stdin=subprocess.PIPE).communicate(cmd.encode())
 
     time.sleep(0.1)
+    return len(sacs)
 
 
 def sac_resample_by_station(
