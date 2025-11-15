@@ -92,13 +92,13 @@ def resample_to(
     deltas: List[float],
     pattern: str = "*.sac",
     max_workers: int = 5,
+    bs: int = 1000,
 ):
     logger = get_logger(**_LOG_RESAMPLE)
     logger.info(f"Start resample from {src_dir} to {dest_dir} with {deltas=}.")
     src_path = Path(src_dir)
     dest_path = Path(dest_dir)
     sac_paths = list(src_path.rglob(pattern))
-    bs = 5000
     batches = [sac_paths[i: i + bs] for i in range(0, len(sac_paths), bs)]
     total = len(sac_paths)
     logger.info(f"Found {total} stations.")
