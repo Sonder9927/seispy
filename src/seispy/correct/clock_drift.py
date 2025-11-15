@@ -106,9 +106,9 @@ def _process_station_drift_correction(station_name, station_drift, src_dir, dest
                 continue
             
             # 应用钟漂修正
-            st_corrected = _apply_drift_correction(st, station_drift)
+            _apply_drift_correction(st, station_drift)
             # 保存修正后的文件
-            _save_corrected_file(st_corrected, sac_file, src_dir, dest_dir)
+            _save_corrected_file(st, sac_file, src_dir, dest_dir)
 
             processed_count += 1
             
@@ -119,22 +119,17 @@ def _process_station_drift_correction(station_name, station_drift, src_dir, dest
     
 
 def _apply_drift_correction(stream, station_drift):
-    corrected_stream = stream.copy()
     drift_rate = station_drift["drift_rate"]
     reference_time = station_drift["reference_time"]
     
-    for tr in corrected_stream:
-        # 原始开始时间
-        original_start = tr.stats.starttime
-        
-        # 使用中间时间计算钟漂修正
-        mid_time = (tr.stats.starttime + tr.stats.endtime) / 2
-        mid_drift_correction = drift_rate * (mid_time - reference_time)
+    for tr in stream:
+        # 计算中间时间和钟漂修正量
+        duration = tr.stats.endtime - tr.stats.starttime
+        mid_time = tr.stats.starttime + duration / 2
+        correction = drift_rate * (mid_time - reference_time)
         
         # 直接平移整个trace的时间轴
-        tr.stats.starttime = original_start - mid_drift_correction
-    
-    return corrected_stream
+        tr.stats.starttime -= correction
 
 
 def _save_corrected_file(stream, original_file, src_dir, dest_dir):
