@@ -122,17 +122,19 @@ def format_head(
 
     # 准备事件任务列表
     event_tasks = []
+    unvalid_events = []
     for event_dir in [d.name for d in src_path.iterdir() if d.is_dir()]:
         event_info = events_dict.get(event_dir)
-        if not event_info:
-            raise ValueError(f"Warning: No event info found for {event_dir}")
-        event_tasks.append({"event_dir": event_dir, "event_info": event_info})
+        if event_info:
+            event_tasks.append({"event_dir": event_dir, "event_info": event_info})
+        else:
+            unvalid_events.append(event_dir)
 
     logger = get_logger(**_LOG_FORMAT)
     logger.info("=" * 60)
     logger.info(f"Starting SAC head format from {src_dir} to {dest_dir}.")
     logger.info(f"Search pattern: {pattern}.")
-    logger.info(f"Found {len(event_tasks)} events to process")
+    logger.info(f"Found {len(event_tasks)} events to process. {len(unvalid_events)} no info events skipped.")
     logger.info(
         "**Notice: this will replace station and channel in head "
         "with name in the sac file.**"
