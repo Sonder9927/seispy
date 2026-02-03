@@ -3,8 +3,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
-from obspy import UTCDateTime
 import pandas as pd
+from obspy import UTCDateTime
 from rose import get_logger
 from tqdm import tqdm
 
@@ -15,7 +15,7 @@ _LOG_DRIFT = {
 }
 
 
-def correct_clock_drift(src_dir: str, dest_dir:str, drift_csv: str, max_workers: int = 4):
+def clock_drift(src_dir: str, dest_dir:str, drift_csv: str, max_workers: int = 4):
     """correct clocke drift
 
     Args:
@@ -147,9 +147,9 @@ def _save_corrected_file(stream, original_file, src_dir, dest_dir):
 if __name__ == "__main__":
     src_directory = "/path/to/your/data"  
     dest_directory = "/path/to/corrected/data" 
-    drift_file = "/path/to/drift.csv"  
+    drift_file = "/path/to/cor.csv"  
     
-    correct_clock_drift(
+    clock_drift(
         src_dir=src_directory,
         dest_dir=dest_directory,
         drift_csv=drift_file,
