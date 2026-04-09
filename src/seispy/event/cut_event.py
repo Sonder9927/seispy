@@ -27,7 +27,6 @@ def cut_events(src_dir, dest_dir, event_csv, station_csv=None, time_window=10800
     stations = _load_stations(src_dir, station_csv)
     logger.info(f"Found {len(stations)} stations and {len(events)} events.")
 
-
     total = len(events) * len(stations)
     with tqdm(total=total, desc="Processing...") as pbar:
         for station in stations:
@@ -304,9 +303,4 @@ def cut_events_per_station(
 
 
 if __name__ == "__main__":
-    cut_events(
-        "data/events.csv",
-        "data/1A",
-        "data/events",
-        10800,
-    )
+    cut_events("data/events.csv", "data/1A", "data/events", 10800)

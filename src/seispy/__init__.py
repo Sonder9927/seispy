@@ -1,5 +1,5 @@
 # from seispy.download import IRISDownloader
-from seispy import collate, correct, event, response
+from seispy import collate, correct, event, response, mcmc
 from seispy.resample import resample_by_station, resample_to
 
 
@@ -15,4 +15,5 @@ __all__ = [
     "collate",
     "event",
     "correct",
+    "mcmc",
 ]
