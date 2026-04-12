@@ -6,7 +6,6 @@ from typing import List
 
 import numpy as np
 import pandas as pd
-import pygmt
 import xarray as xr
 from tqdm import tqdm
 
@@ -59,6 +58,7 @@ def load_config(path: str) -> Config:
 
 
 def surface_grid(xyz, region, spacing):
+    import pygmt
     # ---------- blockmean ----------
     xyz_block = pygmt.blockmean(data=xyz, region=region, spacing=spacing)
 
