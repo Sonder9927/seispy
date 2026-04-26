@@ -43,6 +43,7 @@ class Config:
     NPTS_cBs: int
     NPTS_mBs: int
     reference_model: str
+    reference_water_model: str
 
 
 def load_config(path: str) -> Config:
@@ -215,7 +216,7 @@ class GridWriter:
 
         lines = [str(grid.sm_on), str(grid.ice_on), str(grid.water_on)]
         if grid.water_on:
-            lines.append(f"{grid.water_depth}")
+            lines.append(str(grid.water_depth))
 
         lines.append(str(grid.sedi_on))
         lines += [
@@ -223,8 +224,11 @@ class GridWriter:
             str(self.cfg.zmax_Bs),
             str(self.cfg.NPTS_cBs),
             str(self.cfg.NPTS_mBs),
-            self.cfg.reference_model,
         ]
+        if grid.water_on:
+            lines.append(self.cfg.reference_water_model)
+        else:
+            lines.append(self.cfg.reference_model)
 
         if grid.sedi_on:
             r = sr["sediment"]
