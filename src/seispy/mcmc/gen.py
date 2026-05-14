@@ -34,6 +34,7 @@ class Config:
     paths: Paths
     water_threshold: float
     sediment_threshold: float
+    sediment_vs: List[List[float]]
     crust_vs: List[List[float]]
     mantle_vs: List[List[float]]
     sm_on: int
@@ -240,8 +241,8 @@ class GridWriter:
         lines.append(f"0 1 {grid.moho_depth - r:.2f} {grid.moho_depth + r:.2f}")
 
         if grid.sedi_on:
-            lines.append("10 1 1.0 3.5")
-            lines.append("10 2 1.0 3.5")
+            for i, svs in enumerate(self.cfg.sediment_vs):
+                lines.append(f"10 {i + 1} {svs[0]} {svs[1]}")
 
         for i, cvs in enumerate(self.cfg.crust_vs):
             lines.append(f"1 {i + 1} {cvs[0]} {cvs[1]}")
@@ -385,4 +386,4 @@ def init_grids(config_path, max_workers=1):
 
 
 if __name__ == "__main__":
-    init_grids("data/mcmc/mcmc-config.json", max_workers=4)
+    init_grids("data/mcmc/config.json", max_workers=4)
