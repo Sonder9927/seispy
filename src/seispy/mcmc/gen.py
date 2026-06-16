@@ -1,36 +1,92 @@
+"""Generate MCMC input files on a regular geographic grid.
+
+Main workflow
+-------------
+1. Read config.json.
+2. Interpolate topography, sediment thickness, Moho depth, and merged
+   phase-dispersion data onto the inversion grid.
+3. Attach the nearest reference Vs(z) profile to each grid point.
+4. Write phase.input, para.inp, and input_DRAM_T.dat for every grid point.
+
+The dispersion workflow assumes that TPWT, ANT, or other measurements have
+already been merged into one CSV file, e.g. phase_dispersion.csv.
+
+The B-spline Vs search bounds are constrained by the top-level
+``vs_constraints`` block in config.json.
+"""
+
+from __future__ import annotations
+
 import json
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 from tqdm import tqdm
 
-
 # =========================
 # CONFIG
 # =========================
 
 
-@dataclass
+@dataclass(frozen=True)
 class Paths:
     etopo_nc: str
     sed_xyz: str
     moho_xyz: str
-    tpwt_csv: str
-    ant_csv: str
     vs_model_csv: str
     output_dir: str
+    phase_dispersion_csv: str | None = None
+
+    # Kept only for backward-compatible config files. The optimized workflow
+    # does not merge TPWT and ANT inside this script.
+    tpwt_csv: str | None = None
+    ant_csv: str | None = None
 
 
-@dataclass
+
+
+@dataclass(frozen=True)
+class VsConstraints:
+    """Physical constraints for Vs-related search bounds in para.inp.
+
+    Values are in km/s, except ``deep_vs_gradient`` which is in
+    (km/s)/km and is used only when the reference Vs model is shallower
+    than the requested B-spline representative depth.
+
+    ``*_soft_max`` and ``*_hard_max`` define a two-level upper-bound
+    strategy.  If the reference Vs center is below the soft maximum, the
+    normal search interval is used.  If it lies between the soft and hard
+    maxima, the upper bound is clipped at the hard maximum.  If it exceeds
+    the hard maximum, the search window is shifted below the hard maximum
+    so that the original search width is largely preserved.
+    """
+
+    sediment_max: float = 3.0
+    crust_soft_max: float = 3.9
+    crust_hard_max: float = 4.0
+    mantle_soft_max: float = 4.9
+    mantle_hard_max: float = 5.0
+    deep_vs_gradient: float = 0.001
+    mantle_not_slower_than_crust: bool = True
+    min_vs_bound_width: float = 0.05
+
+
+@dataclass(frozen=True)
+class PhaseConstraints:
+    """Quality-control settings for writing phase.input."""
+
+    minimum_periods: int = 5
+    skip_if_insufficient: bool = True
+
+@dataclass(frozen=True)
 class Config:
     region: List[float]
     grid_spacing: float
-    periods: List[float]
     search_radius: dict
     mcmc_params: dict
     paths: Paths
@@ -47,21 +103,137 @@ class Config:
     NPTS_mBs: int
     reference_model: str
     reference_water_model: str
+    default_phase_sigma: float = 0.02
+    min_dispersion_points: int = 3
+    dispersion_method: str = "surface"
+    vs_constraints: VsConstraints = field(default_factory=VsConstraints)
+    phase_constraints: PhaseConstraints = field(default_factory=PhaseConstraints)
 
 
 def load_config(path: str | Path) -> Config:
-    with open(path) as f:
+    with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
+
     raw["paths"] = Paths(**raw["paths"])
+
+    # Backward compatibility: older config files may still contain
+    # crust_max/mantle_max.  Treat them as hard maxima and infer soft maxima.
+    vs_raw = dict(raw.get("vs_constraints", {}))
+    if "crust_max" in vs_raw and "crust_hard_max" not in vs_raw:
+        vs_raw["crust_hard_max"] = vs_raw.pop("crust_max")
+        vs_raw.setdefault("crust_soft_max", float(vs_raw["crust_hard_max"]) - 0.1)
+    if "mantle_max" in vs_raw and "mantle_hard_max" not in vs_raw:
+        vs_raw["mantle_hard_max"] = vs_raw.pop("mantle_max")
+        vs_raw.setdefault("mantle_soft_max", float(vs_raw["mantle_hard_max"]) - 0.1)
+    raw["vs_constraints"] = VsConstraints(**vs_raw)
+    raw["phase_constraints"] = PhaseConstraints(**raw.get("phase_constraints", {}))
     return Config(**raw)
 
 
 # =========================
-# GRID
+# BASIC DATA CONTAINERS
 # =========================
 
 
-def surface_grid(xyz, region, spacing):
+VsProfile = Tuple[np.ndarray, np.ndarray]
+
+
+@dataclass(frozen=True)
+class PhaseCurve:
+    periods: np.ndarray
+    velocities: np.ndarray
+    sigmas: np.ndarray
+
+    def __len__(self) -> int:
+        return len(self.periods)
+
+    def rows(self) -> Iterable[tuple[float, float, float]]:
+        return zip(self.periods, self.velocities, self.sigmas)
+
+    def valid_rows(self, default_sigma: float) -> list[tuple[float, float, float]]:
+        """Return only rows that can be safely written to phase.input.
+
+        Invalid periods or velocities are skipped.  Invalid sigmas are replaced
+        by ``default_sigma`` so that phase.input never contains NaN/Inf values.
+        """
+
+        if not np.isfinite(default_sigma) or default_sigma <= 0:
+            raise ValueError(f"default_sigma must be positive and finite, got {default_sigma}")
+
+        valid: list[tuple[float, float, float]] = []
+        for period, velocity, sigma in self.rows():
+            if not np.isfinite(period) or not np.isfinite(velocity):
+                continue
+            if not np.isfinite(sigma) or sigma <= 0:
+                sigma = default_sigma
+            valid.append((float(period), float(velocity), float(sigma)))
+        return valid
+
+
+@dataclass(frozen=True)
+class GridData:
+    lon: np.ndarray
+    lat: np.ndarray
+    topo: np.ndarray
+    sediment: np.ndarray
+    moho: np.ndarray
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.topo.shape
+
+    @property
+    def size(self) -> int:
+        return self.topo.size
+
+    def flat_values(self):
+        return zip(
+            self.lon.ravel(),
+            self.lat.ravel(),
+            self.topo.ravel(),
+            self.sediment.ravel(),
+            self.moho.ravel(),
+        )
+
+
+@dataclass(frozen=True)
+class PhaseCube:
+    periods: np.ndarray
+    velocities: np.ndarray  # shape: (n_period, ny, nx)
+    sigmas: np.ndarray      # shape: (n_period, ny, nx)
+
+    def curve_at_flat_index(self, k: int) -> PhaseCurve:
+        return PhaseCurve(
+            periods=self.periods.copy(),
+            velocities=self.velocities.reshape(len(self.periods), -1)[:, k].copy(),
+            sigmas=self.sigmas.reshape(len(self.periods), -1)[:, k].copy(),
+        )
+
+
+# =========================
+# GRID AND INTERPOLATION
+# =========================
+
+
+def grid_coordinates(region: list[float], spacing: float, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    xmin, xmax, ymin, ymax = region
+    ny, nx = shape
+    lon_values = np.linspace(xmin, xmax, nx)
+    lat_values = np.linspace(ymin, ymax, ny)
+    return np.meshgrid(lon_values, lat_values)
+
+
+def surface_grid(xyz, region, spacing, method: str = "surface"):
+    """Interpolate xyz values onto a regular grid with PyGMT.
+
+    Parameters
+    ----------
+    method
+        ``surface`` uses GMT surface after blockmean. ``xyz2grd`` directly
+        grids the block-averaged values. ``auto`` uses surface unless the grid
+        is too small.
+    """
+
     import pygmt
 
     xyz_block = pygmt.blockmean(data=xyz, region=region, spacing=spacing)
@@ -70,26 +242,37 @@ def surface_grid(xyz, region, spacing):
     nx = int((xmax - xmin) / spacing + 1)
     ny = int((ymax - ymin) / spacing + 1)
 
+    if method not in {"surface", "xyz2grd", "auto"}:
+        raise ValueError("method must be 'surface', 'xyz2grd', or 'auto'")
+
+    use_xyz2grd = method == "xyz2grd" or (method == "auto" and (nx < 4 or ny < 4))
+    if use_xyz2grd:
+        return pygmt.xyz2grd(data=xyz_block, region=region, spacing=spacing)
+
     if nx < 4 or ny < 4:
         print(f"[WARN] small grid ({nx}x{ny}), fallback xyz2grd")
         return pygmt.xyz2grd(data=xyz_block, region=region, spacing=spacing)
 
-    return pygmt.surface(
-        data=xyz_block,
-        region=region,
-        spacing=spacing,
-        tension=0.35,
-    )
+    return pygmt.surface(data=xyz_block, region=region, spacing=spacing, tension=0.35)
 
 
-def load_etopo_xyz(path, region):
+def load_etopo_xyz(path: str | Path, region: list[float]) -> np.ndarray:
     ds = xr.open_dataset(path)
-    da = ds["z"].sel(
-        lon=slice(region[0], region[1]),
-        lat=slice(region[2], region[3]),
-    )
+    da = ds["z"].sel(lon=slice(region[0], region[1]), lat=slice(region[2], region[3]))
     df = da.to_dataframe(name="z").reset_index()
     return df[["lon", "lat", "z"]].values
+
+
+def build_spatial_grid(cfg: Config) -> GridData:
+    region = cfg.region
+    spacing = cfg.grid_spacing
+
+    topo = surface_grid(load_etopo_xyz(cfg.paths.etopo_nc, region), region, spacing, method="surface").values
+    sediment = surface_grid(np.loadtxt(cfg.paths.sed_xyz), region, spacing, method="surface").values
+    moho = surface_grid(np.loadtxt(cfg.paths.moho_xyz), region, spacing, method="surface").values
+
+    lon, lat = grid_coordinates(region, spacing, topo.shape)
+    return GridData(lon=lon, lat=lat, topo=topo, sediment=sediment, moho=moho)
 
 
 # =========================
@@ -97,55 +280,116 @@ def load_etopo_xyz(path, region):
 # =========================
 
 
-def build_dispersion(csv_path, periods, region, spacing):
-    df = pd.read_csv(csv_path)
-    out = {}
+def _pick_column(df: pd.DataFrame, candidates: tuple[str, ...], name: str) -> str:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    raise ValueError(
+        f"phase_dispersion_csv missing {name} column. "
+        f"Expected one of {candidates}, got {list(df.columns)}"
+    )
 
-    for period in periods:
-        sub = df[df["period"] == period]
 
-        if sub.empty:
-            out[period] = (None, None)
-            continue
+def read_phase_dispersion_csv(path: str | Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
 
-        phv_grid = surface_grid(
-            sub[["longitude", "latitude", "phv"]].values, region, spacing
-        )
+    lon_col = _pick_column(df, ("lon", "longitude", "x"), "longitude")
+    lat_col = _pick_column(df, ("lat", "latitude", "y"), "latitude")
+    period_col = _pick_column(df, ("period", "T"), "period")
+    phv_col = _pick_column(df, ("phv", "phase_velocity", "c", "vel", "velocity"), "phase velocity")
+    std_col = next((col for col in ("std", "sigma", "uncertainty", "error") if col in df.columns), None)
 
-        if "std" in sub.columns:
-            std_grid = surface_grid(
-                sub[["longitude", "latitude", "std"]].values, region, spacing
-            )
-            std_values = std_grid.values * 0.001
-        else:
-            std_values = None
+    columns = [lon_col, lat_col, period_col, phv_col] + ([std_col] if std_col else [])
+    out = df[columns].copy()
+    rename = {lon_col: "lon", lat_col: "lat", period_col: "period", phv_col: "phv"}
+    if std_col:
+        rename[std_col] = "std"
+    out = out.rename(columns=rename)
 
-        out[period] = (phv_grid.values, std_values)
+    for col in out.columns:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(subset=["lon", "lat", "period", "phv"])
 
+    if "std" not in out.columns:
+        out["std"] = np.nan
+    if out.empty:
+        raise ValueError(f"No valid phase-dispersion data found in {path}")
     return out
 
 
-def safe_nanmean(arrays):
-    arrays = [a for a in arrays if a is not None]
-    if not arrays:
-        return None
-    stacked = np.asarray(arrays, dtype=float)
-    if np.all(np.isnan(stacked)):
-        return None
-    return np.nanmean(stacked, axis=0)
+def build_phase_cube(cfg: Config, grid_shape: tuple[int, int]) -> PhaseCube:
+    csv_path = cfg.paths.phase_dispersion_csv
+    if csv_path is None:
+        raise ValueError(
+            "paths.phase_dispersion_csv is required. "
+            "Provide the merged phase_dispersion.csv in config.json."
+        )
 
+    df = read_phase_dispersion_csv(csv_path)
 
-def fuse_dispersion(tpwt, ant, periods):
-    phv_out = {}
-    std_out = {}
+    # periods 完全由 phase_dispersion.csv 决定
+    periods = np.asarray(
+        sorted(df["period"].dropna().unique()),
+        dtype=float,
+    )
 
-    for period in periods:
-        phv1, std1 = tpwt.get(period, (None, None))
-        phv2, std2 = ant.get(period, (None, None))
-        phv_out[period] = safe_nanmean([phv1, phv2])
-        std_out[period] = safe_nanmean([std1, std2])
+    if len(periods) == 0:
+        raise ValueError(f"No valid periods found in {csv_path}")
 
-    return phv_out, std_out
+    ny, nx = grid_shape
+
+    velocities = np.full(
+        (len(periods), ny, nx),
+        np.nan,
+        dtype=float,
+    )
+
+    sigmas = np.full(
+        (len(periods), ny, nx),
+        float(cfg.default_phase_sigma),
+        dtype=float,
+    )
+
+    for ip, period in enumerate(periods):
+        sub = df[np.isclose(df["period"], period)].copy()
+
+        if len(sub) < int(cfg.min_dispersion_points):
+            print(
+                f"[WARN] period={period:g}: "
+                f"only {len(sub)} valid points, write NaN"
+            )
+            sigmas[ip, :, :] = np.nan
+            continue
+
+        phv_grid = surface_grid(
+            sub[["lon", "lat", "phv"]].values,
+            cfg.region,
+            cfg.grid_spacing,
+            method=cfg.dispersion_method,
+        )
+
+        velocities[ip, :, :] = phv_grid.values
+
+        valid_std = sub[
+            np.isfinite(sub["std"])
+        ].copy()
+
+        if len(valid_std) >= int(cfg.min_dispersion_points):
+            std_grid = surface_grid(
+                valid_std[["lon", "lat", "std"]].values,
+                cfg.region,
+                cfg.grid_spacing,
+                method=cfg.dispersion_method,
+            )
+            sigmas[ip, :, :] = std_grid.values
+        else:
+            sigmas[ip, :, :] = float(cfg.default_phase_sigma)
+
+    return PhaseCube(
+        periods=periods,
+        velocities=velocities,
+        sigmas=sigmas,
+    )
 
 
 # =========================
@@ -153,13 +397,11 @@ def fuse_dispersion(tpwt, ant, periods):
 # =========================
 
 
-VsProfile = Tuple[np.ndarray, np.ndarray]
-
-
 @dataclass
 class VsModelLibrary:
     points: np.ndarray
-    profiles: List[VsProfile]
+    profiles: list[VsProfile]
+    _tree: Any = None
 
     @classmethod
     def from_csv(cls, path: str | Path) -> "VsModelLibrary":
@@ -169,81 +411,45 @@ class VsModelLibrary:
         if missing:
             raise ValueError(f"vs_model_csv missing columns: {sorted(missing)}")
 
-        points = []
-        profiles = []
+        points: list[tuple[float, float]] = []
+        profiles: list[VsProfile] = []
+
         for (x, y), group in df.groupby(["x", "y"], sort=False):
             g = group.sort_values("z")
             depth = np.abs(g["z"].to_numpy(dtype=float))
             velocity = g["vs"].to_numpy(dtype=float)
+            valid = np.isfinite(depth) & np.isfinite(velocity)
+            depth = depth[valid]
+            velocity = velocity[valid]
+            if len(depth) < 2:
+                continue
             order = np.argsort(depth)
             points.append((float(x), float(y)))
             profiles.append((depth[order], velocity[order]))
 
         if not profiles:
-            raise ValueError(f"No Vs profiles found in {path}")
+            raise ValueError(f"No valid Vs profiles found in {path}")
 
-        return cls(points=np.asarray(points, dtype=float), profiles=profiles)
+        lib = cls(points=np.asarray(points, dtype=float), profiles=profiles)
+        lib._build_tree()
+        return lib
+
+    def _build_tree(self) -> None:
+        try:
+            from scipy.spatial import cKDTree
+
+            self._tree = cKDTree(self.points)
+        except Exception:
+            self._tree = None
 
     def nearest_profile(self, lon: float, lat: float) -> VsProfile:
-        dist2 = (self.points[:, 0] - lon) ** 2 + (self.points[:, 1] - lat) ** 2
+        query = np.asarray([lon, lat], dtype=float)
+        if self._tree is not None:
+            _, idx = self._tree.query(query)
+            return self.profiles[int(idx)]
+
+        dist2 = np.sum((self.points - query) ** 2, axis=1)
         return self.profiles[int(np.argmin(dist2))]
-
-
-# =========================
-# FORTRAN-COMPATIBLE B-SPLINE DEPTHS
-# =========================
-
-
-def fortran_knot_vector(n_basis: int, z_top: float, z_bottom: float, factor: float) -> np.ndarray:
-    """Reproduce the knot vector construction in lf_B_spline.f.
-
-    In the original Fortran call, degBs = nBs - 1.  We keep the same
-    variable name as spline_order to avoid changing the source logic.
-    """
-
-    if n_basis < 2:
-        raise ValueError("n_basis must be >= 2")
-    if z_bottom <= z_top:
-        raise ValueError(f"Invalid spline interval: {z_top} -> {z_bottom}")
-
-    spline_order = n_basis - 1
-    n_knots = n_basis + spline_order
-    span = z_bottom - z_top
-    knots = np.empty(n_knots, dtype=float)
-
-    # Left nearly repeated knots.
-    for i in range(1, spline_order + 1):
-        knots[i - 1] = z_top + (i - 1) * span / 100000.0
-
-    # Interior knots with geometric spacing controlled by factor.
-    n_temp = n_knots - 2 * spline_order + 1
-    if n_temp <= 0:
-        raise ValueError("Invalid knot configuration")
-
-    if factor != 1:
-        step0 = span * (factor - 1.0) / (factor**n_temp - 1.0)
-    else:
-        step0 = span / n_temp
-
-    for i in range(spline_order + 1, n_knots - spline_order + 1):
-        knots[i - 1] = step0 * factor ** (i - spline_order - 1) + z_top
-
-    # Right nearly repeated knots.
-    for i in range(n_knots - spline_order + 1, n_knots + 1):
-        knots[i - 1] = z_bottom - span / 100000.0 * (n_knots - i)
-
-    return knots
-
-
-def greville_depths(n_basis: int, z_top: float, z_bottom: float, factor: float) -> np.ndarray:
-    """Return Greville representative depths from Fortran-style knots."""
-
-    knots = fortran_knot_vector(n_basis, z_top, z_bottom, factor)
-    spline_order = n_basis - 1
-    depths = []
-    for j in range(n_basis):
-        depths.append(np.mean(knots[j + 1 : j + spline_order + 1]))
-    return np.asarray(depths, dtype=float)
 
 
 def velocity_at_depths(
@@ -251,16 +457,6 @@ def velocity_at_depths(
     depths: np.ndarray,
     deep_extrapolation_gradient: float = 0.001,
 ) -> np.ndarray:
-    """Interpolate/extrapolate Vs at requested depths.
-
-    Depths inside the available Vs model are linearly interpolated.
-    Depths deeper than the maximum depth of the Vs model are extrapolated
-    from the deepest available Vs using a small positive gradient.  The
-    actual cutoff depth is read from vs_model.csv for each profile, while
-    requested depths come from the Greville depths defined by config.json
-    intervals such as Moho -> zmax_Bs.
-    """
-
     model_depth, model_vs = profile
     valid = np.isfinite(model_depth) & np.isfinite(model_vs)
     if valid.sum() < 2:
@@ -282,11 +478,59 @@ def velocity_at_depths(
 
 
 # =========================
-# MODEL
+# FORTRAN-COMPATIBLE B-SPLINE DEPTHS
 # =========================
 
 
-@dataclass
+def fortran_knot_vector(n_basis: int, z_top: float, z_bottom: float, factor: float) -> np.ndarray:
+    """Reproduce the knot vector construction in the original Fortran B-spline code."""
+
+    if n_basis < 2:
+        raise ValueError("n_basis must be >= 2")
+    if z_bottom <= z_top:
+        raise ValueError(f"Invalid spline interval: {z_top} -> {z_bottom}")
+
+    spline_order = n_basis - 1
+    n_knots = n_basis + spline_order
+    span = z_bottom - z_top
+    knots = np.empty(n_knots, dtype=float)
+
+    for i in range(1, spline_order + 1):
+        knots[i - 1] = z_top + (i - 1) * span / 100000.0
+
+    n_temp = n_knots - 2 * spline_order + 1
+    if n_temp <= 0:
+        raise ValueError("Invalid knot configuration")
+
+    if factor != 1:
+        step0 = span * (factor - 1.0) / (factor**n_temp - 1.0)
+    else:
+        step0 = span / n_temp
+
+    for i in range(spline_order + 1, n_knots - spline_order + 1):
+        knots[i - 1] = step0 * factor ** (i - spline_order - 1) + z_top
+
+    for i in range(n_knots - spline_order + 1, n_knots + 1):
+        knots[i - 1] = z_bottom - span / 100000.0 * (n_knots - i)
+
+    return knots
+
+
+def greville_depths(n_basis: int, z_top: float, z_bottom: float, factor: float) -> np.ndarray:
+    knots = fortran_knot_vector(n_basis, z_top, z_bottom, factor)
+    spline_order = n_basis - 1
+    return np.asarray(
+        [np.mean(knots[j + 1 : j + spline_order + 1]) for j in range(n_basis)],
+        dtype=float,
+    )
+
+
+# =========================
+# MODEL PARAMETERIZATION
+# =========================
+
+
+@dataclass(frozen=True)
 class MCMCGrid:
     lon: float
     lat: float
@@ -310,15 +554,13 @@ class MCMCGrid:
 
     @property
     def sediment_on(self) -> int:
-        # The original Fortran code cannot safely handle water_on=1 and sedi_on=1.
-        # Therefore water has priority and sediment is disabled in water-covered cells.
+        # Water and sediment are kept mutually exclusive for the Fortran input format.
         if self.water_on:
             return 0
         return int(self.sediment_thickness > self.sediment_threshold)
 
     @property
     def shallow_interface_depth(self) -> float:
-        """Top of the crustal B-spline interval in the original Fortran logic."""
         if self.water_on:
             return self.water_depth
         if self.sediment_on:
@@ -338,9 +580,31 @@ class MCMCGrid:
                 f"({self.crustal_spline_top})"
             )
         if self.max_depth <= self.moho_depth:
-            raise ValueError(
-                f"Max depth ({self.max_depth}) must be deeper than Moho ({self.moho_depth})"
-            )
+            raise ValueError(f"Max depth ({self.max_depth}) must be deeper than Moho ({self.moho_depth})")
+
+
+def make_mcmc_grid(
+    lon: float,
+    lat: float,
+    topo: float,
+    sediment: float,
+    moho: float,
+    vs_profile: VsProfile,
+    cfg: Config,
+) -> MCMCGrid:
+    return MCMCGrid(
+        lon=float(lon),
+        lat=float(lat),
+        smooth_on=cfg.sm_on,
+        ice_on=cfg.ice_on,
+        water_depth=max(0.0, -float(topo) / 1000.0),
+        sediment_thickness=max(0.0, float(sediment)),
+        moho_depth=abs(float(moho)),
+        max_depth=float(cfg.zmax_Bs),
+        water_threshold=float(cfg.water_threshold),
+        sediment_threshold=float(cfg.sediment_threshold),
+        vs_profile=vs_profile,
+    )
 
 
 # =========================
@@ -353,27 +617,34 @@ class GridWriter:
         self.base_dir = base_dir
         self.cfg = cfg
 
-    def write(self, grid: MCMCGrid, phase):
+    def write(self, grid: MCMCGrid, phase: PhaseCurve) -> bool:
         grid.validate()
+        rows = phase.valid_rows(default_sigma=float(self.cfg.default_phase_sigma))
+        minimum_periods = int(self.cfg.phase_constraints.minimum_periods)
+        if self.cfg.phase_constraints.skip_if_insufficient and len(rows) < minimum_periods:
+            print(
+                f"[SKIP] {grid.folder_name}: only {len(rows)} valid dispersion points "
+                f"(< {minimum_periods})"
+            )
+            return False
+
         out = self.base_dir / grid.folder_name
         out.mkdir(parents=True, exist_ok=True)
 
-        self._write_phase(out, phase)
+        self._write_phase(out, rows)
         self._write_para(out, grid)
         self._write_dram(out)
+        return True
 
-    def _write_phase(self, out: Path, phase):
-        lines = [f"1 {len(phase)}"]
-        for period, velocity, sigma in phase:
-            if velocity is None or not np.isfinite(velocity):
-                lines.append(f"2 1 1 {period:>3} NaN NaN")
-            else:
-                lines.append(f"2 1 1 {period:>3} {velocity:.4f} {sigma:.4f}")
+    def _write_phase(self, out: Path, rows: list[tuple[float, float, float]]) -> None:
+        lines = [f"1 {len(rows)}"]
+        for period, velocity, sigma in rows:
+            lines.append(f"2 1 1 {period:>3g} {velocity:.4f} {sigma:.4f}")
+
         lines += ["0", "0"]
-        (out / "phase.input").write_text("\n".join(lines))
+        (out / "phase.input").write_text("\n".join(lines), encoding="utf-8")
 
     def _vs_perturbation(self, section: str, n_coeff: int) -> np.ndarray:
-        """Return search half-widths for B-spline coefficients."""
         candidates: list[Any] = [
             self.cfg.search_radius.get(f"{section}_vs"),
             self.cfg.search_radius.get(section),
@@ -389,14 +660,85 @@ class GridWriter:
         if arr.ndim == 0:
             return np.full(n_coeff, float(arr))
         if arr.size != n_coeff:
-            raise ValueError(
-                f"search_radius for {section} has {arr.size} values, expected {n_coeff}"
-            )
+            raise ValueError(f"search_radius for {section} has {arr.size} values, expected {n_coeff}")
         return arr
 
     def _deep_vs_gradient(self) -> float:
-        """Vs gradient used only below the deepest depth in vs_model_csv."""
-        return float(self.cfg.search_radius.get("deep_vs_gradient", 0.001))
+        return float(self.cfg.vs_constraints.deep_vs_gradient)
+
+    def _section_vs_limits(self, section: str) -> tuple[float, float, float]:
+        """Return lower, soft upper, and hard upper limits for a Vs section."""
+
+        vc = self.cfg.vs_constraints
+        if section == "sediment":
+            lower, soft, hard = 0.0, float(vc.sediment_max), float(vc.sediment_max)
+        elif section == "crust":
+            lower, soft, hard = 0.0, float(vc.crust_soft_max), float(vc.crust_hard_max)
+        elif section == "mantle":
+            lower, soft, hard = 0.0, float(vc.mantle_soft_max), float(vc.mantle_hard_max)
+        else:
+            raise ValueError(f"Unknown Vs section: {section}")
+
+        if not all(np.isfinite(v) for v in (lower, soft, hard)) or hard <= lower or soft > hard:
+            raise ValueError(
+                f"Invalid {section} Vs limits: lower={lower}, soft_max={soft}, hard_max={hard}"
+            )
+        return lower, soft, hard
+
+    def _repair_interval_width(
+        self, lower: np.ndarray, upper: np.ndarray, vs_min: float, vs_max: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Ensure each interval has at least min_vs_bound_width when possible."""
+
+        min_width = float(self.cfg.vs_constraints.min_vs_bound_width)
+        if not np.isfinite(min_width) or min_width < 0:
+            raise ValueError(f"min_vs_bound_width must be non-negative, got {min_width}")
+        if min_width == 0:
+            return lower, upper
+
+        too_narrow = (upper - lower) < min_width
+        if np.any(too_narrow):
+            upper[too_narrow] = np.minimum(vs_max, lower[too_narrow] + min_width)
+            still_too_narrow = (upper - lower) < min_width
+            lower[still_too_narrow] = np.maximum(vs_min, upper[still_too_narrow] - min_width)
+        return lower, upper
+
+    def _apply_vs_limits(
+        self,
+        centers: np.ndarray,
+        half_widths: np.ndarray,
+        section: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Apply soft/hard physical limits to B-spline coefficient bounds.
+
+        For centers below the soft maximum, the ordinary [center-r, center+r]
+        interval is used.  For centers in the soft zone, only the upper side is
+        clipped to the hard maximum.  For centers exceeding the hard maximum,
+        the interval is shifted below the hard maximum so that the full width
+        2*r is mostly retained.  For example, center=4.2, r=0.3, hard=4.0
+        gives [3.4, 4.0].
+        """
+
+        vs_min, soft_max, hard_max = self._section_vs_limits(section)
+        centers = np.asarray(centers, dtype=float)
+        half_widths = np.asarray(half_widths, dtype=float)
+
+        lower = centers - half_widths
+        upper = centers + half_widths
+
+        above_hard = centers > hard_max
+        if np.any(above_hard):
+            upper[above_hard] = hard_max
+            lower[above_hard] = hard_max - 2.0 * half_widths[above_hard]
+
+        soft_zone = (centers > soft_max) & (centers <= hard_max)
+        if np.any(soft_zone):
+            upper[soft_zone] = np.minimum(upper[soft_zone], hard_max)
+
+        lower = np.clip(lower, vs_min, hard_max)
+        upper = np.clip(upper, vs_min, hard_max)
+        lower, upper = self._repair_interval_width(lower, upper, vs_min, hard_max)
+        return lower, upper
 
     def _bspline_bounds(
         self,
@@ -413,12 +755,56 @@ class GridWriter:
             deep_extrapolation_gradient=self._deep_vs_gradient(),
         )
         half_widths = self._vs_perturbation(section, n_coeff)
-
-        lower = np.maximum(0.0, centers - half_widths)
-        upper = centers + half_widths
+        lower, upper = self._apply_vs_limits(centers, half_widths, section)
         return list(zip(lower, upper))
 
-    def _write_para(self, out: Path, grid: MCMCGrid):
+    def _apply_mantle_crust_constraint(
+        self,
+        crust_bounds: list[tuple[float, float]],
+        mantle_bounds: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Optionally prevent the shallowest mantle from being slower than crust.
+
+        This is deliberately mild: only the first mantle coefficient lower
+        bound is required to be no smaller than the last crustal lower bound.
+        It avoids an obvious Moho velocity reversal without forcing the whole
+        mantle interval to be faster than every crustal coefficient.
+        """
+
+        if not self.cfg.vs_constraints.mantle_not_slower_than_crust:
+            return mantle_bounds
+        if not crust_bounds or not mantle_bounds:
+            return mantle_bounds
+
+        _, _, mantle_max = self._section_vs_limits("mantle")
+        min_width = float(self.cfg.vs_constraints.min_vs_bound_width)
+        crust_last_lower = float(crust_bounds[-1][0])
+
+        adjusted = list(mantle_bounds)
+        low, high = adjusted[0]
+        low = max(float(low), crust_last_lower)
+        high = max(float(high), low + min_width)
+        high = min(high, mantle_max)
+        if high - low < min_width:
+            low = max(0.0, high - min_width)
+        adjusted[0] = (low, high)
+        return adjusted
+
+    def _constrain_sediment_vs_bounds(self, bounds: list[float]) -> tuple[float, float]:
+        """Constrain sediment Vs bounds using cfg.vs_constraints.sediment_max."""
+
+        if len(bounds) != 2:
+            raise ValueError(f"sediment_vs bounds must have two values, got {bounds}")
+        vs_min, _, vs_max = self._section_vs_limits("sediment")
+        low = float(np.clip(bounds[0], vs_min, vs_max))
+        high = float(np.clip(bounds[1], vs_min, vs_max))
+        if high <= low:
+            min_width = float(self.cfg.vs_constraints.min_vs_bound_width)
+            high = min(vs_max, low + min_width)
+            low = max(vs_min, high - min_width)
+        return low, high
+
+    def _write_para(self, out: Path, grid: MCMCGrid) -> None:
         sr = self.cfg.search_radius
 
         lines = [str(grid.smooth_on), str(grid.ice_on), str(grid.water_on)]
@@ -432,9 +818,7 @@ class GridWriter:
             f"{self.cfg.NPTS_cBs}",
             f"{self.cfg.NPTS_mBs}",
         ]
-        lines.append(
-            self.cfg.reference_water_model if grid.water_on else self.cfg.reference_model
-        )
+        lines.append(self.cfg.reference_water_model if grid.water_on else self.cfg.reference_model)
 
         if grid.sediment_on:
             radius = float(sr.get("sediment", 0.0))
@@ -443,14 +827,12 @@ class GridWriter:
             lines.append(f"0 0 {low:.2f} {high:.2f}")
 
         moho_radius = float(sr.get("moho", 0.0))
-        lines.append(
-            f"0 1 {grid.moho_depth - moho_radius:.2f} "
-            f"{grid.moho_depth + moho_radius:.2f}"
-        )
+        lines.append(f"0 1 {grid.moho_depth - moho_radius:.2f} {grid.moho_depth + moho_radius:.2f}")
 
         if grid.sediment_on:
             for i, bounds in enumerate(self.cfg.sediment_vs, start=1):
-                lines.append(f"10 {i} {bounds[0]:.3f} {bounds[1]:.3f}")
+                low, high = self._constrain_sediment_vs_bounds(bounds)
+                lines.append(f"10 {i} {low:.3f} {high:.3f}")
 
         crust_bounds = self._bspline_bounds(
             grid=grid,
@@ -469,149 +851,81 @@ class GridWriter:
             n_coeff=len(self.cfg.mantle_vs),
             section="mantle",
         )
+        mantle_bounds = self._apply_mantle_crust_constraint(crust_bounds, mantle_bounds)
         for i, (low, high) in enumerate(mantle_bounds, start=1):
             lines.append(f"2 {i} {low:.3f} {high:.3f}")
 
-        (out / "para.inp").write_text("\n".join(lines))
+        (out / "para.inp").write_text("\n".join(lines), encoding="utf-8")
 
-    def _write_dram(self, out: Path):
+    def _write_dram(self, out: Path) -> None:
         p = self.cfg.mcmc_params
-        header = " | ".join(
-            [
-                "mineos_on",
-                "nsimu",
-                "inm",
-                "nc",
-                "adaptint",
-                "imat_fac",
-                "verbo",
-                "dodr",
-                "sigma2",
-                "DRscale",
-                "iresetad",
-                "id_run",
-                "biasfac",
-                "burn_in",
-                "out_best",
-            ]
-        )
-        values = (
-            f"{p['mineos_on']} {p['nsimu']} {p['inm']} {p['nc']} {p['adaptint']} "
-            f"{p['imat_fac']} {p['verbo']} {p['dodr']} {p['sigma2']} "
-            f"{p['DRscale']} {p['iresetad']} {p['id_run']} {p['biasfac']} "
-            f"{p['burn_in']} {p['out_best']}"
-        )
-        (out / "input_DRAM_T.dat").write_text(header + "\n" + values)
+        keys = [
+            "mineos_on",
+            "nsimu",
+            "inm",
+            "nc",
+            "adaptint",
+            "imat_fac",
+            "verbo",
+            "dodr",
+            "sigma2",
+            "DRscale",
+            "iresetad",
+            "id_run",
+            "biasfac",
+            "burn_in",
+            "out_best",
+        ]
+        header = " | ".join(keys)
+        values = " ".join(str(p[key]) for key in keys)
+        (out / "input_DRAM_T.dat").write_text(header + "\n" + values, encoding="utf-8")
 
 
 # =========================
-# RUNNER
+# TASK BUILDING AND RUNNER
 # =========================
 
 
-def normalize_phase_values(phase_values):
-    phase = []
-    for period, velocity, sigma in phase_values:
-        if velocity is None or not np.isfinite(velocity):
-            phase.append((period, None, None))
-        else:
-            if sigma is None or not np.isfinite(sigma):
-                sigma = 0.02
-            phase.append((period, float(velocity), float(sigma)))
-    return phase
+def build_tasks(cfg: Config, grid_data: GridData, phase_cube: PhaseCube, vs_library: VsModelLibrary):
+    tasks = []
+    for k, (lon, lat, topo, sediment, moho) in enumerate(grid_data.flat_values()):
+        phase = phase_cube.curve_at_flat_index(k)
+        vs_profile = vs_library.nearest_profile(float(lon), float(lat))
+        tasks.append((lon, lat, topo, sediment, moho, phase, vs_profile, cfg))
+    return tasks
 
 
-def process_point(args):
-    lon, lat, topo, sediment, moho, phase_values, vs_profile, cfg = args
-
-    grid = MCMCGrid(
-        lon=float(lon),
-        lat=float(lat),
-        smooth_on=cfg.sm_on,
-        ice_on=cfg.ice_on,
-        water_depth=max(0.0, -float(topo) / 1000.0),
-        sediment_thickness=max(0.0, float(sediment)),
-        moho_depth=abs(float(moho)),
-        max_depth=float(cfg.zmax_Bs),
-        water_threshold=float(cfg.water_threshold),
-        sediment_threshold=float(cfg.sediment_threshold),
-        vs_profile=vs_profile,
-    )
-
-    return grid, normalize_phase_values(phase_values)
+def process_point(args) -> tuple[MCMCGrid, PhaseCurve]:
+    lon, lat, topo, sediment, moho, phase, vs_profile, cfg = args
+    grid = make_mcmc_grid(lon, lat, topo, sediment, moho, vs_profile, cfg)
+    return grid, phase
 
 
-def init_grids(config_path, max_workers=1):
+def init_grids(config_path: str | Path, max_workers: int = 1) -> None:
     cfg = load_config(config_path)
     base_dir = Path(cfg.paths.output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    topo = surface_grid(
-        load_etopo_xyz(cfg.paths.etopo_nc, cfg.region), cfg.region, cfg.grid_spacing
-    ).values
-    sediment = surface_grid(
-        np.loadtxt(cfg.paths.sed_xyz), cfg.region, cfg.grid_spacing
-    ).values
-    moho = surface_grid(
-        np.loadtxt(cfg.paths.moho_xyz), cfg.region, cfg.grid_spacing
-    ).values
-
-    ny, nx = topo.shape
-    lon_values = np.linspace(cfg.region[0], cfg.region[1], nx)
-    lat_values = np.linspace(cfg.region[2], cfg.region[3], ny)
-    lon_grid, lat_grid = np.meshgrid(lon_values, lat_values)
-
-    tpwt = build_dispersion(cfg.paths.tpwt_csv, cfg.periods, cfg.region, cfg.grid_spacing)
-    ant = build_dispersion(cfg.paths.ant_csv, cfg.periods, cfg.region, cfg.grid_spacing)
-    phv, std = fuse_dispersion(tpwt, ant, cfg.periods)
-
+    grid_data = build_spatial_grid(cfg)
+    phase_cube = build_phase_cube(cfg, grid_data.shape)
     vs_library = VsModelLibrary.from_csv(cfg.paths.vs_model_csv)
-
-    lon_flat = lon_grid.ravel()
-    lat_flat = lat_grid.ravel()
-    topo_flat = topo.ravel()
-    sediment_flat = sediment.ravel()
-    moho_flat = moho.ravel()
-
-    tasks = []
-    for k, (lon, lat) in enumerate(zip(lon_flat, lat_flat)):
-        phase_values = []
-        for period in cfg.periods:
-            velocity_grid = phv.get(period)
-            sigma_grid = std.get(period)
-
-            if velocity_grid is None:
-                phase_values.append((period, None, None))
-            else:
-                velocity = velocity_grid.ravel()[k]
-                sigma = None if sigma_grid is None else sigma_grid.ravel()[k]
-                phase_values.append((period, velocity, sigma))
-
-        tasks.append(
-            (
-                lon,
-                lat,
-                topo_flat[k],
-                sediment_flat[k],
-                moho_flat[k],
-                phase_values,
-                vs_library.nearest_profile(lon, lat),
-                cfg,
-            )
-        )
+    tasks = build_tasks(cfg, grid_data, phase_cube, vs_library)
 
     writer = GridWriter(base_dir, cfg)
 
     if max_workers > 1:
-        with ProcessPoolExecutor(max_workers) as executor:
-            for grid, phase in tqdm(executor.map(process_point, tasks), total=len(tasks)):
-                writer.write(grid, phase)
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            iterator = executor.map(process_point, tasks)
+            written = 0
+            for grid, phase in tqdm(iterator, total=len(tasks)):
+                written += int(writer.write(grid, phase))
     else:
+        written = 0
         for task in tqdm(tasks):
             grid, phase = process_point(task)
-            writer.write(grid, phase)
+            written += int(writer.write(grid, phase))
 
-    print("MCMC grids initialized.")
+    print(f"MCMC grids initialized. Written grids: {written}/{len(tasks)}")
 
 
 if __name__ == "__main__":
