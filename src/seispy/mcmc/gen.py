@@ -3,8 +3,9 @@
 Main workflow
 -------------
 1. Read config.json.
-2. Interpolate topography, sediment thickness, Moho depth, and merged
-   phase-dispersion data onto the inversion grid.
+2. Interpolate topography, sediment thickness, and Moho depth onto the
+   inversion grid.  Phase-dispersion data are mapped directly from
+   phase_dispersion.csv without spatial interpolation.
 3. Attach the nearest reference Vs(z) profile to each grid point.
 4. Write phase.input, para.inp, and input_DRAM_T.dat for every grid point.
 
@@ -27,6 +28,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from tqdm import tqdm
+
 
 # =========================
 # CONFIG
@@ -103,9 +105,11 @@ class Config:
     NPTS_mBs: int
     reference_model: str
     reference_water_model: str
+    # phase_dispersion.csv usually stores std in m/s, while phase.input expects km/s.
+    # Missing std values are replaced only when writing phase.input.
     default_phase_sigma: float = 0.02
+    phase_sigma_scale: float = 0.001
     min_dispersion_points: int = 3
-    dispersion_method: str = "surface"
     vs_constraints: VsConstraints = field(default_factory=VsConstraints)
     phase_constraints: PhaseConstraints = field(default_factory=PhaseConstraints)
 
@@ -125,8 +129,20 @@ def load_config(path: str | Path) -> Config:
     if "mantle_max" in vs_raw and "mantle_hard_max" not in vs_raw:
         vs_raw["mantle_hard_max"] = vs_raw.pop("mantle_max")
         vs_raw.setdefault("mantle_soft_max", float(vs_raw["mantle_hard_max"]) - 0.1)
+    # Ignore stale/experimental keys in config.json, e.g. soft_margin.
+    from dataclasses import fields
+
+    valid_vs_keys = {f.name for f in fields(VsConstraints)}
+    vs_raw = {k: v for k, v in vs_raw.items() if k in valid_vs_keys}
     raw["vs_constraints"] = VsConstraints(**vs_raw)
-    raw["phase_constraints"] = PhaseConstraints(**raw.get("phase_constraints", {}))
+
+    phase_raw = dict(raw.get("phase_constraints", {}))
+    valid_phase_keys = {f.name for f in fields(PhaseConstraints)}
+    phase_raw = {k: v for k, v in phase_raw.items() if k in valid_phase_keys}
+    raw["phase_constraints"] = PhaseConstraints(**phase_raw)
+
+    # periods are now a data property inferred from phase_dispersion.csv.
+    raw.pop("periods", None)
     return Config(**raw)
 
 
@@ -317,7 +333,26 @@ def read_phase_dispersion_csv(path: str | Path) -> pd.DataFrame:
     return out
 
 
-def build_phase_cube(cfg: Config, grid_shape: tuple[int, int]) -> PhaseCube:
+def _coord_key(value: float, ndigits: int = 6) -> float:
+    """Stable key for matching CSV coordinates to the inversion grid."""
+
+    return round(float(value), ndigits)
+
+
+def build_phase_cube(cfg: Config, grid_data: GridData) -> PhaseCube:
+    """Build a PhaseCube by direct lon-lat-period mapping, without interpolation.
+
+    The merged phase_dispersion.csv is treated as the final dispersion data
+    source.  A phase value is assigned to a grid point only when the CSV
+    contains the same lon/lat coordinate.  Missing coordinates remain NaN and
+    will not be written to phase.input.
+
+    The CSV std column is optional.  If present, it is scaled by
+    cfg.phase_sigma_scale.  If absent or invalid for a valid phase velocity,
+    the value remains NaN here and is replaced by cfg.default_phase_sigma only
+    when phase.input is written.
+    """
+
     csv_path = cfg.paths.phase_dispersion_csv
     if csv_path is None:
         raise ValueError(
@@ -326,70 +361,64 @@ def build_phase_cube(cfg: Config, grid_shape: tuple[int, int]) -> PhaseCube:
         )
 
     df = read_phase_dispersion_csv(csv_path)
-
-    # periods 完全由 phase_dispersion.csv 决定
-    periods = np.asarray(
-        sorted(df["period"].dropna().unique()),
-        dtype=float,
-    )
-
+    periods = np.asarray(sorted(df["period"].dropna().unique()), dtype=float)
     if len(periods) == 0:
         raise ValueError(f"No valid periods found in {csv_path}")
 
-    ny, nx = grid_shape
+    ny, nx = grid_data.shape
+    velocities = np.full((len(periods), ny, nx), np.nan, dtype=float)
+    sigmas = np.full((len(periods), ny, nx), np.nan, dtype=float)
 
-    velocities = np.full(
-        (len(periods), ny, nx),
-        np.nan,
-        dtype=float,
-    )
+    lon_values = np.asarray(grid_data.lon[0, :], dtype=float)
+    lat_values = np.asarray(grid_data.lat[:, 0], dtype=float)
+    lon_to_ix = {_coord_key(lon): ix for ix, lon in enumerate(lon_values)}
+    lat_to_iy = {_coord_key(lat): iy for iy, lat in enumerate(lat_values)}
+    period_to_ip = {_coord_key(period): ip for ip, period in enumerate(periods)}
 
-    sigmas = np.full(
-        (len(periods), ny, nx),
-        float(cfg.default_phase_sigma),
-        dtype=float,
-    )
+    data = df.copy()
+    data["lon_key"] = data["lon"].map(_coord_key)
+    data["lat_key"] = data["lat"].map(_coord_key)
+    data["period_key"] = data["period"].map(_coord_key)
 
-    for ip, period in enumerate(periods):
-        sub = df[np.isclose(df["period"], period)].copy()
+    data = data[
+        data["lon_key"].isin(lon_to_ix)
+        & data["lat_key"].isin(lat_to_iy)
+        & data["period_key"].isin(period_to_ip)
+    ].copy()
 
-        if len(sub) < int(cfg.min_dispersion_points):
-            print(
-                f"[WARN] period={period:g}: "
-                f"only {len(sub)} valid points, write NaN"
-            )
-            sigmas[ip, :, :] = np.nan
-            continue
-
-        phv_grid = surface_grid(
-            sub[["lon", "lat", "phv"]].values,
-            cfg.region,
-            cfg.grid_spacing,
-            method=cfg.dispersion_method,
+    if data.empty:
+        raise ValueError(
+            "No phase-dispersion rows match the inversion grid coordinates. "
+            "Check region/grid_spacing and phase_dispersion.csv lon/lat values."
         )
 
-        velocities[ip, :, :] = phv_grid.values
-
-        valid_std = sub[
-            np.isfinite(sub["std"])
-        ].copy()
-
-        if len(valid_std) >= int(cfg.min_dispersion_points):
-            std_grid = surface_grid(
-                valid_std[["lon", "lat", "std"]].values,
-                cfg.region,
-                cfg.grid_spacing,
-                method=cfg.dispersion_method,
-            )
-            sigmas[ip, :, :] = std_grid.values
-        else:
-            sigmas[ip, :, :] = float(cfg.default_phase_sigma)
-
-    return PhaseCube(
-        periods=periods,
-        velocities=velocities,
-        sigmas=sigmas,
+    # If duplicate rows exist at the same lon-lat-period, average them.
+    grouped = (
+        data.groupby(["period_key", "lat_key", "lon_key"], as_index=False)
+        .agg(phv=("phv", "mean"), std=("std", "mean"))
     )
+
+    sigma_scale = float(cfg.phase_sigma_scale)
+    if not np.isfinite(sigma_scale) or sigma_scale <= 0:
+        raise ValueError(f"phase_sigma_scale must be positive and finite, got {sigma_scale}")
+
+    for row in grouped.itertuples(index=False):
+        ip = period_to_ip[row.period_key]
+        iy = lat_to_iy[row.lat_key]
+        ix = lon_to_ix[row.lon_key]
+
+        if np.isfinite(row.phv):
+            velocities[ip, iy, ix] = float(row.phv)
+
+        if np.isfinite(row.std) and row.std > 0:
+            sigmas[ip, iy, ix] = float(row.std) * sigma_scale
+
+    print(
+        f"Loaded phase dispersion directly from {csv_path}: "
+        f"{len(periods)} periods, {len(grouped)} lon-lat-period records mapped."
+    )
+
+    return PhaseCube(periods=periods, velocities=velocities, sigmas=sigmas)
 
 
 # =========================
@@ -907,7 +936,7 @@ def init_grids(config_path: str | Path, max_workers: int = 1) -> None:
     base_dir.mkdir(parents=True, exist_ok=True)
 
     grid_data = build_spatial_grid(cfg)
-    phase_cube = build_phase_cube(cfg, grid_data.shape)
+    phase_cube = build_phase_cube(cfg, grid_data)
     vs_library = VsModelLibrary.from_csv(cfg.paths.vs_model_csv)
     tasks = build_tasks(cfg, grid_data, phase_cube, vs_library)
 
