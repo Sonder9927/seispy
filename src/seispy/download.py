@@ -4,6 +4,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
+import pandas as pd
 from obspy import Stream, UTCDateTime
 from obspy.clients.fdsn import Client
 from obspy.clients.fdsn.header import FDSNNoDataException
@@ -211,24 +212,110 @@ class IRISDownloader:
         print(f"Mission complete. Check {LOG_FILE_DOWNLOAD} for details.")
 
 
-if __name__ == "__main__":
-    # 示例配置
-    config = {
-        "email": "your@email",
-        "token": "your_token",
-        "network": "1U",
-        "start_date": "2024-01-01",
-        "end_date": "2024-01-05",
-        "channel": "BH*",  # 使用通配符下载多个通道
+def download_events_usgs(
+    starttime: str,
+    endtime: str,
+    output_csv: str,
+    minmagnitude: float | None = None,
+    maxmagnitude: float | None = None,
+):
+    """
+    Download earthquake events from USGS using ObsPy and save to CSV.
+
+    Parameters
+    ----------
+    starttime : str
+        Start time, e.g. "2014-01-01".
+    endtime : str
+        End time, e.g. "2015-05-01".
+    output_csv : str
+        Output CSV file path.
+    minmagnitude : float | None
+        Minimum magnitude. If None, no lower magnitude limit is applied.
+    maxmagnitude : float | None
+        Maximum magnitude. If None, no upper magnitude limit is applied.
+    """
+
+    client = Client("USGS")
+
+    query = {
+        "starttime": UTCDateTime(starttime),
+        "endtime": UTCDateTime(endtime),
     }
 
-    # 初始化日志配置（由调用方负责）
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler("download.log"), logging.StreamHandler()],
+    if minmagnitude is not None:
+        query["minmagnitude"] = minmagnitude
+
+    if maxmagnitude is not None:
+        query["maxmagnitude"] = maxmagnitude
+
+    catalog = client.get_events(**query)
+
+    rows = []
+
+    for event in catalog:
+        origin = event.preferred_origin() or event.origins[0]
+        magnitude = event.preferred_magnitude() or event.magnitudes[0]
+
+        rows.append(
+            {
+                "time": origin.time.datetime,
+                "longitude": origin.longitude,
+                "latitude": origin.latitude,
+                "depth": origin.depth / 1000,
+                "magnitude": magnitude.mag,
+                "magnitude_type": magnitude.magnitude_type,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+
+    if not df.empty:
+        df = df.sort_values("time").reset_index(drop=True)
+
+    df.to_csv(output_csv, index=False, encoding="utf-8")
+
+    print(f"Downloaded {len(df)} events.")
+    print(f"Saved to: {output_csv}")
+
+    return df
+
+
+if __name__ == "__main__":
+    df = download_events_usgs(
+        starttime="2014-01-01",
+        endtime="2015-01-01",
+        output_csv="earthquakes.csv",
+        minmagnitude=5.5,
     )
 
-    downloader = IRISDownloader(config)
-    downloader.wave("out_data/")
-    print("任务完成！使用命令 'tail -f download.log' 查看实时日志")
+    print(df.head())
+
+    df = download_events_usgs(
+        starttime="2014-01-01",
+        endtime="2015-01-01",
+        minmagnitude=5.5,
+        output_csv="earthquakes.csv",
+    )
+
+    print(df.head())
+    # # IRISDownloader 示例配置
+    # config = {
+    #     "email": "your@email",
+    #     "token": "your_token",
+    #     "network": "1U",
+    #     "start_date": "2024-01-01",
+    #     "end_date": "2024-01-05",
+    #     "channel": "BH*",  # 使用通配符下载多个通道
+    # }
+
+    # # 初始化日志配置（由调用方负责）
+    # logging.basicConfig(
+    #     level=logging.INFO,
+    #     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    #     handlers=[logging.FileHandler("download.log"), logging.StreamHandler()],
+    # )
+
+    # downloader = IRISDownloader(config)
+    # downloader.wave("out_data/")
+    # print("任务完成！使用命令 'tail -f download.log' 查看实时日志")
