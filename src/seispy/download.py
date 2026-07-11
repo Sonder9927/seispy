@@ -263,7 +263,7 @@ def download_events_usgs(
                 "longitude": origin.longitude,
                 "latitude": origin.latitude,
                 "depth": origin.depth / 1000,
-                "magnitude": magnitude.mag,
+                "mag": magnitude.mag,
                 "magnitude_type": magnitude.magnitude_type,
             }
         )
@@ -291,14 +291,6 @@ if __name__ == "__main__":
 
     print(df.head())
 
-    df = download_events_usgs(
-        starttime="2014-01-01",
-        endtime="2015-01-01",
-        minmagnitude=5.5,
-        output_csv="earthquakes.csv",
-    )
-
-    print(df.head())
     # # IRISDownloader 示例配置
     # config = {
     #     "email": "your@email",

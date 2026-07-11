@@ -111,8 +111,9 @@ def format_head(
     dest_path = Path(dest_dir)
 
     # 读取事件数据
-    events_df = pd.read_csv(events_csv, parse_dates=["time"])
-    events_df["time"] = pd.to_datetime(events_df["time"], utc=True)
+    events_df = pd.read_csv(events_csv)
+    events_df["time"] = pd.to_datetime(events_df["time"], utc=True, errors="coerce")
+    events_df = events_df.dropna(subset=["time"])
     events_df["event_dir"] = events_df["time"].dt.strftime("%Y%m%d%H%M%S")
     events_dict = events_df.set_index("event_dir").to_dict("index")
 
@@ -134,7 +135,9 @@ def format_head(
     logger.info("=" * 60)
     logger.info(f"Starting SAC head format from {src_dir} to {dest_dir}.")
     logger.info(f"Search pattern: {pattern}.")
-    logger.info(f"Found {len(event_tasks)} events to process. {len(unvalid_events)} no info events skipped.")
+    logger.info(
+        f"Found {len(event_tasks)} events to process. {len(unvalid_events)} no info events skipped."
+    )
     logger.info(
         "**Notice: this will replace station and channel in head "
         "with name in the sac file.**"
