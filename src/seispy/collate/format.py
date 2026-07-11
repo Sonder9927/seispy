@@ -112,8 +112,17 @@ def format_head(
 
     # 读取事件数据
     events_df = pd.read_csv(events_csv)
+
+    n_before = len(events_df)
+
     events_df["time"] = pd.to_datetime(events_df["time"], utc=True, errors="coerce")
     events_df = events_df.dropna(subset=["time"])
+
+    if len(events_df) != n_before:
+        print(
+            f"Warning: dropped {n_before - len(events_df)} events due to invalid time format."
+        )
+
     events_df["event_dir"] = events_df["time"].dt.strftime("%Y%m%d%H%M%S")
     events_dict = events_df.set_index("event_dir").to_dict("index")
 

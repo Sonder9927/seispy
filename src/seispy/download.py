@@ -271,7 +271,17 @@ def download_events_usgs(
     df = pd.DataFrame(rows)
 
     if not df.empty:
+        df["time"] = pd.to_datetime(df["time"], utc=True)
+
         df = df.sort_values("time").reset_index(drop=True)
+
+        # 固定输出格式，保留毫秒
+        df["time"] = (
+            df["time"]
+            .dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
+            .str[:23]
+            + "Z"
+        )
 
     df.to_csv(output_csv, index=False, encoding="utf-8")
 
