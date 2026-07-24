@@ -129,7 +129,7 @@ def sac_deconv(dir: Path, pattern, pzs, resample, remove_src):
         total += 1
         cmd += f"r {target}\n"
         cmd += "rmean; rtr; taper \n"
-        cmd += f"trans from pol s {pzs} to none freq 0.003 0.006 1 2\n"
+        cmd += f"trans from pol s {pzs} to none freq 0.004 0.006 30 35\n"
         cmd += "mul 1.0e9 \n"
         if remove_src:
             cmd += "w over \n"
@@ -163,7 +163,7 @@ def stream_removed_response(file: str | Path, inv, resample=None):
         tr.remove_response(
             inventory=inv,
             water_level=None,
-            pre_filt=[0.003, 0.006, 1, 2],
+            pre_filt=[0.004, 0.006, 30, 35],
             output="DISP",
             zero_mean=False,
             taper=False,
