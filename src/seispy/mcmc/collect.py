@@ -14,8 +14,14 @@ def collect_prob_mean(grids_path: Path, vs_path: Path, mml_path: Path) -> None:
     """Extract vs profiles, misfit, moho, and lab depth"""
     vs_list, mml_list = [], []
 
-    for grid_path in grids_path.glob("*0_*0"):
-        lon, lat = map(float, grid_path.name.split("_"))
+    for grid_path in grids_path.iterdir():
+        if not grid_path.is_dir():
+            continue
+
+        try:
+            lon, lat = map(float, grid_path.name.split("_"))
+        except (ValueError, TypeError):
+            continue
 
         # Read vs profile
         df = pd.read_csv(

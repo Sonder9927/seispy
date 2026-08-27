@@ -134,11 +134,11 @@ def build_destination_path(
             Path("/data"), ".sac"
         )
     >>> print(path)
-    /data/XB/CD01/2023/123/XB.CD01.00.HHZ.D.2023.123.sac
+    /data/XB/CD01/2023/123/XB.CD01.00.HHZ.D.2023.123.000001.sac
 
     Note:
-    1. "khole" must be setted.
-    2. Every sac name must be unique for "db" and "done" file
+    1. Location ("khole" in sac head) must be setted.
+    2. Every sac name must be unique for `cutevent`.
     """
     year = starttime.year
     julday = starttime.julday
