@@ -22,6 +22,8 @@ summary = download.download_waveforms(
     channel="BH?",
     output_format="mseed",
     max_workers=2,
+    max_retries=2,
+    retry_backoff=1.0,
     overwrite=False,
 )
 
@@ -35,9 +37,21 @@ Files are written below `data/waveforms/<network>/<station>/<year>/<day>/`.
 The returned summary distinguishes downloaded, existing, no-data, and failed
 requests.
 
+Existing days are checked before a network request is made. MiniSEED uses its
+deterministic output filename. SAC files are matched directly by network,
+station, location, channel, and date, so no bookkeeping files are added to the
+waveform archive. This makes rerunning the same command an efficient way to
+resume an interrupted archive.
+
 !!! tip "Learn with a short interval"
 
     Start with one station and one or two days. Increase the interval and
     `max_workers` only after confirming the service and selectors.
+
+!!! note "Be considerate of public FDSN services"
+
+    More workers are not always faster. Start with 2–5 workers and follow the
+    data provider's usage policy. Temporary request failures are retried with
+    exponential backoff; no-data responses are not retried.
 
 [See all parameters →](../api/download.md#download-waveforms)
