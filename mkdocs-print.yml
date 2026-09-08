@@ -1,0 +1,30 @@
+INHERIT: mkdocs.yml
+
+plugins:
+  - search:
+      lang: en
+  - autorefs
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_section_style: list
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            members_order: source
+            filters: public
+  - print-site:
+      add_to_navigation: true
+      print_page_title: SeisPy Documentation
+      add_print_site_banner: true
+      enumerate_headings: true
+      enumerate_figures: true
+      add_table_of_contents: true
+      toc_title: Contents

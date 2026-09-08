@@ -1,164 +1,329 @@
 import logging
+import os
+import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, Sequence
 
 import obspy
-from icecream import ic
 from rose import get_logger
+from rose.batch import (
+    ReportMixin,
+    auto_save_report,
+    commit_output,
+    create_run_id,
+    temporary_output_path,
+)
 from tqdm import tqdm
 
-_LOG_RESAMPLE = {
-    "name": "resample",
-    "file": "resample.log",
-    "level": logging.INFO,
-}
+_LOG_RESAMPLE = {"name": "resample", "file": "resample.log", "level": logging.INFO}
 
+
+@dataclass(frozen=True)
+class ResampleResult:
+    """A sampled resampling failure."""
+
+    source: Path
+    destination: Path
+    error: str
+
+
+@dataclass(frozen=True)
+class _WorkerSummary:
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    error_samples: tuple[ResampleResult, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResampleSummary(ReportMixin):
+    """Summarize a potentially large resampling run.
+
+    This class is returned by :func:`resample_by_station`; applications
+    normally do not instantiate it directly.
+
+    Attributes:
+        run_id: Unique identifier for the processing run.
+        total: Number of waveform files considered.
+        succeeded: Number of files resampled successfully.
+        failed: Number of files that failed processing.
+        error_samples: Bounded sample of resampling failures.
+        output_dir: Output root, or ``None`` when replacing source files.
+        remove_original: Whether successful outputs replaced their sources.
+        duration_seconds: Total elapsed wall-clock time.
+        report_path: JSON report path when a report was generated.
+
+    Examples:
+        >>> summary = resample_by_station(...)
+        >>> print(f"{summary.succeeded}/{summary.total}")
+    """
+
+    run_id: str
+    total: int
+    succeeded: int
+    failed: int
+    error_samples: tuple[ResampleResult, ...]
+    output_dir: Path | None
+    remove_original: bool
+    duration_seconds: float
+    report_path: Path | None = None
 
 def resample_by_station(
     src_dir: str | Path,
-    delta: float,
+    delta: float | Sequence[float],
     method: str = "obspy",
     pattern: str = "*.sac",
-    remove_src: bool = True,
     max_workers: int = 5,
-) -> None:
-    logger = get_logger(**_LOG_RESAMPLE)
-    logger.info(f"Start resample with {method=} at {src_dir=}.")
-    src_path = Path(src_dir)
-    station_paths = list(src_path.glob("*/"))
-    total = len(station_paths)
-    logger.info(f"Found {total} stations.")
+    *,
+    output_dir: str | Path | None = None,
+    remove_original: bool = False,
+    max_error_samples: int = 20,
+    save_report: bool | None = None,
+) -> ResampleSummary:
+    """Resample SAC files grouped by station.
 
-    # resample
+    ObsPy accepts one target sampling rate. SAC accepts one or more sequential
+    decimation factors. By default files keep their names under a sibling
+    ``<src_dir>_resampled`` directory. ``remove_original=True`` safely replaces
+    each source only after a non-empty temporary result has been written.
+
+    Args:
+        src_dir: Root directory containing one subdirectory per station.
+        delta: Target sampling rate for ObsPy, or SAC decimation factor(s).
+        method: Processing backend, ``"obspy"`` or ``"sac"``.
+        pattern: Recursive file pattern within each station directory.
+        max_workers: Maximum number of station worker processes.
+        output_dir: Optional output root. A sibling directory is used by default.
+        remove_original: Safely replace source files instead of writing a copy.
+        max_error_samples: Maximum number of failures retained in the summary.
+        save_report: Force JSON report creation on or off.
+
+    Returns:
+        Processing counts, sampled errors, output location, and run duration.
+
+    Raises:
+        NotADirectoryError: If ``src_dir`` does not exist.
+        ValueError: If the method, limits, or output policy is invalid.
+
+    Examples:
+        >>> summary = resample_by_station(
+        ...     "data/sac", 1.0, output_dir="data/resampled",
+        ...     remove_original=False,
+        ... )
+        >>> summary.remove_original
+        False
+    """
+    started = time.monotonic()
+    run_id = create_run_id()
+    logger = get_logger(**_LOG_RESAMPLE)
+    method = method.lower()
+    src_path = Path(src_dir).expanduser().resolve()
+    if not src_path.is_dir():
+        raise NotADirectoryError(f"Source directory does not exist: {src_path}")
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+    if max_error_samples < 0:
+        raise ValueError("max_error_samples cannot be negative")
+    values = _normalize_delta(delta, method)
+    worker = _resample_method(method)
+    output_path = _resolve_output_dir(src_path, output_dir, remove_original)
+    worker_sample_limit = min(max_error_samples, 1)
+
+    logger.info(
+        "run_id=%s started method=%s src_dir=%s output_dir=%s "
+        "remove_original=%s delta=%s pattern=%s max_workers=%d",
+        run_id, method, src_path, output_path, remove_original,
+        values, pattern, max_workers,
+    )
+    stations = sorted(path for path in src_path.iterdir() if path.is_dir())
+    batches = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                _resample_method(method), sta_path, pattern, delta, remove_src
-            )
-            for sta_path in station_paths
+                worker, station, pattern, values, src_path, output_path,
+                remove_original, worker_sample_limit
+            ): station
+            for station in stations
         }
-        with tqdm(total=total, desc="Resampling...") as pbar:
-            post = {"total": 0, "failed": 0}
+        with tqdm(total=len(futures), desc="Resampling stations") as pbar:
             for future in as_completed(futures):
-                batch_total, failed = future.result()
-                post["total"] += batch_total
-                post["failed"] += failed
+                station = futures[future]
+                try:
+                    batches.append(future.result())
+                except Exception as exc:
+                    batches.append(_failed_batch(
+                        _input_files(station, pattern), src_path, output_path,
+                        remove_original, exc, worker_sample_limit
+                    ))
                 pbar.update(1)
-                pbar.set_postfix(post)
 
-    logger.info(f"Resample complete. With {post}.")
-    print(f"Resample complete. Check {_LOG_RESAMPLE['file']} for details.")
+    compact = _combine_batches(batches, max_error_samples)
+    summary = ResampleSummary(
+        run_id, compact.total, compact.succeeded, compact.failed,
+        compact.error_samples, output_path, remove_original,
+        round(time.monotonic() - started, 3),
+    )
+    summary = auto_save_report(summary, "resample", summary.failed > 0, save_report)
+    if summary.report_path:
+        logger.info("run_id=%s report=%s", run_id, summary.report_path)
+    logger.info(
+        "run_id=%s completed total=%d succeeded=%d failed=%d duration_seconds=%.3f",
+        run_id, summary.total, summary.succeeded, summary.failed,
+        summary.duration_seconds,
+    )
+    for error in summary.error_samples:
+        logger.error(
+            "run_id=%s source=%s destination=%s error=%s",
+            run_id, error.source, error.destination, error.error,
+        )
+    if summary.failed > len(summary.error_samples):
+        logger.warning(
+            "run_id=%s error_samples_truncated shown=%d total_errors=%d",
+            run_id, len(summary.error_samples), summary.failed,
+        )
+    print(
+        f"Resample complete [{run_id}]: {summary.succeeded} succeeded, "
+        f"{summary.failed} failed."
+    )
+    return summary
 
 
-def _resample_method(method):
-    method = method.lower()
+def _normalize_delta(delta, method):
+    values = (float(delta),) if isinstance(delta, (int, float)) else tuple(delta)
+    if not values or any(value <= 0 for value in values):
+        raise ValueError("delta must contain positive values")
+    if method == "obspy" and len(values) != 1:
+        raise ValueError("the obspy method accepts one target sampling rate")
+    return values
+
+
+def _resample_method(method) -> Callable:
     if method == "obspy":
-        ic("NOTE: using Obspy `resample` not `decimate`.")
         return obspy_resample_by_station
     if method == "sac":
         return sac_resample_by_station
     raise ValueError(f"Unknown method: {method}")
 
 
+def _resolve_output_dir(src_path, output_dir, remove_original):
+    if remove_original:
+        if output_dir is not None:
+            raise ValueError("output_dir cannot be used when remove_original=True")
+        return None
+    destination = (
+        Path(output_dir).expanduser().resolve() if output_dir is not None
+        else src_path.with_name(f"{src_path.name}_resampled")
+    )
+    if destination == src_path or src_path in destination.parents:
+        raise ValueError("output_dir must be outside src_dir")
+    destination.mkdir(parents=True, exist_ok=True)
+    return destination
+
+
+def _destination_for(target, src_root, output_dir, remove_original):
+    if remove_original:
+        return target
+    if output_dir is None:
+        raise ValueError("output_dir is required when remove_original=False")
+    return output_dir / target.relative_to(src_root)
+
+
+def _input_files(directory, pattern):
+    return sorted(path for path in directory.rglob(pattern) if path.is_file())
+
+
+def _combine_batches(batches, limit):
+    samples = []
+    for batch in batches:
+        samples.extend(batch.error_samples[: max(0, limit - len(samples))])
+    return _WorkerSummary(
+        sum(x.total for x in batches), sum(x.succeeded for x in batches),
+        sum(x.failed for x in batches), tuple(samples),
+    )
+
+
+def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
+    error = f"{type(exc).__name__}: {exc}"
+    samples = tuple(
+        ResampleResult(
+            target, _destination_for(target, src_root, output_dir, remove_original), error
+        ) for target in targets[:limit]
+    )
+    return _WorkerSummary(len(targets), 0, len(targets), samples)
+
+
 def obspy_resample_by_station(
-    dir: Path, pattern: str, delta: float, remove_src: bool
-) -> Tuple[int, int]:
-    logger = get_logger(**_LOG_RESAMPLE)
-    total = 0
-    failed = 0
-    for target in dir.rglob(pattern):
-        total += 1
+    directory, pattern, deltas, src_root, output_dir,
+    remove_original, max_error_samples,
+):
+    targets = _input_files(directory, pattern)
+    succeeded = failed = 0
+    samples = []
+    for target in targets:
+        destination = _destination_for(target, src_root, output_dir, remove_original)
+        temporary = temporary_output_path(destination)
         try:
-            st = obspy.read(target)
-            st.resample(delta)
-            dest_sac = target.with_suffix(f".{delta}Hz.sac")
-            st.write(str(dest_sac), format="SAC")
-            if remove_src:
-                target.unlink()
-            logger.debug(f"resampled {target.name} -> {dest_sac.name}")
-        except Exception as e:
+            stream = obspy.read(target)
+            stream.resample(deltas[0])
+            stream.write(str(temporary), format="SAC")
+            commit_output(temporary, destination, overwrite=True)
+            succeeded += 1
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
             failed += 1
-            logger.error(f"Error occered at {target.parent} : {e}")
-
-    time.sleep(0.1)
-    return total, failed
-
-
-def resample_to(
-    src_dir: str | Path,
-    dest_dir: str | Path,
-    deltas: List[float],
-    pattern: str = "*.sac",
-    max_workers: int = 5,
-    bs: int = 1000,
-):
-    logger = get_logger(**_LOG_RESAMPLE)
-    logger.info(f"Start resample from {src_dir} to {dest_dir} with {deltas=}.")
-    src_path = Path(src_dir)
-    dest_path = Path(dest_dir)
-    sac_paths = list(src_path.rglob(pattern))
-    batches = [sac_paths[i: i + bs] for i in range(0, len(sac_paths), bs)]
-    total = len(sac_paths)
-    logger.info(f"Found {total} stations.")
-
-    # resample
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(sac_resample_to, src_path, dest_path, bb, deltas)
-            for bb in batches
-        }
-        with tqdm(total=total, desc="Resampling...") as pbar:
-            for future in as_completed(futures):
-                batch_num = future.result()
-                pbar.update(batch_num)
-
-
-def sac_resample_to(
-    src_path: Path, dest_path: Path, sacs: List[Path], deltas: List[float]
-):
-    import os
-    import subprocess
-
-    cmd = ""
-    for sac in sacs:
-        dest_sac = dest_path / sac.relative_to(src_path)
-        dest_sac.parent.mkdir(parents=True, exist_ok=True)
-
-        cmd += f"r {sac}\n"
-        for delta in deltas:
-            cmd += f"decimate {delta} \n"
-        cmd += f"w {dest_sac}\n"
-    cmd += "q\n"
-
-    os.putenv("SAC_DISPLAY_COPYRIGHT", "0")
-    subprocess.Popen(["sac"], stdin=subprocess.PIPE).communicate(cmd.encode())
-
-    time.sleep(0.1)
-    return len(sacs)
+            if len(samples) < max_error_samples:
+                samples.append(ResampleResult(
+                    target, destination, f"{type(exc).__name__}: {exc}"
+                ))
+    return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))
 
 
 def sac_resample_by_station(
-    dir: Path, pattern: str, delta: float, remove_src: bool
-) -> Tuple[int, int]:
-    import os
-    import subprocess
+    directory, pattern, deltas, src_root, output_dir,
+    remove_original, max_error_samples,
+):
+    targets = _input_files(directory, pattern)
+    jobs = []
+    commands = []
+    for target in targets:
+        destination = _destination_for(target, src_root, output_dir, remove_original)
+        temporary = temporary_output_path(destination)
+        jobs.append((target, destination, temporary))
+        commands.append(f"r {target}")
+        commands.extend(f"decimate {delta}" for delta in deltas)
+        commands.append(f"w {temporary}")
+    commands.append("q")
+    environment = os.environ.copy()
+    environment["SAC_DISPLAY_COPYRIGHT"] = "0"
+    process_error = None
+    try:
+        completed = subprocess.run(
+            ["sac"], input=("\n".join(commands) + "\n").encode(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=environment, check=False,
+        )
+        if completed.returncode:
+            detail = completed.stderr.decode(errors="replace").strip()
+            process_error = detail or f"SAC exited with {completed.returncode}"
+    except Exception as exc:
+        process_error = f"{type(exc).__name__}: {exc}"
 
-    total = 0
-    cmd = ""
-    for target in dir.rglob(pattern):
-        cmd += f"r {target}\n"
-        cmd += f"decimate {delta} \n"
-        if remove_src:
-            cmd += "w over \n"
-        else:
-            cmd += f"w {target.with_suffix(f'.{delta}Hz.sac')}\n"
-        total += 1
-    cmd += "q\n"
-
-    os.putenv("SAC_DISPLAY_COPYRIGHT", "0")
-    subprocess.Popen(["sac"], stdin=subprocess.PIPE).communicate(cmd.encode())
-
-    time.sleep(0.1)
-    return total, 0
+    succeeded = failed = 0
+    samples = []
+    for target, destination, temporary in jobs:
+        try:
+            commit_output(temporary, destination, overwrite=True)
+            succeeded += 1
+            continue
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        temporary.unlink(missing_ok=True)
+        failed += 1
+        if len(samples) < max_error_samples:
+            samples.append(ResampleResult(
+                target, destination, process_error or error
+            ))
+    return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))

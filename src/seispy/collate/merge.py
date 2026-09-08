@@ -3,7 +3,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
-from icecream import ic
 from rose import pather, write_errors
 from tqdm import tqdm
 
@@ -11,12 +10,15 @@ from tqdm import tqdm
 def merge_by_day(
     src: str | Path, pattern: str = "*.SAC", remove_src: bool = True
 ) -> None:
-    """merge sac files by day
+    """Merge SAC traces in each leaf directory by day.
 
-    Parameters:
-        src: source directory.
-        pattern: search pattern.
-        remove_src: whether remove source files after mergeing.
+    Args:
+        src: Root directory containing daily leaf directories.
+        pattern: File pattern evaluated in each leaf directory.
+        remove_src: Remove source files after a successful merge.
+
+    Examples:
+        >>> merge_by_day("data/sorted", pattern="*.sac", remove_src=False)
     """
     src_path = Path(src)
     days = pather.find_last_subdirs(src_path)
@@ -39,7 +41,7 @@ def merge_by_day(
     if errs:
         write_errors(errs)
     else:
-        ic("All Done with NO errors!")
+        print("All done with no errors.")
 
 
 def _merge_targets(day: Path, pattern, remove_src: bool) -> str | None:

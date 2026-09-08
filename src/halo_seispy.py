@@ -124,12 +124,12 @@ def _(mo):
         r"""
         ## Response Files
         ### Download Response
-        利用 `seispy.response.download_response` 下载。
+        利用 `seispy.download.download_inventory` 下载。
 
         参考 [GeoNet FDSN webservice with Obspy - Station Service](https://github.com/GeoNet/data-tutorials/blob/main/FDSN/FDSN_station.ipynb)
 
         ### Combine Response
-        利用 `seispy.response.combine_response` 合并 response 文件。
+        利用 `seispy.response.combine_inventories` 合并 Inventory 文件。
 
         ## Data Process
         ### Preprocess & deconvolution
@@ -250,7 +250,7 @@ def _(mo):
 
         除了函数 `resample_by_day` 还可以直接利用在 `deconvolution_by_day` 去仪器响应时设置参数 `resample`。
 
-        完成后将**删除原文件**，若不想删除则将参数 `remove_src` 参数设置为 `False`。也可以提前复制保存一份数据。
+        默认会将结果保存到新的同级目录，并保留原文件。设置 `remove_original=True` 时，成功结果保存为原目录中的 `.deconv.sac` 文件，确认写入成功后才删除原文件；失败文件保持不变。
         """
     )
     return
@@ -311,7 +311,7 @@ def _(mo):
 
         - **使用 sac 需要设置 `method`，默认是 `obspy`。**
         - **降采样需要指定采样率 `resample`，默认是 `None`。**
-        - **不删除原文件需设置 `remove_src`，默认是 `False`。**
+        - **默认输出到新的同级目录；需要生成 `.deconv.sac` 并删除成功处理的原文件时，设置 `remove_original=True`。**
         """
     )
     return

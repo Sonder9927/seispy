@@ -1,187 +1,298 @@
 import logging
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
+from dataclasses import dataclass
 from pathlib import Path
 
 import obspy
 import pandas as pd
 from rose import get_logger
+from rose.batch import (
+    ReportMixin,
+    auto_save_report,
+    commit_output,
+    create_run_id,
+    temporary_output_path,
+)
 from tqdm import tqdm
 
-_LOG_FORMAT = {
-    "file": "format.log",
-    "name": "format",
-    "level": logging.INFO,
-}
+_LOG_FORMAT = {"file": "format.log", "name": "format", "level": logging.INFO}
 
 
-def format_per_event(event_data, src_path, dest_path, pattern, stations_dict):
+@dataclass(frozen=True)
+class FormatResult:
+    """Describe one sampled SAC header-formatting issue."""
+
+    source: Path
+    status: str
+    error: str
+    destination: Path | None = None
+
+
+@dataclass(frozen=True)
+class _EventSummary:
+    files_total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    conflicts: int = 0
+    samples: tuple[FormatResult, ...] = ()
+
+
+@dataclass(frozen=True)
+class FormatSummary(ReportMixin):
+    """Summarize a batch SAC header-formatting run.
+
+    This class is returned by :func:`format_head`; applications normally do not
+    instantiate it directly.
+
+    Attributes:
+        run_id: Unique identifier for the processing run.
+        events_total: Number of event directories discovered.
+        events_processed: Number matched to event metadata.
+        events_skipped: Number without matching event metadata.
+        invalid_event_times: Number of unparseable event timestamps.
+        files_total: Number of waveform files considered.
+        succeeded: Number of files written successfully.
+        failed: Number of files that failed processing.
+        output_conflicts: Number of existing destinations not overwritten.
+        error_samples: Bounded sample of formatting issues.
+        output_dir: Root directory containing formatted files.
+        duration_seconds: Total elapsed wall-clock time.
+        report_path: JSON report path when a report was generated.
+
+    Examples:
+        >>> summary = format_head(...)
+        >>> print(summary.succeeded, summary.failed)
     """
-    处理单个事件目录下的所有匹配文件
-    :param event_data: 包含 event_dir 和 event_info 的字典
-    :param pattern: 文件匹配模式 (如 "*.LHZ.sac")
-    """
-    logger = get_logger(**_LOG_FORMAT)
 
-    event_dir = event_data["event_dir"]
-    event_info = event_data["event_info"]
-
-    src_event_dir = src_path / event_dir
-
-    # search sac files in event_dir
-    sac_files = list(src_event_dir.glob(pattern))
-    if not sac_files:
-        logger.warning(f"No files found in {event_dir} with {pattern=}.")
-
-    # make dest event dir
-    dest_event_dir = dest_path / event_dir
-    dest_event_dir.mkdir(parents=True, exist_ok=True)
-
-    post = {"success": 0, "failed": 0}
-    # process all sac files found by pattern
-    for sac_file in sac_files:
-        try:
-            parts = sac_file.stem.split(".")
-            if len(parts) < 3:
-                logger.error(
-                    f"Invalid filename: {sac_file.name}. "
-                    "Should be `event.station.channel.sac`."
-                )
-                continue
-
-            station = parts[1]
-            channel = parts[2]
-
-            # 获取台站信息
-            station_info = stations_dict.get(station)
-            if not station_info:
-                logger.error(f"No station info for {sac_file.name}")
-                continue
-
-            # update header info
-            tr = obspy.read(str(sac_file))[0]
-            # change stats
-            stats = tr.stats
-            stats.station = station
-            stats.channel = channel
-            if not stats.location:
-                stats.location = "10"  # khole
-            # update sac
-            sac = stats.sac
-            # station info
-            sac.stla = station_info["latitude"]
-            sac.stlo = station_info["longitude"]
-            sac.stel = station_info.get("elevation", -12345)
-            sac.stdp = station_info.get("depth", -12345)
-            # event info
-            sac.evla = event_info["latitude"]
-            sac.evlo = event_info["longitude"]
-            sac.evel = event_info.get("elevation", -12345)
-            sac.evdp = event_info.get("depth", -12345)
-            sac.mag = event_info["mag"]
-            sac.lcalda = 1  # 0=FALSE, 1=TRUE
-
-            dest_file = dest_event_dir / f"{event_dir}.{station}.{channel}.sac"
-            tr.write(str(dest_file), format="SAC")
-            post["success"] += 1
-
-        except Exception as e:
-            logger.error(f"failed format: {sac_file.name}: {str(e)}")
-            # 如果写入失败，清理不完整文件
-            if dest_file.exists():
-                dest_file.unlink()
-            post["failed"] += 1
-    return post
-
+    run_id: str
+    events_total: int
+    events_processed: int
+    events_skipped: int
+    invalid_event_times: int
+    files_total: int
+    succeeded: int
+    failed: int
+    output_conflicts: int
+    error_samples: tuple[FormatResult, ...]
+    output_dir: Path
+    duration_seconds: float
+    report_path: Path | None = None
 
 def format_head(
-    src_dir: str,
-    dest_dir: str,
-    events_csv: str,
-    stations_csv: str,
+    src_dir: str | Path,
+    dest_dir: str | Path,
+    events_csv: str | Path,
+    stations_csv: str | Path,
     pattern: str = "*.sac",
     max_workers: int = 4,
-):
+    *,
+    overwrite: bool = False,
+    max_error_samples: int = 20,
+    save_report: bool | None = None,
+) -> FormatSummary:
+    """Update SAC headers from event and station tables.
+
+    Args:
+        src_dir: Root containing one directory per event.
+        dest_dir: Output root; it must be outside ``src_dir``.
+        events_csv: Event table with time, latitude, longitude, and magnitude.
+        stations_csv: Station table with station, latitude, and longitude.
+        pattern: File pattern evaluated inside each event directory.
+        max_workers: Maximum number of event worker processes.
+        overwrite: Whether existing output files may be replaced.
+        max_error_samples: Maximum number of issues retained in the summary.
+        save_report: Force JSON report creation on or off.
+
+    Returns:
+        Event and file counts, sampled issues, and output information.
+
+    Raises:
+        NotADirectoryError: If ``src_dir`` is not a directory.
+        ValueError: If inputs, limits, or directory placement are invalid.
+
+    Examples:
+        >>> summary = format_head(
+        ...     "events/raw", "events/formatted", "events.csv", "stations.csv",
+        ...     max_workers=1,
+        ... )
+        >>> summary.output_dir.name
+        'formatted'
     """
-    :param src_dir: 源数据根目录
-    :param dest_dir: 目标数据根目录
-    :param pattern: 文件匹配模式 (如 "*.HHZ.sac")
-    """
-    src_path = Path(src_dir)
-    dest_path = Path(dest_dir)
-
-    # 读取事件数据
-    events_df = pd.read_csv(events_csv)
-
-    n_before = len(events_df)
-
-    events_df["time"] = pd.to_datetime(events_df["time"], utc=True, errors="coerce")
-    events_df = events_df.dropna(subset=["time"])
-
-    if len(events_df) != n_before:
-        print(
-            f"Warning: dropped {n_before - len(events_df)} events due to invalid time format."
-        )
-
-    events_df["event_dir"] = events_df["time"].dt.strftime("%Y%m%d%H%M%S")
-    events_dict = events_df.set_index("event_dir").to_dict("index")
-
-    # 读取台站数据
-    stations_df = pd.read_csv(stations_csv)
-    stations_dict = stations_df.set_index("station").to_dict("index")
-
-    # 准备事件任务列表
-    event_tasks = []
-    unvalid_events = []
-    for event_dir in [d.name for d in src_path.iterdir() if d.is_dir()]:
-        event_info = events_dict.get(event_dir)
-        if event_info:
-            event_tasks.append({"event_dir": event_dir, "event_info": event_info})
-        else:
-            unvalid_events.append(event_dir)
-
+    started = time.monotonic()
+    run_id = create_run_id()
     logger = get_logger(**_LOG_FORMAT)
-    logger.info("=" * 60)
-    logger.info(f"Starting SAC head format from {src_dir} to {dest_dir}.")
-    logger.info(f"Search pattern: {pattern}.")
-    logger.info(
-        f"Found {len(event_tasks)} events to process. {len(unvalid_events)} no info events skipped."
-    )
-    logger.info(
-        "**Notice: this will replace station and channel in head "
-        "with name in the sac file.**"
-    )
+    src_path = Path(src_dir).expanduser().resolve()
+    dest_path = Path(dest_dir).expanduser().resolve()
+    if not src_path.is_dir():
+        raise NotADirectoryError(src_path)
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+    if max_error_samples < 0:
+        raise ValueError("max_error_samples cannot be negative")
+    if dest_path == src_path or src_path in dest_path.parents:
+        raise ValueError("dest_dir must be outside src_dir")
+    dest_path.mkdir(parents=True, exist_ok=True)
 
-    # 创建处理函数的部分应用
-    processor = partial(
-        format_per_event,
-        src_path=src_path,
-        dest_path=dest_path,
-        pattern=pattern,
-        stations_dict=stations_dict,
-    )
+    events = pd.read_csv(events_csv)
+    stations = pd.read_csv(stations_csv)
+    _require_columns(events, "events_csv", {"time", "latitude", "longitude", "mag"})
+    _require_columns(stations, "stations_csv", {"station", "latitude", "longitude"})
+    before = len(events)
+    events["time"] = pd.to_datetime(events["time"], utc=True, errors="coerce")
+    events = events.dropna(subset=["time"]).copy()
+    invalid_times = before - len(events)
+    events["event_dir"] = events["time"].dt.strftime("%Y%m%d%H%M%S")
+    if events["event_dir"].duplicated().any():
+        raise ValueError("events_csv contains duplicate event times at one-second precision")
+    events_dict = events.set_index("event_dir").to_dict("index")
+    if stations["station"].duplicated().any():
+        raise ValueError("stations_csv contains duplicate station names")
+    stations_dict = stations.set_index("station").to_dict("index")
 
-    # 使用进程池处理
-    post = {"success": 0, "failed": 0}
+    event_dirs = sorted(path for path in src_path.iterdir() if path.is_dir())
+    tasks = [(path, events_dict[path.name]) for path in event_dirs if path.name in events_dict]
+    skipped = len(event_dirs) - len(tasks)
+    logger.info(
+        "run_id=%s started src=%s dest=%s events=%d skipped=%d pattern=%s "
+        "overwrite=%s max_workers=%d",
+        run_id, src_path, dest_path, len(tasks), skipped, pattern, overwrite, max_workers,
+    )
+    summaries = []
+    worker_limit = min(max_error_samples, 1)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(processor, task): task for task in event_tasks}
-
-        with tqdm(total=len(futures), desc="Formating events...") as pbar:
+        futures = {
+            executor.submit(
+                format_per_event, event_dir, event_info, dest_path, pattern,
+                stations_dict, overwrite, worker_limit,
+            ): event_dir
+            for event_dir, event_info in tasks
+        }
+        with tqdm(total=len(tasks), desc="Formatting events") as bar:
             for future in as_completed(futures):
-                ipost = future.result()
-                post["success"] += ipost.get("success", 0)
-                post["failed"] += ipost.get("failed", 0)
-                pbar.set_postfix(post)
-                pbar.update()
-    logger.info(f"Format complete with {post}.")
-    logger.info("=" * 60 + "\n")
+                event_dir = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    files = sorted(event_dir.glob(pattern))
+                    result = _failed_event(files, exc, worker_limit)
+                summaries.append(result)
+                bar.update(1)
+
+    combined = _combine(summaries, max_error_samples)
+    summary = FormatSummary(
+        run_id, len(event_dirs), len(tasks), skipped, invalid_times,
+        combined.files_total, combined.succeeded, combined.failed,
+        combined.conflicts, combined.samples, dest_path,
+        round(time.monotonic() - started, 3),
+    )
+    summary = auto_save_report(summary, "format", summary.failed > 0, save_report)
+    if summary.report_path:
+        logger.info("run_id=%s report=%s", run_id, summary.report_path)
+    logger.info(
+        "run_id=%s completed events=%d skipped=%d files=%d succeeded=%d "
+        "failed=%d conflicts=%d invalid_times=%d duration=%.3f",
+        run_id, summary.events_processed, summary.events_skipped, summary.files_total,
+        summary.succeeded, summary.failed, summary.output_conflicts,
+        summary.invalid_event_times, summary.duration_seconds,
+    )
+    for item in summary.error_samples:
+        logger.error("run_id=%s status=%s source=%s destination=%s error=%s",
+                     run_id, item.status, item.source, item.destination, item.error)
+    if summary.failed > len(summary.error_samples):
+        logger.warning("run_id=%s error_samples_truncated shown=%d total=%d",
+                       run_id, len(summary.error_samples), summary.failed)
+    print(f"SAC formatting [{run_id}]: {summary.succeeded} succeeded, "
+          f"{summary.failed} failed, {summary.events_skipped} events skipped.")
+    return summary
 
 
-if __name__ == "__main__":
-    format_head(
-        src_dir="path/to/source",
-        dest_dir="path/to/destination",
-        events_csv="events.csv",
-        stations_csv="stations.csv",
-        pattern="*.HHZ.sac",
+def format_per_event(
+    event_dir, event_info, dest_path, pattern, stations_dict,
+    overwrite=False, max_error_samples=1,
+):
+    files = sorted(event_dir.glob(pattern))
+    succeeded = failed = conflicts = 0
+    samples = []
+    for source in files:
+        destination = None
+        temporary = None
+        try:
+            parts = source.stem.split(".")
+            if len(parts) < 3:
+                raise ValueError("expected filename event.station.channel.sac")
+            station, channel = parts[1], parts[2]
+            if station not in stations_dict:
+                raise KeyError(f"station {station!r} not found in stations_csv")
+            destination = dest_path / event_dir.name / f"{event_dir.name}.{station}.{channel}.sac"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and not overwrite:
+                raise FileExistsError(destination)
+            trace = obspy.read(str(source))[0]
+            _update_header(trace, station, channel, stations_dict[station], event_info)
+            temporary = temporary_output_path(destination)
+            trace.write(str(temporary), format="SAC")
+            commit_output(temporary, destination, overwrite=overwrite)
+            succeeded += 1
+        except Exception as exc:
+            if temporary:
+                temporary.unlink(missing_ok=True)
+            failed += 1
+            conflict = isinstance(exc, FileExistsError)
+            conflicts += int(conflict)
+            if len(samples) < max_error_samples:
+                samples.append(FormatResult(
+                    source, "output_conflict" if conflict else "format_failed",
+                    f"{type(exc).__name__}: {exc}", destination,
+                ))
+    return _EventSummary(len(files), succeeded, failed, conflicts, tuple(samples))
+
+
+def _update_header(trace, station, channel, station_info, event_info):
+    stats = trace.stats
+    stats.station = station
+    stats.channel = channel
+    if not stats.location:
+        stats.location = "10"
+    sac = stats.sac
+    sac.stla = _table_value(station_info, "latitude")
+    sac.stlo = _table_value(station_info, "longitude")
+    sac.stel = _table_value(station_info, "elevation", -12345)
+    sac.stdp = _table_value(station_info, "depth", -12345)
+    sac.evla = _table_value(event_info, "latitude")
+    sac.evlo = _table_value(event_info, "longitude")
+    sac.evel = _table_value(event_info, "elevation", -12345)
+    sac.evdp = _table_value(event_info, "depth", -12345)
+    sac.mag = _table_value(event_info, "mag")
+    sac.lcalda = 1
+
+
+def _table_value(values, key, default=None):
+    value = values.get(key, default)
+    if pd.isna(value):
+        value = default
+    if value is None:
+        raise ValueError(f"missing required metadata: {key}")
+    return value
+
+
+def _require_columns(frame, name, required):
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"{name} is missing columns: {', '.join(sorted(missing))}")
+
+
+def _failed_event(files, exc, limit):
+    samples = (FormatResult(files[0], "event_failed",
+                            f"{type(exc).__name__}: {exc}"),) if files and limit else ()
+    return _EventSummary(len(files), 0, len(files), 0, samples)
+
+
+def _combine(items, limit):
+    samples = []
+    for item in items:
+        samples.extend(item.samples[:max(0, limit - len(samples))])
+    return _EventSummary(
+        sum(x.files_total for x in items), sum(x.succeeded for x in items),
+        sum(x.failed for x in items), sum(x.conflicts for x in items), tuple(samples),
     )

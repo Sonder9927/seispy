@@ -59,7 +59,15 @@ def collect_prob_mean(grids_path: Path, vs_path: Path, mml_path: Path) -> None:
 
 
 def collect_results(grids_dir: str | Path, out_dir: str | Path) -> None:
-    """Main function: collect all MCMC results"""
+    """Collect MCMC grid outputs into figures and summary CSV files.
+
+    Args:
+        grids_dir: Root containing completed per-grid inversion directories.
+        out_dir: Destination for copied figures and summary tables.
+
+    Examples:
+        >>> collect_results("output/grids", "output/summary")
+    """
     grids_path, out_path = Path(grids_dir), Path(out_dir)
     collect_prob_figs(grids_path, out_path / "mcmc_prob_figs")
     collect_prob_mean(grids_path, out_path / "vs.csv", out_path / "misfit_moho_lab.csv")

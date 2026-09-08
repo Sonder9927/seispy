@@ -16,13 +16,19 @@ _LOG_DRIFT = {
 
 
 def orientation(src_dir: str, dest_dir: str, cor_csv: str, max_workers: int = 4):
-    """correct clocke drift
+    """Rotate three-component SAC data to correct sensor orientation.
 
     Args:
-        src_dir (str): SAC数据根目录路径
-        src_dir (str): 输出修正后数据目录
-        cor_csv (str): 校正参数CSV文件路径
-        max_workers (int, optional): 最大并行工作进程数. Defaults to None (自动设置).
+        src_dir: Root directory of input SAC files grouped by station.
+        dest_dir: Destination root preserving the input directory structure.
+        cor_csv: CSV containing station orientation and tilt values in degrees.
+        max_workers: Maximum number of station worker processes.
+
+    Examples:
+        >>> orientation(
+        ...     "data/sac", "data/orientation-corrected", "orientation.csv",
+        ...     max_workers=1,
+        ... )
     """
 
     logger = get_logger(**_LOG_DRIFT)

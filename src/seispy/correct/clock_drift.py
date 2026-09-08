@@ -16,13 +16,19 @@ _LOG_DRIFT = {
 
 
 def clock_drift(src_dir: str, dest_dir:str, drift_csv: str, max_workers: int = 4):
-    """correct clocke drift
+    """Correct SAC trace times from station clock-drift metadata.
 
     Args:
-        src_dir (str): SAC数据根目录路径
-        src_dir (str): 输出修正后数据目录
-        drift_csv (str): 钟漂校正参数CSV文件路径
-        max_workers (int, optional): 最大并行工作进程数. Defaults to None (自动设置).
+        src_dir: Root directory of input SAC files grouped by station.
+        dest_dir: Destination root preserving the input directory structure.
+        drift_csv: CSV containing station, drift rate, and validity times.
+        max_workers: Maximum number of station worker processes.
+
+    Examples:
+        >>> clock_drift(
+        ...     "data/sac", "data/drift-corrected", "clock-drift.csv",
+        ...     max_workers=1,
+        ... )
     """
 
     logger = get_logger(**_LOG_DRIFT)
@@ -155,5 +161,4 @@ if __name__ == "__main__":
         drift_csv=drift_file,
         max_workers=4
     )
-
 

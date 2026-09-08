@@ -2,7 +2,6 @@ import logging
 from pathlib import Path
 
 from concurrent_log_handler import ConcurrentRotatingFileHandler
-from icecream import ic
 
 
 def get_logger(name: str, file=None, level=logging.INFO) -> logging.Logger:
@@ -39,4 +38,4 @@ def write_errors(errs, errs_txt="errors.txt"):
     with open(errs_txt, "w") as f:
         for err in errs:
             f.write(err)
-    ic(f"Check {errs_txt} for more information")
+    print(f"Check {errs_txt} for more information")

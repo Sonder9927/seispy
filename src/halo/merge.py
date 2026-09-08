@@ -1,15 +1,14 @@
 from pathlib import Path
 
 import obspy
-from icecream import ic
 
 
 def check_merge_prior(sacs_dir, specials):
     text_path = Path(sacs_dir)
     sacs = sorted(text_path.iterdir())
-    ic("sacs:")
+    print("sacs:")
     show_isac_and_merged_sac(sacs[:3])
-    ic("specials:")
+    print("specials:")
     st_merged = show_isac_and_merged_sac([Path(i) for i in specials])
     # st0 = obspy.read(specials[0])
     # tr0 = st0[0]
@@ -22,7 +21,7 @@ def show_isac_and_merged_sac(sacs: list[Path]):
     st_combined = obspy.Stream()
 
     for sac in sacs:
-        ic(sac.name)
+        print(sac.name)
         st = obspy.read(sac)
         st.plot()
         st_combined += st
@@ -30,7 +29,7 @@ def show_isac_and_merged_sac(sacs: list[Path]):
     # st_combined
     st_combined.sort()
     # need to merge to output one file
-    ic("merged stream:")
+    print("merged stream:")
     st_combined.merge(method=1, fill_value="interpolate")
     st_combined.plot()
     return st_combined

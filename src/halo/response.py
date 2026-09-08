@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import obspy
-from icecream import ic
 
 
 def diff_rmt_deconv(dir, per=True):
@@ -13,7 +12,7 @@ def diff_rmt_deconv(dir, per=True):
     # 1. check `rmean`
     st.detrend("demean")
     sac_st = obspy.read(dir / "NZ37.BHZ.2024.001.r.sac")
-    ic("rmean")
+    print("rmean")
     delta_trace_plot(sac_st, st)
 
     # 2. check `rtr`
@@ -21,7 +20,7 @@ def diff_rmt_deconv(dir, per=True):
         st = sac_st.copy()
     st.detrend("linear")
     sac_st = obspy.read(dir / "NZ37.BHZ.2024.001.rt.sac")
-    ic("rtr")
+    print("rtr")
     delta_trace_plot(sac_st, st)
 
     # 3. check `taper`
@@ -29,7 +28,7 @@ def diff_rmt_deconv(dir, per=True):
         st = sac_st.copy()
     st.taper(type="hann", max_percentage=0.05)
     sac_st = obspy.read(dir / "NZ37.BHZ.2024.001.rmt.sac")
-    ic("taper")
+    print("taper")
     delta_trace_plot(sac_st, st)
 
     # check `remove response`
@@ -38,49 +37,49 @@ def diff_rmt_deconv(dir, per=True):
         st = sac_st.copy()
     st = _rm_resp(st, inv)
     sac_st = obspy.read(dir / "NZ37.BHZ.2024.001.rmpz.sac")
-    ic("rm resposne")
+    print("rm response")
     delta_trace_plot(sac_st, st)
 
 
 def check_deconv_result(file1, file2):
-    ic(file1)
+    print(file1)
     st1 = obspy.read(file1)
     st1.plot()
-    ic(file2)
+    print(file2)
     st2 = obspy.read(file2)
     st1.plot()
-    ic("delta")
+    print("delta")
     delta_trace_plot(st1, st2)
 
 
 def check_rmt_prior(src_file, rmt_file):
-    ic("source stream")
+    print("source stream")
     st = obspy.read(src_file)
     st.plot()
 
-    ic("1. rmt result")
-    ic("1.1 sac result")
+    print("1. rmt result")
+    print("1.1 sac result")
     sac_st = obspy.read(rmt_file)
     sac_st.plot()
-    ic("1.2 obspy result")
+    print("1.2 obspy result")
     st = _hard_rmt(st)
     st.plot()
 
-    ic("2. delta of result (sac - obspy)")
+    print("2. delta of result (sac - obspy)")
     delta_trace_plot(sac_st, st)
 
 
 def check_deconv_prior(sac_file, src_file, resp_file):
-    ic("source stream")
+    print("source stream")
     st = obspy.read(src_file)
     st.plot()
 
-    ic("deconvolution")
-    ic("1. sac result")
+    print("deconvolution")
+    print("1. sac result")
     sac_st = obspy.read(sac_file)
     sac_st.plot()
 
-    ic("2.1 obspy default result without water_level")
+    print("2.1 obspy default result without water_level")
     inv = obspy.read_inventory(resp_file)
     st_se = st.copy()
     for tr in st_se:
@@ -93,7 +92,7 @@ def check_deconv_prior(sac_file, src_file, resp_file):
         tr.data *= 1e9
     st_se.plot()
 
-    ic("2.2 obspy default result with water_level=60")
+    print("2.2 obspy default result with water_level=60")
     st_wl = st.copy()
     for tr in st_wl:
         tr.remove_response(
@@ -104,19 +103,19 @@ def check_deconv_prior(sac_file, src_file, resp_file):
         tr.data *= 1e9
     st_wl.plot()
 
-    ic("3. different taper method")
-    ic("3.1.1 obspy default result (water_level=None, taper=cosine)")
+    print("3. different taper method")
+    print("3.1.1 obspy default result (water_level=None, taper=cosine)")
     st_se.plot()
-    ic("3.1.2 delta")
+    print("3.1.2 delta")
     delta_trace_plot(sac_st, st_se)
     _check_deconv_hard_delta(sac_st, _hard_rmt(st.copy()), inv)
 
 
 def _check_deconv_hard_delta(sac_st, st, inv):
     st = _rm_resp(st, inv)
-    ic("3.2 obspy hard result (water_level=None, taper=hann)")
+    print("3.2 obspy hard result (water_level=None, taper=hann)")
     st.plot()
-    ic("3.2.2 delta")
+    print("3.2.2 delta")
     delta_trace_plot(sac_st, st)
 
 

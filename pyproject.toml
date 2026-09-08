@@ -6,15 +6,14 @@ readme = "README.md"
 authors = [{ name = "Sonder Merak", email = "merak19981999@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
-  "icecream>=2.1.3",
-  "marimo>=0.10.12",
-  "netcdf4>=1.7.3",
-  "numpy<2.0",
-  "obspy>=1.4.1",
-  "pandas>=2.2.3",
-  "pygmt>=0.17.0",
+  "marimo>=0.24.0",
+  "netcdf4>=1.7.4",
+  "numpy>=2.0,<2.5",
+  "obspy>=1.5.1,<1.6",
+  "pandas>=3.0.5",
+  "pygmt>=0.19.0",
   "rose",
-  "tqdm>=4.67.1",
+  "tqdm>=4.70.0",
 ]
 
 [project.scripts]
@@ -24,8 +23,56 @@ seispy = "seispy:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv.sources]
-rose = { path = "packages/rose" }
+[dependency-groups]
+dev = [
+  "pytest>=9.1.1",
+  "pytest-cov>=7.1.0",
+  "ruff>=0.16.6",
+]
+docs = [
+  "mkdocs>=1.6.1",
+  "mkdocs-material>=9.7.7",
+  "mkdocstrings[python]>=1.0.6",
+]
+pdf = [
+  "mkdocs-print-site-plugin>=2.8",
+]
 
-# [tool.uv.workspace]
-# members = ["packages/rose"]
+[tool.uv.sources]
+rose = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/rose"]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = [
+  "-ra",
+  "--strict-config",
+  "--strict-markers",
+]
+markers = [
+  "integration: tests that require files or external programs",
+  "slow: slow-running tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/seispy"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src", "packages/rose/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F63", "F7", "F82"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
