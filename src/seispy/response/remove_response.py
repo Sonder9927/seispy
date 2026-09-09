@@ -19,9 +19,13 @@ from rose.batch import (
 from tqdm import tqdm
 
 _LOG_DECONVOLUTION = {
-    "name": "deconvolution", "file": "deconvolution.log", "level": logging.INFO
+    "name": "deconvolution",
+    "file": "deconvolution.log",
+    "level": logging.INFO,
 }
 IssueStatus = Literal["deconvolution_failed", "original_removal_failed"]
+PreFilter = tuple[float, float, float, float]
+DEFAULT_PRE_FILTER: PreFilter = (0.003, 0.005, 4.0, 5.0)
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,7 @@ class DeconvolutionSummary(ReportMixin):
     duration_seconds: float
     report_path: Path | None = None
 
+
 def deconvolution_by_station(
     src_dir: str | Path,
     resp: str | Path,
@@ -90,6 +95,7 @@ def deconvolution_by_station(
     remove_original: bool = False,
     max_error_samples: int = 20,
     save_report: bool | None = None,
+    pre_filt: PreFilter = DEFAULT_PRE_FILTER,
 ) -> DeconvolutionSummary:
     """Remove instrument responses from SAC files grouped by station.
 
@@ -104,6 +110,9 @@ def deconvolution_by_station(
         remove_original: Remove each source only after output commits safely.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Force JSON report creation on or off.
+        pre_filt: Four corner frequencies in hertz. When the upper corners
+            exceed Nyquist they are reduced per trace while preserving the
+            requested low-frequency corners.
 
     Returns:
         Processing counts, sampled issues, output location, and run duration.
@@ -131,14 +140,21 @@ def deconvolution_by_station(
         raise ValueError("max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
+    pre_filt = _validate_pre_filt(pre_filt)
     worker = deconv_by_method(method)
     output_path = _resolve_output_dir(src_path, output_dir, remove_original)
     worker_error_samples = min(max_error_samples, 1)
     logger.info(
         "run_id=%s started method=%s src_dir=%s output_dir=%s "
         "remove_original=%s resample=%s pattern=%s max_workers=%d",
-        run_id, method, src_path, output_path, remove_original,
-        resample, pattern, max_workers,
+        run_id,
+        method,
+        src_path,
+        output_path,
+        remove_original,
+        resample,
+        pattern,
+        max_workers,
     )
 
     stations = sorted(path for path in src_path.iterdir() if path.is_dir())
@@ -150,14 +166,28 @@ def deconvolution_by_station(
             try:
                 response = _get_response(method, inv, station.name)
             except Exception as exc:
-                batches.append(_failed_batch(
-                    _input_files(station, pattern), src_path, output_path,
-                    remove_original, exc, worker_error_samples
-                ))
+                batches.append(
+                    _failed_batch(
+                        _input_files(station, pattern),
+                        src_path,
+                        output_path,
+                        remove_original,
+                        exc,
+                        worker_error_samples,
+                    )
+                )
                 continue
             future = executor.submit(
-                worker, station, pattern, response, resample, src_path,
-                output_path, remove_original, worker_error_samples
+                worker,
+                station,
+                pattern,
+                response,
+                resample,
+                src_path,
+                output_path,
+                remove_original,
+                worker_error_samples,
+                pre_filt,
             )
             futures[future] = station
         with tqdm(total=len(futures), desc="Processing stations") as pbar:
@@ -166,37 +196,64 @@ def deconvolution_by_station(
                 try:
                     batches.append(future.result())
                 except Exception as exc:
-                    batches.append(_failed_batch(
-                        _input_files(station, pattern), src_path, output_path,
-                        remove_original, exc, worker_error_samples
-                    ))
+                    batches.append(
+                        _failed_batch(
+                            _input_files(station, pattern),
+                            src_path,
+                            output_path,
+                            remove_original,
+                            exc,
+                            worker_error_samples,
+                        )
+                    )
                 pbar.update(1)
 
     compact = _combine_batches(batches, max_error_samples)
     summary = DeconvolutionSummary(
-        run_id, compact.total, compact.succeeded, compact.failed,
-        compact.removal_failed, compact.issue_samples, output_path,
-        remove_original, round(time.monotonic() - started, 3)
+        run_id,
+        compact.total,
+        compact.succeeded,
+        compact.failed,
+        compact.removal_failed,
+        compact.issue_samples,
+        output_path,
+        remove_original,
+        round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "deconvolution", summary.failed + summary.removal_failed > 0, save_report)
+    summary = auto_save_report(
+        summary,
+        "deconvolution",
+        summary.failed + summary.removal_failed > 0,
+        save_report,
+    )
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(
         "run_id=%s completed total=%d succeeded=%d failed=%d "
         "removal_failed=%d duration_seconds=%.3f",
-        run_id, summary.total, summary.succeeded, summary.failed,
-        summary.removal_failed, summary.duration_seconds,
+        run_id,
+        summary.total,
+        summary.succeeded,
+        summary.failed,
+        summary.removal_failed,
+        summary.duration_seconds,
     )
     for issue in summary.issue_samples:
         logger.error(
             "run_id=%s status=%s source=%s destination=%s error=%s",
-            run_id, issue.status, issue.source, issue.destination, issue.error,
+            run_id,
+            issue.status,
+            issue.source,
+            issue.destination,
+            issue.error,
         )
     issue_total = summary.failed + summary.removal_failed
     if issue_total > len(summary.issue_samples):
         logger.warning(
             "run_id=%s issue_samples_truncated shown=%d total_issues=%d",
-            run_id, len(summary.issue_samples), issue_total,
+            run_id,
+            len(summary.issue_samples),
+            issue_total,
         )
     print(
         f"Deconvolution complete [{run_id}]: {summary.succeeded} succeeded, "
@@ -210,8 +267,10 @@ def _combine_batches(batches, limit: int) -> _WorkerSummary:
     for batch in batches:
         samples.extend(batch.issue_samples[: max(0, limit - len(samples))])
     return _WorkerSummary(
-        sum(x.total for x in batches), sum(x.succeeded for x in batches),
-        sum(x.failed for x in batches), sum(x.removal_failed for x in batches),
+        sum(x.total for x in batches),
+        sum(x.succeeded for x in batches),
+        sum(x.failed for x in batches),
+        sum(x.removal_failed for x in batches),
         tuple(samples),
     )
 
@@ -220,11 +279,16 @@ def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
     error = f"{type(exc).__name__}: {exc}"
     samples = tuple(
         DeconvolutionResult(
-            target, _destination_for(target, src_root, output_dir, remove_original),
-            "deconvolution_failed", error
-        ) for target in targets[:limit]
+            target,
+            _destination_for(target, src_root, output_dir, remove_original),
+            "deconvolution_failed",
+            error,
+        )
+        for target in targets[:limit]
     )
-    return _WorkerSummary(total=len(targets), failed=len(targets), issue_samples=samples)
+    return _WorkerSummary(
+        total=len(targets), failed=len(targets), issue_samples=samples
+    )
 
 
 def _resolve_output_dir(src_path, output_dir, remove_original):
@@ -233,7 +297,8 @@ def _resolve_output_dir(src_path, output_dir, remove_original):
             raise ValueError("output_dir cannot be used when remove_original=True")
         return None
     destination = (
-        Path(output_dir).expanduser().resolve() if output_dir is not None
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None
         else src_path.with_name(f"{src_path.name}_deconv")
     )
     if destination == src_path or src_path in destination.parents:
@@ -271,7 +336,8 @@ def _destination_for(target, src_root, output_dir, remove_original):
 
 def _input_files(directory, pattern):
     return sorted(
-        target for target in directory.rglob(pattern)
+        target
+        for target in directory.rglob(pattern)
         if not target.name.lower().endswith(".deconv.sac")
     )
 
@@ -289,10 +355,14 @@ def _process_targets(targets, src_root, output_dir, remove_original, limit, proc
             temporary.unlink(missing_ok=True)
             failed += 1
             if len(samples) < limit:
-                samples.append(DeconvolutionResult(
-                    target, destination, "deconvolution_failed",
-                    f"{type(exc).__name__}: {exc}"
-                ))
+                samples.append(
+                    DeconvolutionResult(
+                        target,
+                        destination,
+                        "deconvolution_failed",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
             continue
         succeeded += 1
         if remove_original:
@@ -301,54 +371,95 @@ def _process_targets(targets, src_root, output_dir, remove_original, limit, proc
             except OSError as exc:
                 removal_failed += 1
                 if len(samples) < limit:
-                    samples.append(DeconvolutionResult(
-                        target, destination, "original_removal_failed",
-                        f"{type(exc).__name__}: {exc}"
-                    ))
+                    samples.append(
+                        DeconvolutionResult(
+                            target,
+                            destination,
+                            "original_removal_failed",
+                            f"{type(exc).__name__}: {exc}",
+                        )
+                    )
     return _WorkerSummary(
         len(targets), succeeded, failed, removal_failed, tuple(samples)
     )
 
 
-def obspy_deconv(directory, pattern, inv, resample, src_root, output_dir,
-                  remove_original, max_error_samples):
+def obspy_deconv(
+    directory,
+    pattern,
+    inv,
+    resample,
+    src_root,
+    output_dir,
+    remove_original,
+    max_error_samples,
+    pre_filt=DEFAULT_PRE_FILTER,
+):
     def process(target, temporary):
-        stream_removed_response(target, inv, resample).write(
+        stream_removed_response(target, inv, resample, pre_filt).write(
             str(temporary), format="SAC"
         )
+
     return _process_targets(
-        _input_files(directory, pattern), src_root, output_dir, remove_original,
-        max_error_samples, process
+        _input_files(directory, pattern),
+        src_root,
+        output_dir,
+        remove_original,
+        max_error_samples,
+        process,
     )
 
 
-def sac_deconv(directory, pattern, pzs, resample, src_root, output_dir,
-               remove_original, max_error_samples):
+def sac_deconv(
+    directory,
+    pattern,
+    pzs,
+    resample,
+    src_root,
+    output_dir,
+    remove_original,
+    max_error_samples,
+    pre_filt=DEFAULT_PRE_FILTER,
+):
     environment = os.environ.copy()
     environment["SAC_DISPLAY_COPYRIGHT"] = "0"
 
     def process(target, temporary):
+        trace = obspy.read(target, headonly=True)[0]
+        effective_pre_filt = _effective_pre_filt(pre_filt, trace.stats.sampling_rate)
+        f1, f2, f3, f4 = effective_pre_filt
         commands = (
             f"r {target}\nrmean; rtr; taper\n"
-            f"trans from pol s {pzs} to none freq 0.004 0.006 30 35\n"
+            f"trans from pol s {pzs} to none freq {f1:g} {f2:g} {f3:g} {f4:g}\n"
             f"mul 1.0e9\nw {temporary}\nq\n"
         )
         completed = subprocess.run(
-            ["sac"], input=commands.encode(), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=environment, check=False,
+            ["sac"],
+            input=commands.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            check=False,
         )
         if completed.returncode:
             detail = completed.stderr.decode(errors="replace").strip()
             raise RuntimeError(detail or f"SAC exited with {completed.returncode}")
 
     return _process_targets(
-        _input_files(directory, pattern), src_root, output_dir, remove_original,
-        max_error_samples, process
+        _input_files(directory, pattern),
+        src_root,
+        output_dir,
+        remove_original,
+        max_error_samples,
+        process,
     )
 
 
 def stream_removed_response(
-    file: str | Path, inv: Any, resample: float | None = None
+    file: str | Path,
+    inv: Any,
+    resample: float | None = None,
+    pre_filt: PreFilter = DEFAULT_PRE_FILTER,
 ) -> obspy.Stream:
     """Remove the instrument response from one waveform file.
 
@@ -356,6 +467,8 @@ def stream_removed_response(
         file: Waveform file readable by ObsPy.
         inv: ObsPy inventory containing the matching response.
         resample: Optional target sampling rate in hertz.
+        pre_filt: Four corner frequencies in hertz. Upper corners are reduced
+            when necessary so that the taper finishes below Nyquist.
 
     Returns:
         The processed ObsPy stream.
@@ -366,14 +479,51 @@ def stream_removed_response(
     st = obspy.read(file)
     st.merge(method=1, fill_value="interpolate")
     for tr in st:
+        effective_pre_filt = _effective_pre_filt(pre_filt, tr.stats.sampling_rate)
         tr.detrend("demean")
         tr.detrend("linear")
         tr.taper(max_percentage=0.05, type="hann")
         tr.remove_response(
-            inventory=inv, water_level=None, pre_filt=[0.004, 0.006, 30, 35],
-            output="DISP", zero_mean=False, taper=False,
+            inventory=inv,
+            water_level=None,
+            pre_filt=effective_pre_filt,
+            output="DISP",
+            zero_mean=False,
+            taper=False,
         )
         tr.data *= 1e9
         if resample is not None:
             tr.resample(resample)
     return st
+
+
+def _validate_pre_filt(pre_filt) -> PreFilter:
+    try:
+        values = tuple(float(value) for value in pre_filt)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("pre_filt must contain four numeric frequencies") from exc
+    if len(values) != 4 or not all(value > 0 for value in values):
+        raise ValueError("pre_filt must contain four positive frequencies")
+    if not all(left < right for left, right in zip(values, values[1:])):
+        raise ValueError("pre_filt frequencies must be strictly increasing")
+    return values
+
+
+def _effective_pre_filt(pre_filt, sampling_rate: float) -> PreFilter:
+    """Keep a frequency taper valid and complete below the trace Nyquist."""
+    f1, f2, f3, f4 = _validate_pre_filt(pre_filt)
+    nyquist = float(sampling_rate) / 2.0
+    if f2 >= nyquist:
+        raise ValueError(
+            f"pre_filt low passband corner {f2:g} Hz must be below "
+            f"Nyquist ({nyquist:g} Hz)"
+        )
+    if f4 < nyquist:
+        return f1, f2, f3, f4
+
+    # Leave headroom below Nyquist and retain a finite high-frequency rolloff.
+    f4 = nyquist * 0.95
+    f3 = min(f3, nyquist * 0.80)
+    if f3 <= f2:
+        f3 = f2 + (f4 - f2) * 0.5
+    return f1, f2, f3, f4

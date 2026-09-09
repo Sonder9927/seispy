@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 _MODULE_PATH = (
     Path(__file__).parents[1] / "src" / "seispy" / "response" / "remove_response.py"
 )
@@ -125,3 +127,37 @@ def test_previous_deconv_result_is_not_processed_again(tmp_path):
 
     assert results.total == 1
     assert previous.read_bytes() == b"previous"
+
+
+def test_pre_filter_is_unchanged_when_below_nyquist():
+    requested = (0.004, 0.006, 30.0, 35.0)
+
+    assert remove_response._effective_pre_filt(requested, 100.0) == requested
+
+
+def test_pre_filter_upper_corners_are_reduced_below_nyquist():
+    result = remove_response._effective_pre_filt(
+        (0.004, 0.006, 30.0, 35.0), sampling_rate=50.0
+    )
+
+    assert result == pytest.approx((0.004, 0.006, 20.0, 23.75))
+
+
+@pytest.mark.parametrize(
+    "pre_filt",
+    [
+        (0.004, 0.006, 30.0),
+        (0.004, 0.006, 35.0, 30.0),
+        (0.0, 0.006, 30.0, 35.0),
+    ],
+)
+def test_invalid_pre_filter_is_rejected(pre_filt):
+    with pytest.raises(ValueError, match="pre_filt"):
+        remove_response._validate_pre_filt(pre_filt)
+
+
+def test_pre_filter_low_corner_must_be_below_nyquist():
+    with pytest.raises(ValueError, match="Nyquist"):
+        remove_response._effective_pre_filt(
+            (0.4, 0.6, 3.0, 3.5), sampling_rate=1.0
+        )
