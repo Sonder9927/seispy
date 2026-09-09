@@ -13,6 +13,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 | Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
 | Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
+| Check waveform download gaps | [Download completeness](recipes/download-statistics.md) | `download_status` |
 | Convert MiniSEED files | [MiniSEED to SAC](recipes/convert-miniseed.md) | `mseed2sac` |
 | Organize daily files | [Sort and merge SAC](recipes/sort-merge.md) | `sort_to`, `merge_by_day` |
 | Populate SAC headers | [Format SAC headers](recipes/format-headers.md) | `format_head` |
@@ -28,6 +29,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 
 - **StationXML needed:** [download metadata](recipes/download-inventory.md)
 - **MiniSEED files:** [convert to SAC](recipes/convert-miniseed.md)
+- **Downloaded waveform tree:** [check completeness](recipes/download-statistics.md)
 - **Continuous SAC files:** [sort and merge](recipes/sort-merge.md),
   [remove response](recipes/remove-response.md), or
   [cut events](recipes/cut-events.md)

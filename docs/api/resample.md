@@ -11,4 +11,6 @@
 The batch function returns this immutable summary. Applications normally do not
 instantiate it directly.
 
+### Resampling summary
+
 ::: seispy.resample.ResampleSummary

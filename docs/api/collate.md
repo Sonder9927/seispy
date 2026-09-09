@@ -6,7 +6,7 @@ Convert, organize, merge, and annotate waveform files.
 
 ### Convert MiniSEED to SAC
 
-::: seispy.collate.mseed2sac
+::: seispy.collate.mseed2sac.mseed2sac
 
 ### Sort SAC files
 
@@ -25,6 +25,10 @@ Convert, organize, merge, and annotate waveform files.
 These immutable summaries are returned by the corresponding batch functions.
 Applications normally do not instantiate them directly.
 
+### MiniSEED conversion summary
+
 ::: seispy.collate.Mseed2SacSummary
+
+### SAC formatting summary
 
 ::: seispy.collate.FormatSummary

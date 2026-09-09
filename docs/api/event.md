@@ -25,4 +25,6 @@ Prepare event catalogs and cut event windows from continuous waveform data.
 The ObsPy cutting workflow returns this immutable summary. Applications normally
 do not instantiate it directly.
 
+### Event cutting summary
+
 ::: seispy.event.cut.CutEventSummary

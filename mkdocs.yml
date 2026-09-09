@@ -53,6 +53,7 @@ nav:
           - Station metadata: recipes/download-inventory.md
           - Earthquake catalog: recipes/download-events.md
           - Waveforms: recipes/download-waveforms.md
+          - Download completeness: recipes/download-statistics.md
       - Prepare waveforms:
           - MiniSEED to SAC: recipes/convert-miniseed.md
           - Sort and merge SAC: recipes/sort-merge.md
@@ -86,7 +87,8 @@ plugins:
           options:
             docstring_style: google
             docstring_section_style: list
-            show_root_heading: true
+            show_root_heading: false
+            show_root_toc_entry: false
             show_root_full_path: false
             show_source: true
             show_signature_annotations: true

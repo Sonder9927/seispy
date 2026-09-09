@@ -4,8 +4,8 @@
 
 ### Correct clock drift
 
-::: seispy.correct.clock_drift
+::: seispy.correct.clock_drift.clock_drift
 
 ### Correct component orientation
 
-::: seispy.correct.orientation
+::: seispy.correct.orientation.orientation

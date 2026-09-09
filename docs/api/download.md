@@ -17,9 +17,35 @@ services.
 
 ::: seispy.download.download_waveforms
 
+## Download statistics
+
+### Check download status
+
+::: seispy.download.download_status
+
+The following functions are lower-level building blocks for custom workflows.
+
+### Scan daily availability
+
+::: seispy.download.scan_download_availability
+
+### Summarize completeness
+
+::: seispy.download.summarize_download_availability
+
+### Plot availability
+
+::: seispy.download.plot_download_availability
+
+### Analysis result
+
+::: seispy.download.DownloadAnalysis
+
 ## Result models
 
 Result models are returned by batch functions. Applications normally inspect
 their fields or serialize them; they do not need to instantiate them directly.
+
+### Waveform download summary
 
 ::: seispy.download.WaveformDownloadSummary

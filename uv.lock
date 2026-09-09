@@ -2023,6 +2023,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "marimo" },
+    { name = "matplotlib" },
     { name = "netcdf4" },
     { name = "numpy" },
     { name = "obspy" },
@@ -2050,6 +2051,7 @@ pdf = [
 [package.metadata]
 requires-dist = [
     { name = "marimo", specifier = ">=0.24.0" },
+    { name = "matplotlib", specifier = ">=3.10" },
     { name = "netcdf4", specifier = ">=1.7.4" },
     { name = "numpy", specifier = ">=2.0,<2.5" },
     { name = "obspy", specifier = ">=1.5.1,<1.6" },

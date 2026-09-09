@@ -139,6 +139,17 @@ summary = download.download_waveforms(
     password=os.environ.get("EARTHSCOPE_PASSWORD"),
 )
 
+# 统计各台站的下载完整率，并保存科研绘图（也支持 .svg 和 .png）
+report = download.download_status(
+    "data/mseed/XX",
+    start_date="2024-01-01",
+    end_date="2024-01-05",
+    output_figure="figures/download-status.pdf",
+    output_csv="data/download-status.csv",
+    station_order="availability",
+)
+print(report.summary)
+
 filtered = response.select_inventory(
     "data/response.xml",
     stations=["WEL", "KHZ"],

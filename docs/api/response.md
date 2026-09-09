@@ -33,4 +33,6 @@ Prepare station metadata and remove instrument responses from waveform data.
 The batch deconvolution function returns this immutable summary. Applications
 normally do not instantiate it directly.
 
+### Deconvolution summary
+
 ::: seispy.response.remove_response.DeconvolutionSummary
