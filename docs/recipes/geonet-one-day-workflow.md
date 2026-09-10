@@ -13,7 +13,10 @@ description: 下载 ABAZ、AKFZ 的 100 Hz 波形，去响应并降采样为 1 H
 GeoNet FDSN
   ├─ StationXML（响应级元数据）
   └─ 100 Hz HH? MiniSEED
-           ↓ ObsPy 直接读取并去仪器响应
+           ├─ ObsPy：直接读取并去仪器响应（推荐）
+           └─ SAC：mseed2sac → 原始计数 SAC → 去仪器响应
+                         │
+                         ▼
        100 Hz 位移 SAC（nm）
            ↓ 带抗混叠滤波的分级抽取 5 × 5 × 4
          1 Hz 位移 SAC（nm）
@@ -44,7 +47,7 @@ uv sync
 GeoNet 官方支持 ObsPy 的 `GEONET` 客户端别名；这里使用明确的 HTTPS
 地址，便于识别实际数据来源。
 
-## 完整脚本
+## 完整脚本：ObsPy 后端（推荐）
 
 将下面内容保存为 `geonet_2025_01_01.py`，然后从仓库根目录运行
 `uv run python geonet_2025_01_01.py`。
@@ -170,6 +173,48 @@ for path in outputs:
     print(trace.id, trace.stats.starttime, trace.stats.endtime, path)
 ```
 
+## 改用 SAC 后端
+
+外部 SAC 程序不能直接读取 MiniSEED，因此只有这个分支需要先调用
+`mseed2sac()`。在完整脚本中增加 `collate` 导入和原始计数 SAC 目录：
+
+```python
+from seispy import collate
+
+SAC_COUNTS = ROOT / "02_sac_counts_100hz"
+```
+
+然后用下面两段替换 ObsPy 去响应步骤；下载和最终验收保持不变：
+
+```python
+converted = collate.mseed2sac(
+    MSEED,
+    SAC_COUNTS,
+    pattern="*.mseed",
+    max_workers=2,
+    remove_original=False,
+    save_report=True,
+)
+require_ok("MiniSEED 转 SAC", converted)
+
+deconvolved = response.deconvolution_by_station(
+    SAC_COUNTS / NETWORK,
+    STATIONXML,
+    method="sac",
+    pattern="*.sac",
+    output_dir=SAC_DISP / NETWORK,
+    remove_original=False,
+    max_workers=2,
+    save_report=True,
+)
+require_ok("SAC 去仪器响应", deconvolved)
+```
+
+`mseed2sac()` 会在每个 MiniSEED 文件内部合并同一通道的连续片段，并插值不
+超过 1 秒的短间断；它不会跨多个 MiniSEED 文件合并。当前下载布局是每台站
+每天一个 MiniSEED，因此无需再调用 `merge_by_day()`。SAC 分支还要求系统中
+已安装可执行的 SAC 程序。
+
 ## 输出目录
 
 ```text
@@ -178,6 +223,7 @@ data/geonet/2025-01-01/
 │   ├── NZ_ABAZ_AKFZ_HH_2025-01-01.xml
 │   └── NZ_ABAZ_AKFZ_HH_2025-01-01.csv
 ├── 01_mseed_raw/                   # 原始 100 Hz MiniSEED
+├── 02_sac_counts_100hz/            # 仅 SAC 后端需要的中间文件
 ├── 02_sac_displacement_nm_100hz/   # 去响应后的 100 Hz SAC（nm）
 └── 03_sac_displacement_nm_1hz/     # 最终 1 Hz SAC（nm）
 ```
@@ -189,14 +235,15 @@ data/geonet/2025-01-01/
 
 - 时间全部是 UTC；结束时间设为次日零点，表示完整覆盖 2025-01-01。
 - MiniSEED 是原始波形归档，ObsPy 后端可直接读取，不需要先转换一份未去响应的
-  SAC。原始 MiniSEED 和两个处理结果目录均被保留，便于复现和回退。
+  SAC；外部 SAC 后端则必须先运行 `mseed2sac()`。两种方式都保留原始
+  MiniSEED，便于复现和回退。
 - 去响应不是简单除以灵敏度：ObsPy 会使用 StationXML 中完整的响应级信息，
   做去均值、去趋势、加窗和频域反卷积。本例结果是位移，单位为 nm。
 - 100 Hz 到 1 Hz 的降采样比为 100，分三级 `5 × 5 × 4` 完成，并在每级应用
   抗混叠滤波。
 - 一整天两站三分量的数据量较大。脚本可重复运行；已有 MiniSEED 会被跳过，
-  适合在网络中断后续传。下游目录已有同名 SAC 时，转换阶段会报告冲突；若要
-  全量重算，请先把对应的下游输出目录移到备份位置。
+  适合在网络中断后续传。SAC 分支的原始计数目录已有同名文件时，
+  `mseed2sac()` 会报告冲突；若要全量重算，请先把对应目录移到备份位置。
 - GeoNet 为避免重编码 MiniSEED，返回的第一条或最后一条记录可能略微越过请求
   边界；这是服务的公开行为，不代表请求日期写错。若分析要求严格日界，可在
   去响应后用 ObsPy 的 `trim` 明确裁切。
