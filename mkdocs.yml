@@ -50,6 +50,7 @@ nav:
   - Recipes:
       - Overview: recipes/index.md
       - Download:
+          - GeoNet single-day workflow: recipes/geonet-one-day-workflow.md
           - Station metadata: recipes/download-inventory.md
           - Earthquake catalog: recipes/download-events.md
           - Waveforms: recipes/download-waveforms.md
