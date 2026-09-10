@@ -53,7 +53,7 @@ Download daily MiniSEED or SAC files by station.
 | Organize and merge daily SAC files | [Sort and merge](recipes/sort-merge.md) |
 | Add event and station metadata to SAC headers | [Format headers](recipes/format-headers.md) |
 | Remove an instrument response | [Remove response](recipes/remove-response.md) |
-| Change the sampling rate | [Resample](recipes/resample.md) |
+| Reduce the sampling rate | [Decimate](recipes/decimate.md) |
 
 ## Analyze events and stations
 
@@ -66,7 +66,7 @@ Download daily MiniSEED or SAC files by station.
 !!! tip "A simple learning path"
 
     Start with [MiniSEED to SAC](recipes/convert-miniseed.md), continue with
-    [resampling](recipes/resample.md), and use the returned summary objects to
+    [decimation](recipes/decimate.md), and use the returned summary objects to
     understand what each batch operation changed.
 
 !!! warning "Protect source data"

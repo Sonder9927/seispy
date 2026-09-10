@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -499,6 +500,8 @@ def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
     assert summary.total == 2
     assert summary.downloaded == 2
     assert summary.files_written == 2
+    assert summary.ok
+    assert not replace(summary, no_data=1).ok
 
 
 def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):

@@ -10,7 +10,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 
 | Goal | Recipe | Primary function |
 | --- | --- | --- |
-| Process one GeoNet day end to end | [GeoNet 单日流程](recipes/geonet-one-day-workflow.md) | download, response removal, resampling |
+| Process one GeoNet day end to end | [GeoNet 单日流程](recipes/geonet-one-day-workflow.md) | download, response removal, decimation |
 | Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
 | Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
@@ -19,7 +19,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 | Organize daily files | [Sort and merge SAC](recipes/sort-merge.md) | `sort_to`, `merge_by_day` |
 | Populate SAC headers | [Format SAC headers](recipes/format-headers.md) | `format_head` |
 | Remove instrument response | [Remove response](recipes/remove-response.md) | `deconvolution_by_station` |
-| Change sampling rate | [Resample](recipes/resample.md) | `resample_by_station` |
+| Reduce sampling rate | [Decimate](recipes/decimate.md) | `decimate_files` |
 | Extract event windows | [Cut event windows](recipes/cut-events.md) | `cut_events` |
 | Correct station timing | [Correct stations](recipes/correct-stations.md) | `clock_drift` |
 | Correct sensor orientation | [Correct stations](recipes/correct-stations.md) | `orientation` |
@@ -43,6 +43,6 @@ copyable example, expected output, safety notes, and a link to the exact API.
 - **Event CSV:** [Earthquake catalog](recipes/download-events.md)
 - **SAC directory tree:** [MiniSEED to SAC](recipes/convert-miniseed.md)
 - **Processed waveform copy:** [Remove response](recipes/remove-response.md) or
-  [resample](recipes/resample.md)
+  [resample](recipes/decimate.md)
 - **Event waveform directories:** [Cut event windows](recipes/cut-events.md)
 - **MCMC input grids and summary CSV files:** [MCMC workflow](recipes/mcmc.md)

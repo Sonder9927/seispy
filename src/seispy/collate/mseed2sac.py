@@ -83,6 +83,10 @@ class Mseed2SacSummary(ReportMixin):
     duration_seconds: float
     report_path: Path | None = None
 
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.input_failed or self.removal_failed)
+
 def mseed2sac(
     source: str | Path,
     output_dir: str | Path,
@@ -160,12 +164,19 @@ def mseed2sac(
                 bar.update(result.total)
     combined = _combine(counts, max_error_samples)
     summary = Mseed2SacSummary(
-        run_id, combined.total, combined.succeeded, combined.failed,
-        combined.removed, combined.removal_failed, combined.traces_written,
-        combined.conflicts, combined.samples, output,
-        round(time.monotonic() - started, 3),
+        run_id=run_id,
+        input_total=combined.total,
+        input_succeeded=combined.succeeded,
+        input_failed=combined.failed,
+        originals_removed=combined.removed,
+        removal_failed=combined.removal_failed,
+        traces_written=combined.traces_written,
+        output_conflicts=combined.conflicts,
+        error_samples=combined.samples,
+        output_dir=output,
+        duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "mseed2sac", summary.input_failed + summary.removal_failed > 0, save_report)
+    summary = auto_save_report(summary, "mseed2sac", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(

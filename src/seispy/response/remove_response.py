@@ -91,6 +91,10 @@ class DeconvolutionSummary(ReportMixin):
     duration_seconds: float
     report_path: Path | None = None
 
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.failed or self.removal_failed)
+
 
 def deconvolution_by_station(
     src_dir: str | Path,
@@ -106,13 +110,14 @@ def deconvolution_by_station(
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     sac_batch_size: int = DEFAULT_SAC_BATCH_SIZE,
 ) -> DeconvolutionSummary:
-    """Remove instrument responses from SAC files grouped by station.
+    """Remove responses from station-grouped SAC or MiniSEED waveform files.
 
     Args:
         src_dir: Root directory containing one subdirectory per station.
         resp: StationXML file containing the matching response metadata.
         method: Processing backend, ``"obspy"`` or ``"sac"``.
-        pattern: Recursive file pattern within each station directory.
+        pattern: Recursive file pattern within each station directory. Use a
+            MiniSEED pattern only with ``method="obspy"``.
         max_workers: Maximum number of station worker processes.
         output_dir: Optional output root. A sibling directory is used by default.
         remove_original: Remove each source only after output commits safely.
@@ -130,7 +135,8 @@ def deconvolution_by_station(
 
     Raises:
         NotADirectoryError: If ``src_dir`` does not exist.
-        ValueError: If the method, limits, or output policy is invalid.
+        ValueError: If the method, limits, or output policy is invalid, or if
+            MiniSEED input is selected with the SAC backend.
 
     Examples:
         >>> summary = deconvolution_by_station(
@@ -170,6 +176,13 @@ def deconvolution_by_station(
     )
 
     stations = sorted(path for path in src_path.iterdir() if path.is_dir())
+    if method == "sac":
+        miniseed = _first_miniseed_input(stations, pattern)
+        if miniseed is not None:
+            raise ValueError(
+                f'method="sac" does not support MiniSEED input: {miniseed}; '
+                'use method="obspy"'
+            )
     inv = obspy.read_inventory(str(resp))
     response_conflicts = _preflight_response_conflicts(stations, pattern, inv)
     if response_conflicts:
@@ -231,21 +244,20 @@ def deconvolution_by_station(
 
     compact = _combine_batches(batches, max_error_samples)
     summary = DeconvolutionSummary(
-        run_id,
-        compact.total,
-        compact.succeeded,
-        compact.failed,
-        compact.removal_failed,
-        response_conflicts,
-        compact.issue_samples,
-        output_path,
-        remove_original,
-        round(time.monotonic() - started, 3),
+        run_id=run_id,
+        total=compact.total,
+        succeeded=compact.succeeded,
+        failed=compact.failed,
+        removal_failed=compact.removal_failed,
+        response_conflicts=response_conflicts,
+        issue_samples=compact.issue_samples,
+        output_dir=output_path,
+        remove_original=remove_original,
+        duration_seconds=round(time.monotonic() - started, 3),
     )
     summary = auto_save_report(
         summary,
         "deconvolution",
-        summary.failed + summary.removal_failed > 0,
         save_report,
     )
     if summary.report_path:
@@ -351,7 +363,12 @@ def _destination_for(target, src_root, output_dir, remove_original):
         return target.with_suffix(".deconv.sac")
     if output_dir is None:
         raise ValueError("output_dir is required when remove_original=False")
-    return output_dir / target.relative_to(src_root)
+    destination = output_dir / target.relative_to(src_root)
+    return (
+        destination
+        if destination.suffix.lower() == ".sac"
+        else destination.with_suffix(".sac")
+    )
 
 
 def _input_files(directory, pattern):
@@ -362,24 +379,80 @@ def _input_files(directory, pattern):
     )
 
 
-def _process_targets(targets, src_root, output_dir, remove_original, limit, process):
+def _first_miniseed_input(stations, pattern):
+    for station in stations:
+        for target in _input_files(station, pattern):
+            if target.suffix.lower() in {".mseed", ".miniseed", ".msd", ".seed"}:
+                return target
+            # Unknown extensions are inspected so format, rather than naming,
+            # remains authoritative without penalizing normal SAC collections.
+            if target.suffix.lower() == ".sac":
+                continue
+            try:
+                trace = obspy.read(target, headonly=True)[0]
+            except Exception:
+                continue
+            if getattr(trace.stats, "_format", "").upper() == "MSEED":
+                return target
+    return None
+
+
+def obspy_deconv(
+    directory,
+    pattern,
+    inv,
+    src_root,
+    output_dir,
+    remove_original,
+    max_error_samples,
+    pre_filt=DEFAULT_PRE_FILTER,
+):
+    return _process_obspy_targets(
+        _input_files(directory, pattern),
+        inv,
+        src_root,
+        output_dir,
+        remove_original,
+        max_error_samples,
+        pre_filt,
+    )
+
+
+def _process_obspy_targets(
+    targets, inv, src_root, output_dir, remove_original, limit, pre_filt
+):
     succeeded = failed = removal_failed = 0
     samples = []
     for target in targets:
-        destination = _destination_for(target, src_root, output_dir, remove_original)
-        temporary = temporary_output_path(destination)
+        base_destination = _destination_for(
+            target, src_root, output_dir, remove_original
+        )
+        temporary_outputs = []
+        committed_outputs = []
         try:
-            processed = process(target, temporary)
-            _validate_deconvolved_file(target, temporary, processed)
-            commit_output(temporary, destination, overwrite=True)
+            stream = stream_removed_response(target, inv, pre_filt=pre_filt)
+            destinations = _obspy_destinations(
+                target, stream, src_root, output_dir, remove_original
+            )
+            for trace, destination in zip(stream, destinations):
+                temporary = temporary_output_path(destination)
+                temporary_outputs.append((temporary, destination))
+                trace.write(str(temporary), format="SAC")
+                _validate_output_trace(trace, temporary)
+            for temporary, destination in temporary_outputs:
+                commit_output(temporary, destination, overwrite=True)
+                committed_outputs.append(destination)
         except Exception as exc:
-            temporary.unlink(missing_ok=True)
+            for temporary, _ in temporary_outputs:
+                temporary.unlink(missing_ok=True)
+            for destination in committed_outputs:
+                destination.unlink(missing_ok=True)
             failed += 1
             if len(samples) < limit:
                 samples.append(
                     DeconvolutionResult(
                         target,
-                        destination,
+                        base_destination,
                         "deconvolution_failed",
                         f"{type(exc).__name__}: {exc}",
                     )
@@ -395,7 +468,7 @@ def _process_targets(targets, src_root, output_dir, remove_original, limit, proc
                     samples.append(
                         DeconvolutionResult(
                             target,
-                            destination,
+                            base_destination,
                             "original_removal_failed",
                             f"{type(exc).__name__}: {exc}",
                         )
@@ -405,29 +478,35 @@ def _process_targets(targets, src_root, output_dir, remove_original, limit, proc
     )
 
 
-def obspy_deconv(
-    directory,
-    pattern,
-    inv,
-    src_root,
-    output_dir,
-    remove_original,
-    max_error_samples,
-    pre_filt=DEFAULT_PRE_FILTER,
-):
-    def process(target, temporary):
-        stream = stream_removed_response(target, inv, pre_filt=pre_filt)
-        stream.write(str(temporary), format="SAC")
-        return stream
-
-    return _process_targets(
-        _input_files(directory, pattern),
-        src_root,
-        output_dir,
-        remove_original,
-        max_error_samples,
-        process,
-    )
+def _obspy_destinations(target, stream, src_root, output_dir, remove_original):
+    base = _destination_for(target, src_root, output_dir, remove_original)
+    if len(stream) == 1:
+        return [base]
+    destinations = []
+    for index, trace in enumerate(stream, start=1):
+        stats = trace.stats
+        trace_id = (
+            ".".join(
+                filter(
+                    None,
+                    (
+                        getattr(stats, "network", ""),
+                        getattr(stats, "station", ""),
+                        getattr(stats, "location", ""),
+                        getattr(stats, "channel", ""),
+                    ),
+                )
+            )
+            or f"trace{index}"
+        )
+        start = stats.starttime.strftime("%Y%jT%H%M%S%f")
+        marker = ".deconv" if remove_original else ""
+        destinations.append(
+            base.with_name(f"{target.stem}.{trace_id}.{start}{marker}.sac")
+        )
+    if len(set(destinations)) != len(destinations):
+        raise ValueError(f"MiniSEED traces produce duplicate output names: {target}")
+    return destinations
 
 
 def sac_deconv(
@@ -660,14 +739,23 @@ def _preflight_response_conflicts(stations, pattern, inv) -> int:
         station_inventory = inv.select(station=station.name)
         for target in _input_files(station, pattern):
             try:
-                trace = obspy.read(target, headonly=True)[0]
+                stream = obspy.read(target, headonly=True)
             except Exception:
                 continue
-            try:
-                _response_epoch_for_trace(station_inventory, trace)
-            except Exception:
+            if any(
+                _trace_has_response_conflict(station_inventory, trace)
+                for trace in stream
+            ):
                 conflicts += 1
     return conflicts
+
+
+def _trace_has_response_conflict(inv, trace) -> bool:
+    try:
+        _response_epoch_for_trace(inv, trace)
+    except Exception:
+        return True
+    return False
 
 
 def _inventory_has_overlapping_epochs(inv) -> bool:
@@ -701,17 +789,7 @@ def _validate_deconvolved_file(source, output, processed=None) -> None:
     """Validate output using headers and, when available, in-memory samples."""
     source_trace = obspy.read(source, headonly=True)[0]
     output_trace = obspy.read(output, headonly=True)[0]
-    if output_trace.stats.npts <= 0:
-        raise ValueError("deconvolved output contains no samples")
-    if output_trace.stats.npts != source_trace.stats.npts:
-        raise ValueError("deconvolved output sample count differs from input")
-    if not np.isclose(
-        output_trace.stats.sampling_rate, source_trace.stats.sampling_rate
-    ):
-        raise ValueError("deconvolved output sampling rate differs from input")
-    tolerance = 0.5 / float(source_trace.stats.sampling_rate)
-    if abs(output_trace.stats.starttime - source_trace.stats.starttime) > tolerance:
-        raise ValueError("deconvolved output start time differs from input")
+    _validate_trace_headers(source_trace, output_trace)
     if processed is not None:
         for trace in processed:
             _validate_sample_values(trace.data)
@@ -719,7 +797,29 @@ def _validate_deconvolved_file(source, output, processed=None) -> None:
 
     # SAC maintains these extrema while writing. They provide a constant and
     # non-finite check without reading millions of samples back from disk.
-    sac = getattr(output_trace.stats, "sac", None)
+    _validate_sac_extrema(output_trace)
+
+
+def _validate_output_trace(expected, output) -> None:
+    output_trace = obspy.read(output, headonly=True)[0]
+    _validate_trace_headers(expected, output_trace)
+    _validate_sample_values(expected.data)
+
+
+def _validate_trace_headers(expected, output) -> None:
+    if output.stats.npts <= 0:
+        raise ValueError("deconvolved output contains no samples")
+    if output.stats.npts != expected.stats.npts:
+        raise ValueError("deconvolved output sample count differs from input")
+    if not np.isclose(output.stats.sampling_rate, expected.stats.sampling_rate):
+        raise ValueError("deconvolved output sampling rate differs from input")
+    tolerance = 0.5 / float(expected.stats.sampling_rate)
+    if abs(output.stats.starttime - expected.stats.starttime) > tolerance:
+        raise ValueError("deconvolved output start time differs from input")
+
+
+def _validate_sac_extrema(trace) -> None:
+    sac = getattr(trace.stats, "sac", None)
     depmin = getattr(sac, "depmin", None)
     depmax = getattr(sac, "depmax", None)
     if depmin is not None and depmax is not None:

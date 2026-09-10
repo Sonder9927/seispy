@@ -88,3 +88,4 @@ def test_summary_json_is_compact(tmp_path):
     data = json.loads(summary.to_json(tmp_path / "result.json").read_text())
     assert data["input_failed"] == 1
     assert len(data["error_samples"]) == 1
+    assert not summary.ok

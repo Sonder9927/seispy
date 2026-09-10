@@ -79,6 +79,10 @@ class FormatSummary(ReportMixin):
     duration_seconds: float
     report_path: Path | None = None
 
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.failed)
+
 def format_head(
     src_dir: str | Path,
     dest_dir: str | Path,
@@ -181,12 +185,20 @@ def format_head(
 
     combined = _combine(summaries, max_error_samples)
     summary = FormatSummary(
-        run_id, len(event_dirs), len(tasks), skipped, invalid_times,
-        combined.files_total, combined.succeeded, combined.failed,
-        combined.conflicts, combined.samples, dest_path,
-        round(time.monotonic() - started, 3),
+        run_id=run_id,
+        events_total=len(event_dirs),
+        events_processed=len(tasks),
+        events_skipped=skipped,
+        invalid_event_times=invalid_times,
+        files_total=combined.files_total,
+        succeeded=combined.succeeded,
+        failed=combined.failed,
+        output_conflicts=combined.conflicts,
+        error_samples=combined.samples,
+        output_dir=dest_path,
+        duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "format", summary.failed > 0, save_report)
+    summary = auto_save_report(summary, "format", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(

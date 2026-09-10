@@ -10,10 +10,10 @@ cd seispy
 uv sync
 ```
 
-## Convert and resample waveforms
+## Convert and decimate waveforms
 
 ```python
-from seispy import collate, resample_by_station
+from seispy import collate, decimate_files
 
 conversion = collate.mseed2sac(
     "data/miniseed",
@@ -22,13 +22,13 @@ conversion = collate.mseed2sac(
 )
 print(conversion.succeeded, conversion.failed)
 
-resampling = resample_by_station(
+decimation = decimate_files(
     "data/sac",
-    delta=1.0,
-    output_dir="data/resampled",
+    factors=[5, 5, 4],
+    output_dir="data/decimated",
     remove_original=False,
 )
-print(resampling.succeeded, resampling.failed)
+print(decimation.succeeded, decimation.failed)
 ```
 
 ## Remove an instrument response

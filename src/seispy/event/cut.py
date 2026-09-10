@@ -77,6 +77,10 @@ class CutEventSummary(ReportMixin):
     duration_seconds: float
     report_path: Path | None = None
 
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.tasks_failed or self.input_read_failed)
+
 def cut_events(
     src_dir: str | Path,
     dest_dir: str | Path,
@@ -155,17 +159,17 @@ def cut_events(
                 )
                 pbar.update(1)
     summary = CutEventSummary(
-        run_id,
-        tasks_done,
-        succeeded,
-        failed,
-        outputs,
-        read_failed,
-        no_data,
-        tuple(samples),
-        round(time.monotonic() - started, 3),
+        run_id=run_id,
+        tasks_total=tasks_done,
+        tasks_succeeded=succeeded,
+        tasks_failed=failed,
+        outputs_written=outputs,
+        input_read_failed=read_failed,
+        no_data=no_data,
+        error_samples=tuple(samples),
+        duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "cut-events", summary.tasks_failed + summary.input_read_failed > 0, save_report)
+    summary = auto_save_report(summary, "cut-events", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(

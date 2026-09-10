@@ -17,7 +17,7 @@ GeoNet FDSN
        原始计数 SAC
            ↓ ObsPy 去仪器响应
        100 Hz 位移 SAC（nm）
-           ↓ 带抗混叠滤波的分级抽取 10 × 10
+           ↓ 带抗混叠滤波的分级抽取 5 × 5 × 4
          1 Hz 位移 SAC（nm）
 ```
 
@@ -56,7 +56,7 @@ from pathlib import Path
 
 from obspy import read, read_inventory
 
-from seispy import collate, download, resample_by_station, response
+from seispy import collate, download, decimate_files, response
 
 
 GEONET = "https://service.geonet.org.nz"
@@ -74,12 +74,12 @@ SAC_DISP = ROOT / "03_sac_displacement_nm_100hz"
 SAC_1HZ = ROOT / "04_sac_displacement_nm_1hz"
 
 
-def require_success(stage, summary, succeeded, failed):
-    """Fail immediately instead of silently continuing with partial output."""
-    if failed or not succeeded:
+def require_ok(stage, summary):
+    """Stop on partial failure and point to the saved diagnostic report."""
+    if not summary.ok:
         raise RuntimeError(
-            f"{stage} 未完整成功：succeeded={succeeded}, failed={failed}; "
-            f"详情见 {getattr(summary, 'report_path', None) or '终端输出'}"
+            f"{stage} 未完整成功；"
+            f"详情见 {summary.report_path or '终端输出'}"
         )
 
 
@@ -122,12 +122,7 @@ waveforms = download.download_waveforms(
     overwrite=False,
     save_report=True,
 )
-require_success(
-    "MiniSEED 下载",
-    waveforms,
-    waveforms.downloaded + waveforms.skipped,
-    waveforms.failed + waveforms.no_data,
-)
+require_ok("MiniSEED 下载", waveforms)
 
 # 3. MiniSEED 转为原始计数 SAC；预计每站 3 个分量，共 6 个 SAC 文件。
 converted = collate.mseed2sac(
@@ -138,12 +133,7 @@ converted = collate.mseed2sac(
     remove_original=False,
     save_report=True,
 )
-require_success(
-    "MiniSEED 转 SAC",
-    converted,
-    converted.traces_written,
-    converted.input_failed,
-)
+require_ok("MiniSEED 转 SAC", converted)
 
 # 4. 用 ObsPy 去响应。当前 SeisPy 后端输出位移，并换算为 nm。
 # 默认 pre_filt=(0.004, 0.006, 4.0, 5.0) Hz，适合本例的一天连续记录。
@@ -157,31 +147,21 @@ deconvolved = response.deconvolution_by_station(
     max_workers=2,
     save_report=True,
 )
-require_success(
-    "去仪器响应",
-    deconvolved,
-    deconvolved.succeeded,
-    deconvolved.failed,
-)
+require_ok("去仪器响应", deconvolved)
 
-# 5. 从 100 Hz 降至 1 Hz。ObsPy 后端自动拆成 10 × 10 两级 decimate，
-# 每级都启用抗混叠低通滤波，而不是直接丢弃 99/100 的样点。
-resampled = resample_by_station(
+# 5. 从 100 Hz 降至 1 Hz。SciPy 后端按 5 × 5 × 4 顺序使用与 SAC
+# 相同的零相位 FIR 抗混叠滤波器；去响应阶段已做 taper，此处不再重复。
+decimated = decimate_files(
     SAC_DISP / NETWORK,  # 下一层仍直接是 ABAZ、AKFZ
-    delta=1.0,  # ObsPy 后端中 delta 表示“目标采样率（Hz）”
-    method="obspy",
+    factors=[5, 5, 4],
+    method="scipy",
     pattern="*.sac",
     output_dir=SAC_1HZ / NETWORK,
     remove_original=False,
     max_workers=2,
     save_report=True,
 )
-require_success(
-    "降采样到 1 Hz",
-    resampled,
-    resampled.succeeded,
-    resampled.failed,
-)
+require_ok("降采样到 1 Hz", decimated)
 
 # 6. 最终验收：元数据、台站、通道、采样率和数据值都必须符合预期。
 saved_inventory = read_inventory(STATIONXML)
@@ -225,7 +205,7 @@ data/geonet/2025-01-01/
   阶段均被保留，便于复现和回退。
 - 去响应不是简单除以灵敏度：ObsPy 会使用 StationXML 中完整的响应级信息，
   做去均值、去趋势、加窗和频域反卷积。本例结果是位移，单位为 nm。
-- 100 Hz 到 1 Hz 的降采样比为 100，分两级 `10 × 10` 完成，并在每级应用
+- 100 Hz 到 1 Hz 的降采样比为 100，分三级 `5 × 5 × 4` 完成，并在每级应用
   抗混叠滤波。
 - 一整天两站三分量的数据量较大。脚本可重复运行；已有 MiniSEED 会被跳过，
   适合在网络中断后续传。下游目录已有同名 SAC 时，转换阶段会报告冲突；若要

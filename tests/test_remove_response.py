@@ -21,13 +21,18 @@ sys.modules[_SPEC.name] = remove_response
 _SPEC.loader.exec_module(remove_response)
 
 
-class _WritableStream:
+class _WritableTrace:
     def __init__(self, content: bytes = b"processed"):
         self.content = content
 
     def write(self, filename, format):
         assert format == "SAC"
         Path(filename).write_bytes(self.content)
+
+
+class _WritableStream(list):
+    def __init__(self, content: bytes = b"processed"):
+        super().__init__([_WritableTrace(content)])
 
 
 def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
@@ -42,7 +47,7 @@ def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
         patch.object(
             remove_response, "stream_removed_response", return_value=_WritableStream()
         ),
-        patch.object(remove_response, "_validate_deconvolved_file"),
+        patch.object(remove_response, "_validate_output_trace"),
     ):
         results = remove_response.obspy_deconv(
             source_root / "STA",
@@ -60,6 +65,88 @@ def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
     assert results.total == 1
     assert results.succeeded == 1
     assert results.failed == 0
+
+
+def test_obspy_deconv_accepts_miniseed_and_writes_sac_extension(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    source = station / "trace.mseed"
+    source.write_bytes(b"miniseed")
+    output_root = tmp_path / "processed"
+
+    with (
+        patch.object(
+            remove_response, "stream_removed_response", return_value=_WritableStream()
+        ),
+        patch.object(remove_response, "_validate_output_trace"),
+    ):
+        result = remove_response.obspy_deconv(
+            station,
+            "*.mseed",
+            object(),
+            source_root,
+            output_root,
+            False,
+            20,
+        )
+
+    assert result.succeeded == 1
+    assert (output_root / "STA" / "trace.sac").read_bytes() == b"processed"
+    assert not (output_root / "STA" / "trace.mseed").exists()
+
+
+def test_sac_backend_rejects_miniseed_before_reading_inventory(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    source = station / "trace.mseed"
+    source.write_bytes(b"miniseed")
+
+    with (
+        patch.object(remove_response.obspy, "read_inventory") as read_inventory,
+        pytest.raises(ValueError, match='method="sac" does not support MiniSEED'),
+    ):
+        remove_response.deconvolution_by_station(
+            source_root,
+            tmp_path / "stations.xml",
+            method="sac",
+            pattern="*.mseed",
+            output_dir=tmp_path / "output",
+            save_report=False,
+        )
+
+    read_inventory.assert_not_called()
+
+
+def test_multitrace_miniseed_gets_one_unique_sac_name_per_trace(tmp_path):
+    source_root = tmp_path / "source"
+    target = source_root / "STA" / "day.mseed"
+    output_root = tmp_path / "output"
+
+    def trace(channel):
+        return SimpleNamespace(
+            stats=SimpleNamespace(
+                network="NZ",
+                station="AAA",
+                location="",
+                channel=channel,
+                starttime=UTCDateTime("2026-01-01"),
+            )
+        )
+
+    destinations = remove_response._obspy_destinations(
+        target,
+        [trace("BHZ"), trace("BHN")],
+        source_root,
+        output_root,
+        False,
+    )
+
+    assert len(set(destinations)) == 2
+    assert all(path.suffix == ".sac" for path in destinations)
+    assert any("BHZ" in path.name for path in destinations)
+    assert any("BHN" in path.name for path in destinations)
 
 
 def test_remove_original_failure_preserves_source_and_is_reported(tmp_path):
@@ -95,7 +182,7 @@ def test_remove_original_success_creates_deconv_and_removes_source(tmp_path):
         patch.object(
             remove_response, "stream_removed_response", return_value=_WritableStream()
         ),
-        patch.object(remove_response, "_validate_deconvolved_file"),
+        patch.object(remove_response, "_validate_output_trace"),
     ):
         results = remove_response.obspy_deconv(
             station, "*.sac", object(), source_root, None, True, 20
@@ -133,7 +220,7 @@ def test_previous_deconv_result_is_not_processed_again(tmp_path):
         patch.object(
             remove_response, "stream_removed_response", return_value=_WritableStream()
         ),
-        patch.object(remove_response, "_validate_deconvolved_file"),
+        patch.object(remove_response, "_validate_output_trace"),
     ):
         results = remove_response.obspy_deconv(
             station, "*.sac", object(), source_root, output_root, False, 20
@@ -192,6 +279,24 @@ def test_pre_filter_low_corner_must_be_below_nyquist():
 )
 def test_response_removal_interfaces_do_not_accept_resample(function):
     assert "resample" not in inspect.signature(function).parameters
+
+
+def test_deconvolution_summary_status_includes_removal_failures():
+    summary = remove_response.DeconvolutionSummary(
+        run_id="run",
+        total=1,
+        succeeded=1,
+        failed=0,
+        removal_failed=1,
+        response_conflicts=0,
+        issue_samples=(),
+        output_dir=None,
+        remove_original=True,
+        duration_seconds=0.1,
+    )
+
+    assert summary.has_issues
+    assert not summary.ok
 
 
 def test_sac_deconv_reuses_process_for_bounded_file_batches(tmp_path):

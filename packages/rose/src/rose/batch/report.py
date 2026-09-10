@@ -10,6 +10,9 @@ class ReportSummary(Protocol):
     run_id: str
     report_path: Path | None
 
+    @property
+    def has_issues(self) -> bool: ...
+
     def to_json(self, file: str | Path) -> Path: ...
 
 
@@ -32,7 +35,17 @@ def _json_value(value: Any) -> Any:
 
 
 class ReportMixin:
-    """JSON export shared by frozen domain-specific summary dataclasses."""
+    """Common status and JSON export for batch summary dataclasses."""
+
+    @property
+    def has_issues(self) -> bool:
+        """Whether the batch completed with domain-specific issues."""
+        raise NotImplementedError
+
+    @property
+    def ok(self) -> bool:
+        """Whether the batch completed without domain-specific issues."""
+        return not self.has_issues
 
     def to_json(self, file: str | Path) -> Path:
         if not is_dataclass(self):
@@ -49,12 +62,11 @@ class ReportMixin:
 def auto_save_report(
     summary: SummaryT,
     name: str,
-    has_issues: bool,
     save_report: bool | None,
     report_dir: str | Path = "logs/reports",
 ) -> SummaryT:
     """Save always, never, or only on issues according to ``save_report``."""
-    if save_report is False or (save_report is None and not has_issues):
+    if save_report is False or (save_report is None and not summary.has_issues):
         return summary
     path = Path(report_dir) / f"{name}-{summary.run_id}.json"
     updated = replace(summary, report_path=path)

@@ -8,14 +8,18 @@ _MODULES = {
     for name in ("collate", "correct", "download", "event", "mcmc", "response")
 }
 _ATTRS = {
-    "resample_by_station": ("seispy.resample", "resample_by_station"),
-    "ResampleResult": ("seispy.resample", "ResampleResult"),
-    "ResampleSummary": ("seispy.resample", "ResampleSummary"),
+    "decimate_files": ("seispy.decimate", "decimate_files"),
+    "DecimationResult": ("seispy.decimate", "DecimationResult"),
+    "DecimationSummary": ("seispy.decimate", "DecimationSummary"),
 }
 
 if TYPE_CHECKING:
     from seispy import collate, correct, download, event, mcmc, response
-    from seispy.resample import ResampleResult, ResampleSummary, resample_by_station
+    from seispy.decimate import (
+        DecimationResult,
+        DecimationSummary,
+        decimate_files,
+    )
 
 
 def __getattr__(name: str):
@@ -41,7 +45,7 @@ __all__ = [
     "event",
     "mcmc",
     "response",
-    "resample_by_station",
-    "ResampleResult",
-    "ResampleSummary",
+    "decimate_files",
+    "DecimationResult",
+    "DecimationSummary",
 ]

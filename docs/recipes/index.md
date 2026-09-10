@@ -30,4 +30,9 @@ prepare and collect MCMC results
 4. Inspect the returned summary and output files.
 5. Open the linked API entry for advanced parameters.
 
+Batch summaries expose `summary.ok` for the common success check. Detailed
+counters and sampled errors remain available when a workflow needs a more
+specific policy, such as treating a download with `no_data` differently from a
+network failure.
+
 Return to [Choose a task](../task-guide.md) for the complete task index.

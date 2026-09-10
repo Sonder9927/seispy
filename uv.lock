@@ -2030,6 +2030,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pygmt" },
     { name = "rose" },
+    { name = "scipy" },
     { name = "tqdm" },
 ]
 
@@ -2058,6 +2059,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.5" },
     { name = "pygmt", specifier = ">=0.19.0" },
     { name = "rose", editable = "packages/rose" },
+    { name = "scipy", specifier = ">=1.14,<1.19" },
     { name = "tqdm", specifier = ">=4.70.0" },
 ]
 

@@ -82,3 +82,4 @@ def test_summary_json(tmp_path):
     data = json.loads(summary.to_json(tmp_path / "summary.json").read_text())
     assert data["failed"] == 1
     assert data["error_samples"][0]["source"] == "a"
+    assert not summary.ok

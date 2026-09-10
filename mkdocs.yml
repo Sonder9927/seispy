@@ -60,7 +60,7 @@ nav:
           - Sort and merge SAC: recipes/sort-merge.md
           - Format SAC headers: recipes/format-headers.md
           - Remove response: recipes/remove-response.md
-          - Resample: recipes/resample.md
+          - Decimate: recipes/decimate.md
       - Events and corrections:
           - Cut event windows: recipes/cut-events.md
           - Correct stations: recipes/correct-stations.md
@@ -71,7 +71,7 @@ nav:
       - Download: api/download.md
       - Collate: api/collate.md
       - Response: api/response.md
-      - Resample: api/resample.md
+      - Decimate: api/decimate.md
       - Events: api/event.md
       - Corrections: api/correct.md
       - MCMC: api/mcmc.md

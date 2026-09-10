@@ -1,16 +1,16 @@
-# Resample API
+# Decimate API
 
 ## Functions
 
-### Resample station data
+### Decimate files
 
-::: seispy.resample.resample_by_station
+::: seispy.decimate.decimate_files
 
 ## Result models
 
 The batch function returns this immutable summary. Applications normally do not
 instantiate it directly.
 
-### Resampling summary
+### Decimation summary
 
-::: seispy.resample.ResampleSummary
+::: seispy.decimate.DecimationSummary

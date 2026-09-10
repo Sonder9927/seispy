@@ -29,6 +29,14 @@ print(f"Processed: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
 ```
 
+The ObsPy backend also accepts MiniSEED by selecting it with, for example,
+`pattern="*.mseed"`. Output is always SAC: a single trace keeps the input stem
+with a `.sac` suffix, while a multi-trace MiniSEED file produces one uniquely
+named SAC file per trace. With `remove_original=True`, the MiniSEED source is
+removed only after every trace has been written and validated successfully.
+The SAC backend rejects MiniSEED input before processing; use `method="obspy"`
+for MiniSEED.
+
 The default pre-filter is `(0.004, 0.006, 4.0, 5.0)` Hz. Both backends taper
 at most 5% from each edge and cap each edge at 600 seconds for daily records.
 Only gaps of one second or less are interpolated; longer gaps fail explicitly.

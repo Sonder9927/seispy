@@ -114,6 +114,10 @@ class WaveformDownloadSummary(ReportMixin):
     duration_seconds: float
     report_path: Path | None = None
 
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.failed or self.no_data)
+
 
 def download_waveforms(
     output_dir: str | Path,
@@ -274,20 +278,18 @@ def download_waveforms(
                         bar.update(1)
     combined = _Counts(**aggregate, samples=tuple(error_samples))
     summary = WaveformDownloadSummary(
-        run_id,
-        combined.total,
-        combined.downloaded,
-        combined.skipped,
-        combined.no_data,
-        combined.failed,
-        combined.files_written,
-        combined.samples,
-        output,
-        round(time.monotonic() - started, 3),
+        run_id=run_id,
+        total=combined.total,
+        downloaded=combined.downloaded,
+        skipped=combined.skipped,
+        no_data=combined.no_data,
+        failed=combined.failed,
+        files_written=combined.files_written,
+        error_samples=combined.samples,
+        output_dir=output,
+        duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(
-        summary, "waveform-download", summary.failed + summary.no_data > 0, save_report
-    )
+    summary = auto_save_report(summary, "waveform-download", save_report)
     logger.info(
         "run_id=%s completed total=%d downloaded=%d skipped=%d no_data=%d "
         "failed=%d files_written=%d duration=%.3f report=%s",

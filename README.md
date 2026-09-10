@@ -1,6 +1,6 @@
 # SeisPy
 
-SeisPy 是一个基于 [ObsPy](https://docs.obspy.org/) 的地震数据处理工具集，面向连续波形整理、仪器响应去除、重采样、事件波形截取、台站校正和 MCMC 输入文件生成等工作流。
+SeisPy 是一个基于 [ObsPy](https://docs.obspy.org/) 的地震数据处理工具集，面向连续波形整理、仪器响应去除、降采样、事件波形截取、台站校正和 MCMC 输入文件生成等工作流。
 
 📖 **在线文档：[sonder9927.github.io/seispy](https://sonder9927.github.io/seispy/)**
 
@@ -11,18 +11,18 @@ SeisPy 是一个基于 [ObsPy](https://docs.obspy.org/) 的地震数据处理工
 - 从 FDSN 服务下载连续波形、台站响应和 USGS 地震目录
 - 对 MiniSEED 和 SAC 文件进行分类、合并及头段整理
 - 使用 ObsPy 或 SAC 去除仪器响应
-- 按台站批量重采样，或将结果写入新的目录
+- 跨目录按文件批次执行零相位降采样，并保持原有相对路径
 - 根据事件目录截取连续波形
 - 校正台站时钟漂移和水平分量方位
 - 生成和汇总 MCMC 反演所需的网格与输入文件
-- 使用 Marimo 页面检查合并、响应去除和重采样结果
+- 使用 Marimo 页面检查合并、响应去除和降采样结果
 
 ## 环境要求
 
 - Python 3.12 或更高版本
 - 推荐使用 [uv](https://docs.astral.sh/uv/) 管理环境
 - 部分流程需要系统中额外安装：
-  - [SAC](https://ds.iris.edu/ds/nodes/dmc/software/downloads/sac/)：使用 `method="sac"` 的重采样、响应去除和事件截取
+  - [SAC](https://ds.iris.edu/ds/nodes/dmc/software/downloads/sac/)：提供零相位降采样所需的 FIR 系数；`method="sac"`、SAC 去响应和事件截取还会调用其可执行程序
   - [GMT](https://www.generic-mapping-tools.org/)：PyGMT 网格和频散相关流程
 
 ## 安装
@@ -72,24 +72,24 @@ collate.mseed2sac(
 )
 ```
 
-### 重采样
+### 降采样
 
 ```python
-from seispy import resample_by_station
+from seispy import decimate_files
 
-# ObsPy 后端：默认写入同级的 data/sac_resampled
-resample_by_station(
+# SciPy 后端使用 SAC FIR 系数，默认写入同级的 data/sac_decimated
+decimate_files(
     src_dir="data/sac",
-    delta=1.0,
-    method="obspy",
+    factors=[5, 5, 4],  # 100 Hz -> 1 Hz
+    method="scipy",
 )
 
 # SAC 后端：可依次应用多个 decimate 因子并写入指定目录
-resample_by_station(
+decimate_files(
     src_dir="data/sac",
-    delta=[2, 2, 5],
+    factors=[2, 2, 5],
     method="sac",
-    output_dir="data/resampled",
+    output_dir="data/decimated",
 )
 ```
 
@@ -241,7 +241,7 @@ uv run marimo run src/halo_seispy.py
 │   │   ├── event/         # 事件目录、波形截取及外部切割工具
 │   │   ├── mcmc/          # MCMC 网格生成和结果汇总
 │   │   ├── response/      # 响应文件管理与仪器响应去除
-│   │   └── resample.py    # 重采样
+│   │   └── decimate.py    # 零相位降采样
 │   ├── halo/              # 数据处理结果检查工具
 │   └── halo_seispy.py     # Marimo 页面
 ├── packages/rose/         # 批处理、报告、日志和路径等通用工具
