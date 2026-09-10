@@ -10,6 +10,7 @@ from rose import get_logger
 from rose.batch import ReportMixin, auto_save_report, create_run_id
 from tqdm import tqdm
 
+from seispy._waveform import merge_short_gaps
 from seispy.event.catalog import load_events, load_stations
 
 _LOG_CUTEVENT = {
@@ -263,7 +264,7 @@ def cut_event_station(
         event_dir.mkdir(parents=True, exist_ok=True)
         for channel, stream in channel_data.items():
             try:
-                merged_tr = stream.merge(method=1, fill_value="interpolate")[0]
+                merged_tr = merge_short_gaps(stream)[0]
                 trimed_tr = _trimmed_trace(merged_tr, event, station)
                 out_name = f"{event_name}.{station_name}.{channel}.sac"
                 trimed_tr.write(str(event_dir / out_name), format="SAC")
@@ -316,9 +317,6 @@ def _combine_cut_counts(items, limit):
 
 
 def _trimmed_trace(merged_tr, event, station):
-    # delta
-    delta = np.float16(merged_tr.stats.delta)
-    merged_tr.stats.delta = delta
     # trim to event time window
     trimed_tr = merged_tr.trim(event["start"], event["end"], nearest_sample=True)
 

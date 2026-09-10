@@ -17,6 +17,8 @@ from rose.batch import (
 )
 from tqdm import tqdm
 
+from seispy._waveform import merge_short_gaps
+
 _LOG = {"name": "mseed2sac", "file": "mseed2sac.log", "level": logging.INFO}
 
 
@@ -194,7 +196,7 @@ def _convert_file(source, output, remove_original, limit):
     destination = None
     try:
         stream = obspy.read(source)
-        stream.merge(method=1, fill_value="interpolate")
+        merge_short_gaps(stream)
         if not len(stream):
             raise ValueError("MiniSEED contains no traces")
         for trace in stream:

@@ -1,7 +1,11 @@
 """FDSN downloads for metadata, earthquake catalogs and waveforms."""
 
 from seispy.download.events import download_earthquake_events
-from seispy.download.inventory import download_inventory
+from seispy.download.inventory import (
+    ResponseConflictError,
+    ResponseConflictWarning,
+    download_inventory,
+)
 from seispy.download.stats import (
     DownloadAnalysis,
     download_status,
@@ -13,6 +17,8 @@ from seispy.download.waveform import WaveformDownloadSummary, download_waveforms
 
 __all__ = [
     "download_inventory",
+    "ResponseConflictError",
+    "ResponseConflictWarning",
     "download_earthquake_events",
     "download_waveforms",
     "download_status",

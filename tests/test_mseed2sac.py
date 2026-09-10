@@ -33,6 +33,9 @@ class _Trace:
 
 
 class _Stream(list):
+    def get_gaps(self):
+        return []
+
     def merge(self, **kwargs):
         return self
 

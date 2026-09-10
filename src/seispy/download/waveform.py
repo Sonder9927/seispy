@@ -29,6 +29,7 @@ from rose.batch import (
 )
 from tqdm import tqdm
 
+from seispy._waveform import merge_short_gaps
 from seispy.download.inventory import EARTHSCOPE_URL, _client
 
 _LOG = {
@@ -539,7 +540,7 @@ def _write_waveforms(
             raise
         return 1, False
 
-    stream.merge(method=1, fill_value="interpolate")
+    merge_short_gaps(stream)
     destinations = [_sac_destination(trace, directory) for trace in stream]
     temporary_paths = []
     created = []

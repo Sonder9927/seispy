@@ -6,6 +6,8 @@ import obspy
 from rose import pather, write_errors
 from tqdm import tqdm
 
+from seispy._waveform import merge_short_gaps
+
 
 def merge_by_day(
     src: str | Path, pattern: str = "*.SAC", remove_src: bool = True
@@ -51,7 +53,7 @@ def _merge_targets(day: Path, pattern, remove_src: bool) -> str | None:
         for sac in sacs:
             st += obspy.read(sac)
         st.sort()
-        st.merge(method=1, fill_value="interpolate")
+        merge_short_gaps(st)
 
         sac_parts = sac.stem.split(".")
         target_parts = sac_parts[:-1] + ["merged", "sac"]

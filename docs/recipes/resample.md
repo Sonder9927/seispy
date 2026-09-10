@@ -25,6 +25,11 @@ print(f"Resampled: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
 ```
 
+The target rate must be an integer divisor of the source rate. Resampling uses
+one or more filtered `decimate` stages (for example, 100 Hz to 1 Hz uses
+`10 × 10`) rather than FFT resampling, so anti-alias filtering is applied at
+every stage.
+
 ## SAC example
 
 For the SAC backend, values are sequential decimation factors:
@@ -36,8 +41,12 @@ summary = resample_by_station(
     method="sac",
     output_dir="data/resampled",
     remove_original=False,
+    sac_batch_size=100,
 )
 ```
+
+SAC processes files in bounded batches. A failed batch is not committed and
+the original files remain unchanged.
 
 !!! warning "Different meanings"
 

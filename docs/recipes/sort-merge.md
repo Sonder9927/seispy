@@ -29,8 +29,8 @@ collate.merge_by_day(
 )
 ```
 
-ObsPy sorts and merges the traces, interpolating gaps according to the current
-merge implementation.
+ObsPy sorts and merges the traces. Gaps of one second or less are interpolated;
+longer gaps fail explicitly instead of being filled with synthetic data.
 
 !!! warning "Source removal"
 

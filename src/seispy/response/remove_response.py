@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import obspy
+import numpy as np
 from tqdm import tqdm
 
+from seispy._waveform import merge_short_gaps
 from rose import get_logger
 from rose.batch import (
     ReportMixin,
@@ -27,8 +29,9 @@ _LOG_DECONVOLUTION = {
 }
 IssueStatus = Literal["deconvolution_failed", "original_removal_failed"]
 PreFilter = tuple[float, float, float, float]
-DEFAULT_PRE_FILTER: PreFilter = (0.003, 0.005, 4.0, 5.0)
+DEFAULT_PRE_FILTER: PreFilter = (0.004, 0.006, 4.0, 5.0)
 DEFAULT_SAC_BATCH_SIZE = 100
+TAPER_MAX_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,8 @@ class DeconvolutionSummary(ReportMixin):
         succeeded: Number processed successfully.
         failed: Number that failed deconvolution.
         removal_failed: Number of successful outputs whose source removal failed.
+        response_conflicts: Number of input files found during preflight to have
+            no unique response epoch.
         issue_samples: Bounded sample of processing and removal issues.
         output_dir: Output root, or ``None`` when replacing source files.
         remove_original: Whether successful outputs replace their sources.
@@ -79,6 +84,7 @@ class DeconvolutionSummary(ReportMixin):
     succeeded: int
     failed: int
     removal_failed: int
+    response_conflicts: int
     issue_samples: tuple[DeconvolutionResult, ...]
     output_dir: Path | None
     remove_original: bool
@@ -165,6 +171,14 @@ def deconvolution_by_station(
 
     stations = sorted(path for path in src_path.iterdir() if path.is_dir())
     inv = obspy.read_inventory(str(resp))
+    response_conflicts = _preflight_response_conflicts(stations, pattern, inv)
+    if response_conflicts:
+        logger.warning(
+            "run_id=%s response_preflight_conflicts=%d; affected files will fail "
+            "without choosing a response arbitrarily",
+            run_id,
+            response_conflicts,
+        )
     batches: list[_WorkerSummary] = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
@@ -222,6 +236,7 @@ def deconvolution_by_station(
         compact.succeeded,
         compact.failed,
         compact.removal_failed,
+        response_conflicts,
         compact.issue_samples,
         output_path,
         remove_original,
@@ -354,7 +369,8 @@ def _process_targets(targets, src_root, output_dir, remove_original, limit, proc
         destination = _destination_for(target, src_root, output_dir, remove_original)
         temporary = temporary_output_path(destination)
         try:
-            process(target, temporary)
+            processed = process(target, temporary)
+            _validate_deconvolved_file(target, temporary, processed)
             commit_output(temporary, destination, overwrite=True)
         except Exception as exc:
             temporary.unlink(missing_ok=True)
@@ -400,9 +416,9 @@ def obspy_deconv(
     pre_filt=DEFAULT_PRE_FILTER,
 ):
     def process(target, temporary):
-        stream_removed_response(target, inv, pre_filt=pre_filt).write(
-            str(temporary), format="SAC"
-        )
+        stream = stream_removed_response(target, inv, pre_filt=pre_filt)
+        stream.write(str(temporary), format="SAC")
+        return stream
 
     return _process_targets(
         _input_files(directory, pattern),
@@ -487,6 +503,7 @@ def _process_sac_batch(
             trace = obspy.read(target, headonly=True)[0]
             f1, f2, f3, f4 = _effective_pre_filt(pre_filt, trace.stats.sampling_rate)
             pzs = _sac_pz_for_trace(inv, trace, cache_dir, response_cache)
+            taper_width = _sac_taper_width(trace)
         except Exception as exc:
             temporary.unlink(missing_ok=True)
             failed += 1
@@ -496,7 +513,7 @@ def _process_sac_batch(
         commands.extend(
             (
                 f"r {target}",
-                "rmean; rtr; taper",
+                f"rmean; rtr; taper type hanning width {taper_width:g}",
                 f"trans from pol s {pzs} to none freq {f1:g} {f2:g} {f3:g} {f4:g}",
                 "mul 1.0e9",
                 f"w {temporary}",
@@ -523,11 +540,38 @@ def _process_sac_batch(
                     detail or f"SAC exited with {completed.returncode}"
                 )
 
+        if process_error is not None and len(prepared) > 1:
+            for _, _, temporary in prepared:
+                temporary.unlink(missing_ok=True)
+            middle = len(prepared) // 2
+            retried = [
+                _process_sac_batch(
+                    [item[0] for item in group],
+                    inv,
+                    cache_dir,
+                    response_cache,
+                    src_root,
+                    output_dir,
+                    remove_original,
+                    limit,
+                    pre_filt,
+                    environment,
+                )
+                for group in (prepared[:middle], prepared[middle:])
+            ]
+            initial = _WorkerSummary(
+                total=len(targets) - len(prepared),
+                failed=failed,
+                issue_samples=tuple(samples),
+            )
+            return _combine_batches([initial, *retried], limit)
+
         succeeded = 0
         for target, destination, temporary in prepared:
             try:
                 if process_error is not None:
                     raise process_error
+                _validate_deconvolved_file(target, temporary)
                 commit_output(temporary, destination, overwrite=True)
             except Exception as exc:
                 temporary.unlink(missing_ok=True)
@@ -551,38 +595,12 @@ def _process_sac_batch(
 
 def _sac_pz_for_trace(inv, trace, cache_dir, cache):
     """Return one cached SACPZ file selected by trace ID, time, and epoch."""
-    stats = trace.stats
-    selected = inv.select(
-        network=stats.network,
-        station=stats.station,
-        location=getattr(stats, "location", ""),
-        channel=stats.channel,
-        time=stats.starttime,
-    )
-    matches = [
-        channel for network in selected for station in network for channel in station
-    ]
-    if len(matches) != 1:
-        raise ValueError(
-            f"expected one response epoch for {trace.id} at {stats.starttime}, "
-            f"found {len(matches)}"
-        )
-    channel = matches[0]
-    if channel.end_date is not None and stats.endtime > channel.end_date:
-        raise ValueError(
-            f"response changes within {trace.id}: trace ends at {stats.endtime}, "
-            f"epoch ends at {channel.end_date}"
-        )
-    key = (
-        trace.id,
-        str(channel.start_date),
-        str(channel.end_date),
-    )
+    selected, channel = _response_epoch_for_trace(inv, trace)
+    key = (trace.id, str(channel.start_date), str(channel.end_date))
     cached = cache.get(key)
     if cached is not None:
         return cached
 
-    selected.get_response(trace.id, stats.starttime)
     destination = cache_dir / f"response-{len(cache):04d}.pz"
     selected.write(str(destination), format="SACPZ")
     contents = destination.read_text(encoding="utf-8")
@@ -605,6 +623,121 @@ def _sac_pz_for_trace(inv, trace, cache_dir, cache):
     return destination
 
 
+def _response_epoch_for_trace(inv, trace):
+    """Select exactly one response epoch covering the complete trace."""
+    stats = trace.stats
+    selected = inv.select(
+        network=stats.network,
+        station=stats.station,
+        location=getattr(stats, "location", ""),
+        channel=stats.channel,
+        time=stats.starttime,
+    )
+    matches = [
+        channel for network in selected for station in network for channel in station
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one response epoch for {trace.id} at {stats.starttime}, "
+            f"found {len(matches)}"
+        )
+    channel = matches[0]
+    if channel.end_date is not None and stats.endtime > channel.end_date:
+        raise ValueError(
+            f"response changes within {trace.id}: trace ends at {stats.endtime}, "
+            f"epoch ends at {channel.end_date}"
+        )
+    selected.get_response(trace.id, stats.starttime)
+    return selected, channel
+
+
+def _preflight_response_conflicts(stations, pattern, inv) -> int:
+    """Count affected files only when the inventory contains overlapping epochs."""
+    if not _inventory_has_overlapping_epochs(inv):
+        return 0
+    conflicts = 0
+    for station in stations:
+        station_inventory = inv.select(station=station.name)
+        for target in _input_files(station, pattern):
+            try:
+                trace = obspy.read(target, headonly=True)[0]
+            except Exception:
+                continue
+            try:
+                _response_epoch_for_trace(station_inventory, trace)
+            except Exception:
+                conflicts += 1
+    return conflicts
+
+
+def _inventory_has_overlapping_epochs(inv) -> bool:
+    groups = {}
+    for network in inv:
+        for station in network:
+            for channel in station:
+                key = (
+                    network.code,
+                    station.code,
+                    channel.location_code or "",
+                    channel.code,
+                )
+                groups.setdefault(key, []).append(channel)
+    for epochs in groups.values():
+        ordered = sorted(
+            epochs,
+            key=lambda item: (
+                float("-inf") if item.start_date is None else item.start_date.timestamp
+            ),
+        )
+        for previous, current in zip(ordered, ordered[1:]):
+            if previous.end_date is None or current.start_date is None:
+                return True
+            if current.start_date <= previous.end_date:
+                return True
+    return False
+
+
+def _validate_deconvolved_file(source, output, processed=None) -> None:
+    """Validate output using headers and, when available, in-memory samples."""
+    source_trace = obspy.read(source, headonly=True)[0]
+    output_trace = obspy.read(output, headonly=True)[0]
+    if output_trace.stats.npts <= 0:
+        raise ValueError("deconvolved output contains no samples")
+    if output_trace.stats.npts != source_trace.stats.npts:
+        raise ValueError("deconvolved output sample count differs from input")
+    if not np.isclose(
+        output_trace.stats.sampling_rate, source_trace.stats.sampling_rate
+    ):
+        raise ValueError("deconvolved output sampling rate differs from input")
+    tolerance = 0.5 / float(source_trace.stats.sampling_rate)
+    if abs(output_trace.stats.starttime - source_trace.stats.starttime) > tolerance:
+        raise ValueError("deconvolved output start time differs from input")
+    if processed is not None:
+        for trace in processed:
+            _validate_sample_values(trace.data)
+        return
+
+    # SAC maintains these extrema while writing. They provide a constant and
+    # non-finite check without reading millions of samples back from disk.
+    sac = getattr(output_trace.stats, "sac", None)
+    depmin = getattr(sac, "depmin", None)
+    depmax = getattr(sac, "depmax", None)
+    if depmin is not None and depmax is not None:
+        if not np.isfinite((depmin, depmax)).all():
+            raise ValueError("deconvolved output has non-finite amplitude extrema")
+        if depmin == depmax:
+            raise ValueError("deconvolved output is constant")
+
+
+def _validate_sample_values(data) -> None:
+    if np.size(data) == 0:
+        raise ValueError("deconvolved output contains no samples")
+    if not np.isfinite(data).all():
+        raise ValueError("deconvolved output contains NaN or infinite samples")
+    if np.all(data == data[0]):
+        raise ValueError("deconvolved output is constant")
+
+
 def stream_removed_response(
     file: str | Path,
     inv: Any,
@@ -625,14 +758,15 @@ def stream_removed_response(
         >>> stream = stream_removed_response("trace.sac", inventory)
     """
     st = obspy.read(file)
-    st.merge(method=1, fill_value="interpolate")
+    merge_short_gaps(st)
     for tr in st:
+        response_inventory, _ = _response_epoch_for_trace(inv, tr)
         effective_pre_filt = _effective_pre_filt(pre_filt, tr.stats.sampling_rate)
         tr.detrend("demean")
         tr.detrend("linear")
-        tr.taper(max_percentage=0.05, type="hann")
+        tr.taper(max_percentage=0.05, max_length=TAPER_MAX_SECONDS, type="hann")
         tr.remove_response(
-            inventory=inv,
+            inventory=response_inventory,
             water_level=None,
             pre_filt=effective_pre_filt,
             output="DISP",
@@ -641,6 +775,13 @@ def stream_removed_response(
         )
         tr.data *= 1e9
     return st
+
+
+def _sac_taper_width(trace) -> float:
+    duration = trace.stats.npts / float(trace.stats.sampling_rate)
+    if duration <= 0:
+        raise ValueError("trace duration must be positive")
+    return min(0.05, TAPER_MAX_SECONDS / duration)
 
 
 def _validate_pre_filt(pre_filt) -> PreFilter:
