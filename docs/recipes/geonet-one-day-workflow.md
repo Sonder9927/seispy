@@ -13,9 +13,7 @@ description: 下载 ABAZ、AKFZ 的 100 Hz 波形，去响应并降采样为 1 H
 GeoNet FDSN
   ├─ StationXML（响应级元数据）
   └─ 100 Hz HH? MiniSEED
-           ↓ 转换格式
-       原始计数 SAC
-           ↓ ObsPy 去仪器响应
+           ↓ ObsPy 直接读取并去仪器响应
        100 Hz 位移 SAC（nm）
            ↓ 带抗混叠滤波的分级抽取 5 × 5 × 4
          1 Hz 位移 SAC（nm）
@@ -56,7 +54,7 @@ from pathlib import Path
 
 from obspy import read, read_inventory
 
-from seispy import collate, download, decimate_files, response
+from seispy import decimate_files, download, response
 
 
 GEONET = "https://service.geonet.org.nz"
@@ -69,9 +67,8 @@ END = "2025-01-02T00:00:00"  # FDSN 的 endtime 不包含在结果中
 ROOT = Path("data/geonet/2025-01-01")
 STATIONXML = ROOT / "metadata" / "NZ_ABAZ_AKFZ_HH_2025-01-01.xml"
 MSEED = ROOT / "01_mseed_raw"
-SAC_COUNTS = ROOT / "02_sac_counts_100hz"
-SAC_DISP = ROOT / "03_sac_displacement_nm_100hz"
-SAC_1HZ = ROOT / "04_sac_displacement_nm_1hz"
+SAC_DISP = ROOT / "02_sac_displacement_nm_100hz"
+SAC_1HZ = ROOT / "03_sac_displacement_nm_1hz"
 
 
 def require_ok(stage, summary):
@@ -124,24 +121,15 @@ waveforms = download.download_waveforms(
 )
 require_ok("MiniSEED 下载", waveforms)
 
-# 3. MiniSEED 转为原始计数 SAC；预计每站 3 个分量，共 6 个 SAC 文件。
-converted = collate.mseed2sac(
-    MSEED,
-    SAC_COUNTS,
-    pattern="*.mseed",
-    max_workers=2,
-    remove_original=False,
-    save_report=True,
-)
-require_ok("MiniSEED 转 SAC", converted)
-
-# 4. 用 ObsPy 去响应。当前 SeisPy 后端输出位移，并换算为 nm。
+# 3. 用 ObsPy 直接读取 MiniSEED 并去响应，输出每个通道独立的 SAC。
+# 读取后会合并连续片段；不超过 1 秒的短间断使用插值补齐。
+# 当前 SeisPy 后端输出位移，并换算为 nm。
 # 默认 pre_filt=(0.004, 0.006, 4.0, 5.0) Hz，适合本例的一天连续记录。
 deconvolved = response.deconvolution_by_station(
-    SAC_COUNTS / NETWORK,  # 此函数要求下一层目录直接是台站代码
+    MSEED / NETWORK,  # 此函数要求下一层目录直接是台站代码
     STATIONXML,
     method="obspy",
-    pattern="*.sac",
+    pattern="*.mseed",
     output_dir=SAC_DISP / NETWORK,
     remove_original=False,
     max_workers=2,
@@ -149,7 +137,7 @@ deconvolved = response.deconvolution_by_station(
 )
 require_ok("去仪器响应", deconvolved)
 
-# 5. 从 100 Hz 降至 1 Hz。SciPy 后端按 5 × 5 × 4 顺序使用与 SAC
+# 4. 从 100 Hz 降至 1 Hz。SciPy 后端按 5 × 5 × 4 顺序使用与 SAC
 # 相同的零相位 FIR 抗混叠滤波器；去响应阶段已做 taper，此处不再重复。
 decimated = decimate_files(
     SAC_DISP / NETWORK,  # 下一层仍直接是 ABAZ、AKFZ
@@ -163,7 +151,7 @@ decimated = decimate_files(
 )
 require_ok("降采样到 1 Hz", decimated)
 
-# 6. 最终验收：元数据、台站、通道、采样率和数据值都必须符合预期。
+# 5. 最终验收：元数据、台站、通道、采样率和数据值都必须符合预期。
 saved_inventory = read_inventory(STATIONXML)
 assert {sta.code for net in saved_inventory for sta in net} == set(STATIONS)
 
@@ -190,19 +178,18 @@ data/geonet/2025-01-01/
 │   ├── NZ_ABAZ_AKFZ_HH_2025-01-01.xml
 │   └── NZ_ABAZ_AKFZ_HH_2025-01-01.csv
 ├── 01_mseed_raw/                   # 原始 100 Hz MiniSEED
-├── 02_sac_counts_100hz/            # 未去响应的 100 Hz SAC（counts）
-├── 03_sac_displacement_nm_100hz/   # 去响应后的 100 Hz SAC（nm）
-└── 04_sac_displacement_nm_1hz/     # 最终 1 Hz SAC（nm）
+├── 02_sac_displacement_nm_100hz/   # 去响应后的 100 Hz SAC（nm）
+└── 03_sac_displacement_nm_1hz/     # 最终 1 Hz SAC（nm）
 ```
 
 每个波形目录内部继续按 `网络/台站/年份/儒略日` 组织。例如最终文件位于
-`04_sac_displacement_nm_1hz/NZ/ABAZ/2025/001/`。
+`03_sac_displacement_nm_1hz/NZ/ABAZ/2025/001/`。
 
 ## 关键说明
 
 - 时间全部是 UTC；结束时间设为次日零点，表示完整覆盖 2025-01-01。
-- MiniSEED 是原始波形归档，SAC 是后续处理格式。原始 MiniSEED 和每个中间
-  阶段均被保留，便于复现和回退。
+- MiniSEED 是原始波形归档，ObsPy 后端可直接读取，不需要先转换一份未去响应的
+  SAC。原始 MiniSEED 和两个处理结果目录均被保留，便于复现和回退。
 - 去响应不是简单除以灵敏度：ObsPy 会使用 StationXML 中完整的响应级信息，
   做去均值、去趋势、加窗和频域反卷积。本例结果是位移，单位为 nm。
 - 100 Hz 到 1 Hz 的降采样比为 100，分三级 `5 × 5 × 4` 完成，并在每级应用
