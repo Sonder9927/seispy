@@ -83,15 +83,17 @@ def download_status(
         Availability data, summary table, figure, axes, and saved paths.
 
     Examples:
-        >>> report = download_status(
-        ...     "data/waveforms/NZ",
-        ...     start_date="2024-01-01",
-        ...     end_date="2024-12-31",
-        ...     output_figure="availability.pdf",
-        ...     output_csv="availability.csv",
-        ... )
-        >>> report.summary.columns[0]
-        'station'
+        ```python
+        report = download_status(
+            "data/waveforms/NZ",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            output_figure="availability.pdf",
+            output_csv="availability.csv",
+        )
+        report.summary.columns[0]
+        # => 'station'
+        ```
     """
     availability = scan_download_availability(
         data_dir,
@@ -166,9 +168,11 @@ def scan_download_availability(
         ValueError: If the date range or extensions are invalid.
 
     Examples:
-        >>> availability = scan_download_availability("data/waveforms/NZ")
-        >>> list(availability.columns)
-        ['station', 'date', 'file_count', 'size_bytes']
+        ```python
+        availability = scan_download_availability("data/waveforms/NZ")
+        list(availability.columns)
+        # => ['station', 'date', 'file_count', 'size_bytes']
+        ```
     """
     root = Path(data_dir).expanduser()
     if not root.is_dir():
@@ -230,8 +234,10 @@ def summarize_download_availability(
         Per-station counts, availability percentage, and observed date limits.
 
     Examples:
-        >>> summary = summarize_download_availability(availability)
-        >>> summary.sort_values("availability_percent", ascending=False).head()
+        ```python
+        summary = summarize_download_availability(availability)
+        summary.sort_values("availability_percent", ascending=False).head()
+        ```
     """
     frame = _validate_availability(availability)
     if frame.empty:
@@ -281,9 +287,11 @@ def plot_download_availability(
         The Matplotlib figure and axes for further customization.
 
     Examples:
-        >>> fig, ax = plot_download_availability(
-        ...     availability, "availability.pdf", station_order="availability"
-        ... )
+        ```python
+        fig, ax = plot_download_availability(
+            availability, "availability.pdf", station_order="availability"
+        )
+        ```
     """
     import matplotlib.dates as mdates
     import matplotlib.pyplot as plt

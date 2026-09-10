@@ -20,7 +20,7 @@ conversion = collate.mseed2sac(
     "data/sac",
     remove_original=False,
 )
-print(conversion.succeeded, conversion.failed)
+print(conversion.input_succeeded, conversion.input_failed)
 
 decimation = decimate_files(
     "data/sac",

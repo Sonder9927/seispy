@@ -19,7 +19,9 @@ def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):
         pattern: Glob pattern used to select source files.
 
     Examples:
-        >>> sort_to("data/raw", "data/sorted", pattern="*.sac")
+        ```python
+        sort_to("data/raw", "data/sorted", pattern="*.sac")
+        ```
     """
     src_path = Path(src)
     dest_path = Path(dest)

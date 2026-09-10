@@ -28,11 +28,13 @@ def download_earthquake_events(
         and magnitude type.
 
     Examples:
-        >>> events = download_earthquake_events(
-        ...     "2025-01-01", "2025-02-01", minmagnitude=5.5
-        ... )
-        >>> "time" in events.columns
-        True
+        ```python
+        events = download_earthquake_events(
+            "2025-01-01", "2025-02-01", minmagnitude=5.5
+        )
+        "time" in events.columns
+        # => True
+        ```
     """
     catalog = Client(client).get_events(
         starttime=UTCDateTime(starttime), endtime=UTCDateTime(endtime), **query

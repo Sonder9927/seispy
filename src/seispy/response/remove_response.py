@@ -75,8 +75,10 @@ class DeconvolutionSummary(ReportMixin):
         report_path: JSON report path when a report was generated.
 
     Examples:
-        >>> summary = deconvolution_by_station(...)
-        >>> print(summary.succeeded, summary.failed)
+        ```python
+        summary = deconvolution_by_station(...)
+        print(summary.succeeded, summary.failed)
+        ```
     """
 
     run_id: str
@@ -139,12 +141,14 @@ def deconvolution_by_station(
             MiniSEED input is selected with the SAC backend.
 
     Examples:
-        >>> summary = deconvolution_by_station(
-        ...     "data/sac", "stations.xml", output_dir="data/deconvolved",
-        ...     remove_original=False,
-        ... )
-        >>> summary.remove_original
-        False
+        ```python
+        summary = deconvolution_by_station(
+            "data/sac", "stations.xml", output_dir="data/deconvolved",
+            remove_original=False,
+        )
+        summary.remove_original
+        # => False
+        ```
     """
     started = time.monotonic()
     run_id = create_run_id()
@@ -855,7 +859,9 @@ def stream_removed_response(
         The processed ObsPy stream.
 
     Examples:
-        >>> stream = stream_removed_response("trace.sac", inventory)
+        ```python
+        stream = stream_removed_response("trace.sac", inventory)
+        ```
     """
     st = obspy.read(file)
     merge_short_gaps(st)

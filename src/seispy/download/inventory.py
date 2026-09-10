@@ -48,11 +48,13 @@ def download_inventory(
         ValueError: If only one credential is supplied.
 
     Examples:
-        >>> inventory = download_inventory(
-        ...     "stations.xml", network="NZ", station="WEL", channel="BH?"
-        ... )
-        >>> len(inventory.networks) >= 0
-        True
+        ```python
+        inventory = download_inventory(
+            "stations.xml", network="NZ", station="WEL", channel="BH?"
+        )
+        len(inventory.networks) >= 0
+        # => True
+        ```
     """
     fdsn = _client(client, username, password)
     downloaded = fdsn.get_stations(level=level, **query)

@@ -62,8 +62,10 @@ class CutEventSummary(ReportMixin):
         report_path: JSON report path when a report was generated.
 
     Examples:
-        >>> summary = cut_events(...)
-        >>> print(summary.outputs_written, summary.tasks_failed)
+        ```python
+        summary = cut_events(...)
+        print(summary.outputs_written, summary.tasks_failed)
+        ```
     """
 
     run_id: str
@@ -109,12 +111,14 @@ def cut_events(
         ValueError: If error sampling or input metadata is invalid.
 
     Examples:
-        >>> summary = cut_events(
-        ...     "data/continuous", "data/events", "events.csv",
-        ...     station_csv="stations.csv", time_window=10_800,
-        ... )
-        >>> summary.tasks_total >= summary.tasks_succeeded
-        True
+        ```python
+        summary = cut_events(
+            "data/continuous", "data/events", "events.csv",
+            station_csv="stations.csv", time_window=10_800,
+        )
+        summary.tasks_total >= summary.tasks_succeeded
+        # => True
+        ```
     """
     started = time.monotonic()
     run_id = create_run_id()

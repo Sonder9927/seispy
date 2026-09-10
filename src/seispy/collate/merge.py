@@ -20,7 +20,9 @@ def merge_by_day(
         remove_src: Remove source files after a successful merge.
 
     Examples:
-        >>> merge_by_day("data/sorted", pattern="*.sac", remove_src=False)
+        ```python
+        merge_by_day("data/sorted", pattern="*.sac", remove_src=False)
+        ```
     """
     src_path = Path(src)
     days = pather.find_last_subdirs(src_path)

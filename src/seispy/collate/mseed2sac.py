@@ -66,8 +66,10 @@ class Mseed2SacSummary(ReportMixin):
         report_path: JSON report path when a report was generated.
 
     Examples:
-        >>> summary = mseed2sac(...)
-        >>> print(summary.traces_written, summary.input_failed)
+        ```python
+        summary = mseed2sac(...)
+        print(summary.traces_written, summary.input_failed)
+        ```
     """
 
     run_id: str
@@ -119,11 +121,13 @@ def mseed2sac(
         ValueError: If limits are invalid or output is nested inside the input.
 
     Examples:
-        >>> summary = mseed2sac(
-        ...     "data/miniseed", "data/sac", remove_original=False
-        ... )
-        >>> summary.output_dir.name
-        'sac'
+        ```python
+        summary = mseed2sac(
+            "data/miniseed", "data/sac", remove_original=False
+        )
+        summary.output_dir.name
+        # => 'sac'
+        ```
     """
     started = time.monotonic()
     run_id = create_run_id()
@@ -278,13 +282,15 @@ def build_sac_path(
         The destination path; no directory is created.
 
     Examples:
-        >>> from obspy import UTCDateTime
-        >>> path = build_sac_path(
-        ...     "out", "NZ", "WEL", "10", "BHZ", "D",
-        ...     UTCDateTime("2025-01-01"),
-        ... )
-        >>> path.name.startswith("NZ.WEL.10.BHZ.D.2025.001")
-        True
+        ```python
+        from obspy import UTCDateTime
+        path = build_sac_path(
+            "out", "NZ", "WEL", "10", "BHZ", "D",
+            UTCDateTime("2025-01-01"),
+        )
+        path.name.startswith("NZ.WEL.10.BHZ.D.2025.001")
+        # => True
+        ```
     """
     directory = Path(output) / network / station / str(starttime.year) / f"{starttime.julday:03d}"
     filename = (f"{network}.{station}.{location}.{channel}.{quality}."

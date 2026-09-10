@@ -32,9 +32,11 @@ def combine_inventories(
         ValueError: If no inventory is supplied or the result is empty.
 
     Examples:
-        >>> combined = combine_inventories(["broadband.xml", "short-period.xml"])
-        >>> len(combined.networks) >= 0
-        True
+        ```python
+        combined = combine_inventories(["broadband.xml", "short-period.xml"])
+        len(combined.networks) >= 0
+        # => True
+        ```
     """
     inventories = [_read_inventory(source) for source in sources]
     if not inventories:
@@ -76,9 +78,11 @@ def select_inventory(
         A new inventory containing the selected channels.
 
     Examples:
-        >>> selected = select_inventory(
-        ...     "stations.xml", stations=["WEL"], channels=["BHZ"]
-        ... )
+        ```python
+        selected = select_inventory(
+            "stations.xml", stations=["WEL"], channels=["BHZ"]
+        )
+        ```
     """
     inventory = _read_inventory(source)
     network_codes = set(networks) if networks is not None else None
@@ -121,7 +125,9 @@ def shift_channel_starttime(source: InventorySource, starttime: Any) -> Inventor
         A modified copy; the source inventory is not changed.
 
     Examples:
-        >>> shifted = shift_channel_starttime("stations.xml", "2020-01-01")
+        ```python
+        shifted = shift_channel_starttime("stations.xml", "2020-01-01")
+        ```
     """
     inventory = _read_inventory(source).copy()
     value = _to_utc(starttime)
@@ -151,7 +157,9 @@ def write_inventory(
         The destination path.
 
     Examples:
-        >>> path = write_inventory(inventory, "stations.xml", overwrite=True)
+        ```python
+        path = write_inventory(inventory, "stations.xml", overwrite=True)
+        ```
     """
     destination = Path(output_file)
     temporary = temporary_output_path(destination)

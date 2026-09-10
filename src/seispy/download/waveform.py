@@ -96,10 +96,12 @@ class WaveformDownloadSummary(ReportMixin):
         report_path: JSON report path when a report was generated.
 
     Examples:
-        >>> summary = download_waveforms(...)
-        >>> print(summary.downloaded, summary.failed)
-        >>> if summary.report_path:
-        ...     print(summary.report_path)
+        ```python
+        summary = download_waveforms(...)
+        print(summary.downloaded, summary.failed)
+        if summary.report_path:
+            print(summary.report_path)
+        ```
     """
 
     run_id: str
@@ -173,12 +175,14 @@ def download_waveforms(
         ValueError: If arguments, credentials, or the time range are invalid.
 
     Examples:
-        >>> summary = download_waveforms(
-        ...     "waveforms", "NZ", "2025-01-01", "2025-01-03",
-        ...     station=["WEL"], channel="BH?", max_workers=1,
-        ... )
-        >>> summary.output_dir.name
-        'waveforms'
+        ```python
+        summary = download_waveforms(
+            "waveforms", "NZ", "2025-01-01", "2025-01-03",
+            station=["WEL"], channel="BH?", max_workers=1,
+        )
+        summary.output_dir.name
+        # => 'waveforms'
+        ```
     """
     started = time.monotonic()
     run_id = create_run_id()

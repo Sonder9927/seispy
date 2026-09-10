@@ -66,7 +66,9 @@ def collect_results(grids_dir: str | Path, out_dir: str | Path) -> None:
         out_dir: Destination for copied figures and summary tables.
 
     Examples:
-        >>> collect_results("output/grids", "output/summary")
+        ```python
+        collect_results("output/grids", "output/summary")
+        ```
     """
     grids_path, out_path = Path(grids_dir), Path(out_dir)
     collect_prob_figs(grids_path, out_path / "mcmc_prob_figs")

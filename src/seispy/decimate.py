@@ -65,8 +65,10 @@ class DecimationSummary(ReportMixin):
         report_path: JSON report path when a report was generated.
 
     Examples:
-        >>> summary = decimate_files(...)
-        >>> print(f"{summary.succeeded}/{summary.total}")
+        ```python
+        summary = decimate_files(...)
+        print(f"{summary.succeeded}/{summary.total}")
+        ```
     """
 
     run_id: str
@@ -129,12 +131,14 @@ def decimate_files(
         ValueError: If the method, limits, or output policy is invalid.
 
     Examples:
-        >>> summary = decimate_files(
-        ...     "data/sac", [5, 5, 4], output_dir="data/decimated",
-        ...     remove_original=False,
-        ... )
-        >>> summary.remove_original
-        False
+        ```python
+        summary = decimate_files(
+            "data/sac", [5, 5, 4], output_dir="data/decimated",
+            remove_original=False,
+        )
+        summary.remove_original
+        # => False
+        ```
     """
     started = time.monotonic()
     run_id = create_run_id()

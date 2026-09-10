@@ -38,7 +38,7 @@ generation is intentionally not part of the regular CI pipeline.
 Use an English Google-style docstring. Include units, filesystem effects,
 exceptions, and a minimal executable example:
 
-```python
+````python
 def process(source: Path, scale: float = 1.0) -> Path:
     """Process one input file.
 
@@ -53,11 +53,13 @@ def process(source: Path, scale: float = 1.0) -> Path:
         FileNotFoundError: If ``source`` does not exist.
 
     Examples:
-        >>> output = process(Path("input.dat"), scale=2.0)
-        >>> output.name
-        'input.processed.dat'
+        ```python
+        output = process(Path("input.dat"), scale=2.0)
+        output.name
+        # => 'input.processed.dat'
+        ```
     """
-```
+````
 
 Export supported names through the nearest package `__init__.py` and add them
 to `__all__`. The API pages intentionally use these public exports rather than

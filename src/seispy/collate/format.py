@@ -61,8 +61,10 @@ class FormatSummary(ReportMixin):
         report_path: JSON report path when a report was generated.
 
     Examples:
-        >>> summary = format_head(...)
-        >>> print(summary.succeeded, summary.failed)
+        ```python
+        summary = format_head(...)
+        print(summary.succeeded, summary.failed)
+        ```
     """
 
     run_id: str
@@ -116,12 +118,14 @@ def format_head(
         ValueError: If inputs, limits, or directory placement are invalid.
 
     Examples:
-        >>> summary = format_head(
-        ...     "events/raw", "events/formatted", "events.csv", "stations.csv",
-        ...     max_workers=1,
-        ... )
-        >>> summary.output_dir.name
-        'formatted'
+        ```python
+        summary = format_head(
+            "events/raw", "events/formatted", "events.csv", "stations.csv",
+            max_workers=1,
+        )
+        summary.output_dir.name
+        # => 'formatted'
+        ```
     """
     started = time.monotonic()
     run_id = create_run_id()

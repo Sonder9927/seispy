@@ -980,7 +980,9 @@ def init_grids(config_path: str | Path, max_workers: int = 1) -> None:
         ValueError: If configuration or source data fail validation.
 
     Examples:
-        >>> init_grids("config/mcmc.json", max_workers=4)
+        ```python
+        init_grids("config/mcmc.json", max_workers=4)
+        ```
     """
     cfg = load_config(config_path)
     base_dir = Path(cfg.paths.output_dir)

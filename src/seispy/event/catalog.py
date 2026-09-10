@@ -68,10 +68,12 @@ def filter_events(
         ValueError: If no input or no valid events are available.
 
     Examples:
-        >>> events = filter_events(
-        ...     event_file="events.csv", output_file="events-filtered.csv",
-        ...     time_window=10_800,
-        ... )
+        ```python
+        events = filter_events(
+            event_file="events.csv", output_file="events-filtered.csv",
+            time_window=10_800,
+        )
+        ```
     """
     columns = required_columns or ["time", "longitude", "latitude", "depth", "mag"]
     if event_file is not None:
@@ -108,7 +110,9 @@ def write_event_catalog(frame: pd.DataFrame, output_file: str | Path) -> None:
         output_file: Destination text file.
 
     Examples:
-        >>> write_event_catalog(events, "events.cat")
+        ```python
+        write_event_catalog(events, "events.cat")
+        ```
     """
     times = pd.to_datetime(frame["time"], utc=True).dt.strftime("%Y/%m/%d,%H:%M:%S")
     Path(output_file).write_text("".join(f"{value}\n" for value in times), encoding="utf-8")

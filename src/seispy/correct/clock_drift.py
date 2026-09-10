@@ -25,10 +25,12 @@ def clock_drift(src_dir: str, dest_dir:str, drift_csv: str, max_workers: int = 4
         max_workers: Maximum number of station worker processes.
 
     Examples:
-        >>> clock_drift(
-        ...     "data/sac", "data/drift-corrected", "clock-drift.csv",
-        ...     max_workers=1,
-        ... )
+        ```python
+        clock_drift(
+            "data/sac", "data/drift-corrected", "clock-drift.csv",
+            max_workers=1,
+        )
+        ```
     """
 
     logger = get_logger(**_LOG_DRIFT)

@@ -27,10 +27,12 @@ def cut_events_binary(
         subprocess.CalledProcessError: If an external command fails.
 
     Examples:
-        >>> cut_events_binary(
-        ...     "data/continuous", "data/events", "events.cat",
-        ...     time_window=10_800, max_workers=1,
-        ... )
+        ```python
+        cut_events_binary(
+            "data/continuous", "data/events", "events.cat",
+            time_window=10_800, max_workers=1,
+        )
+        ```
     """
     stations = sorted(path for path in Path(src_dir).iterdir() if path.is_dir())
     mktraceiodb = pather.binuse("mktraceiodb")
