@@ -16,8 +16,8 @@ need every parameter.
 
 ## Download data
 
-需要一个完整、可运行的端到端例子？参见
-[GeoNet 单日数据处理：100 Hz MiniSEED 到 1 Hz SAC](recipes/geonet-one-day-workflow.md)。
+Need a complete, runnable example? Follow the
+[GeoNet one-day workflow from 100 Hz MiniSEED to 1 Hz SAC](recipes/geonet-one-day-workflow.md).
 
 <div class="task-grid" markdown>
 <div class="task-card" markdown>

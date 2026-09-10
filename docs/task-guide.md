@@ -10,7 +10,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 
 | Goal | Recipe | Primary function |
 | --- | --- | --- |
-| Process one GeoNet day end to end | [GeoNet 单日流程](recipes/geonet-one-day-workflow.md) | download, response removal, decimation |
+| Process one GeoNet day end to end | [GeoNet one-day workflow](recipes/geonet-one-day-workflow.md) | download, response removal, decimation |
 | Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
 | Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
