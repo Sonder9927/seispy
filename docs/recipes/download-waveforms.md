@@ -25,6 +25,7 @@ summary = download.download_waveforms(
     max_retries=2,
     retry_backoff=1.0,
     overwrite=False,
+    inventory="data/metadata/stations.xml",
 )
 
 print(f"Downloaded: {summary.downloaded}/{summary.total}")
@@ -36,6 +37,11 @@ print(f"No data: {summary.no_data}; failed: {summary.failed}")
 Files are written below `data/waveforms/<network>/<station>/<year>/<day>/`.
 The returned summary distinguishes downloaded, existing, no-data, and failed
 requests.
+
+When `inventory` is a StationXML path or an ObsPy `Inventory`, it acts as the
+download manifest. Matching stations and active station-days are read locally,
+so the station service is not queried again. The `network`, `station`,
+`location`, and `channel` selectors are still applied to the manifest.
 
 Existing days are checked before a network request is made. MiniSEED uses its
 deterministic output filename. SAC files are matched directly by network,

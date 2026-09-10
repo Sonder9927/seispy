@@ -105,6 +105,7 @@ download.download_inventory(
     starttime="2023-01-01",
     endtime="2025-01-01",
 )
+# 同目录还会自动生成 data/response.csv 台站表
 
 # 波形可保存为 "mseed"（默认）或 "sac"
 download.download_waveforms(
@@ -115,6 +116,7 @@ download.download_waveforms(
     starttime="2024-01-01",
     endtime="2024-01-03",
     output_format="sac",
+    inventory="data/response.xml",
 )
 
 # 地震目录

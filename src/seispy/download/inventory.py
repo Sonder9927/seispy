@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,8 @@ def download_inventory(
     """Download station metadata from an FDSN service.
 
     Args:
-        output_file: Optional destination for a StationXML copy.
+        output_file: Optional destination for a StationXML copy. A station
+            summary with a ``.csv`` suffix is also written.
         client: ObsPy FDSN client name or service URL.
         username: Username for restricted services.
         password: Password for restricted services.
@@ -45,7 +47,54 @@ def download_inventory(
         path = Path(output_file)
         path.parent.mkdir(parents=True, exist_ok=True)
         inventory.write(str(path), format="STATIONXML")
+        _write_station_csv(inventory, path.with_suffix(".csv"))
     return inventory
+
+
+def _write_station_csv(inventory: Inventory, path: str | Path) -> Path:
+    """Write one searchable summary row for each StationXML station epoch."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fields = (
+        "network",
+        "station",
+        "station_name",
+        "latitude",
+        "longitude",
+        "elevation_m",
+        "start_date",
+        "end_date",
+        "locations",
+        "channels",
+    )
+    with destination.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for network in inventory:
+            for station in network:
+                channels = sorted({item.code for item in station.channels})
+                locations = sorted(
+                    {item.location_code or "--" for item in station.channels}
+                )
+                writer.writerow(
+                    {
+                        "network": network.code,
+                        "station": station.code,
+                        "station_name": getattr(station.site, "name", "") or "",
+                        "latitude": station.latitude,
+                        "longitude": station.longitude,
+                        "elevation_m": station.elevation,
+                        "start_date": _format_time(station.start_date),
+                        "end_date": _format_time(station.end_date),
+                        "locations": ",".join(locations),
+                        "channels": ",".join(channels),
+                    }
+                )
+    return destination
+
+
+def _format_time(value: Any) -> str:
+    return "" if value is None else value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _client(base_url, username=None, password=None):

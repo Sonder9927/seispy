@@ -248,7 +248,7 @@ def _(mo):
         """
         ### Remove Response by Days
 
-        除了函数 `resample_by_day` 还可以直接利用在 `deconvolution_by_day` 去仪器响应时设置参数 `resample`。
+        去仪器响应与重采样分开执行；重采样请使用独立的重采样接口。
 
         默认会将结果保存到新的同级目录，并保留原文件。设置 `remove_original=True` 时，成功结果保存为原目录中的 `.deconv.sac` 文件，确认写入成功后才删除原文件；失败文件保持不变。
         """
@@ -305,12 +305,12 @@ def _(mo):
         seispy.merge_by_day("data/sac_dest/")
         # run deconvolution
         seispy.response.deconvolution_by_day(
-            "data/sac_dest", resp="data/response_contract/NZ_example.xml", resample=1.0
+            "data/sac_dest", resp="data/response_contract/NZ_example.xml"
         )
         ```
 
         - **使用 sac 需要设置 `method`，默认是 `obspy`。**
-        - **降采样需要指定采样率 `resample`，默认是 `None`。**
+        - **降采样请在去响应完成后使用独立的重采样接口。**
         - **默认输出到新的同级目录；需要生成 `.deconv.sac` 并删除成功处理的原文件时，设置 `remove_original=True`。**
         """
     )

@@ -20,7 +20,10 @@ def test_inventory_download_has_no_logging_and_writes_stationxml(tmp_path):
     inv = Mock()
     client = Mock()
     client.get_stations.return_value = inv
-    with patch.object(inventory, "_client", return_value=client):
+    with (
+        patch.object(inventory, "_client", return_value=client),
+        patch.object(inventory, "_write_station_csv") as write_csv,
+    ):
         result = inventory.download_inventory(
             tmp_path / "inventory.xml", network="NZ", station="AAA"
         )
@@ -28,6 +31,47 @@ def test_inventory_download_has_no_logging_and_writes_stationxml(tmp_path):
     inv.write.assert_called_once_with(
         str(tmp_path / "inventory.xml"), format="STATIONXML"
     )
+    write_csv.assert_called_once_with(inv, tmp_path / "inventory.csv")
+
+
+def test_non_response_inventory_level_still_writes_only_stationxml(tmp_path):
+    inv = Mock()
+    client = Mock()
+    client.get_stations.return_value = inv
+    with (
+        patch.object(inventory, "_client", return_value=client),
+        patch.object(inventory, "_write_station_csv"),
+    ):
+        inventory.download_inventory(tmp_path / "stations.xml", level="station")
+
+    inv.write.assert_called_once_with(
+        str(tmp_path / "stations.xml"), format="STATIONXML"
+    )
+
+
+def test_station_csv_contains_coordinates_and_channel_summary(tmp_path):
+    class Container(list):
+        pass
+
+    channel = SimpleNamespace(code="BHZ", location_code="")
+    station = SimpleNamespace(
+        code="AAA",
+        site=SimpleNamespace(name="Alpha Station"),
+        latitude=-41.1,
+        longitude=174.8,
+        elevation=123.0,
+        start_date=UTCDateTime("2020-01-01"),
+        end_date=None,
+        channels=[channel],
+    )
+    network = Container([station])
+    network.code = "NZ"
+    inventory._write_station_csv([network], tmp_path / "station.csv")
+
+    contents = (tmp_path / "station.csv").read_text()
+    assert "network,station,station_name,latitude,longitude,elevation_m" in contents
+    assert "NZ,AAA,Alpha Station,-41.1,174.8,123.0" in contents
+    assert "--,BHZ" in contents
 
 
 def test_earthquake_events_are_returned_as_dataframe(tmp_path):
@@ -313,3 +357,36 @@ def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
     assert summary.total == 2
     assert summary.downloaded == 2
     assert summary.files_written == 2
+
+
+def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):
+    manifest = Mock()
+    guided_tasks = (("AAA", UTCDateTime("2026-01-01")),)
+
+    with (
+        patch.object(waveform, "_client"),
+        patch.object(waveform, "read_inventory", return_value=manifest) as read,
+        patch.object(waveform, "_station_codes") as station_codes,
+        patch.object(waveform, "_inventory_tasks", return_value=guided_tasks),
+        patch.object(
+            waveform,
+            "_download_day",
+            return_value=waveform._Counts(total=1, downloaded=1, files_written=1),
+        ),
+        patch.object(waveform, "get_logger", return_value=Mock()),
+        patch.object(
+            waveform, "auto_save_report", side_effect=lambda report, *args: report
+        ),
+    ):
+        summary = waveform.download_waveforms(
+            tmp_path,
+            "NZ",
+            "2026-01-01",
+            "2026-01-03",
+            inventory=tmp_path / "stations.xml",
+            max_workers=1,
+        )
+
+    read.assert_called_once_with(str(tmp_path / "stations.xml"), format="STATIONXML")
+    station_codes.assert_not_called()
+    assert summary.total == 1

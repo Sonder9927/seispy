@@ -38,7 +38,11 @@ for issue in summary.issue_samples:
 
 !!! note "SAC backend"
 
-    `method="sac"` uses external SAC tools and pole-zero responses. The ObsPy
-    backend is the easier starting point.
+    `method="sac"` uses the same StationXML input and selects the response by
+    network, station, location, channel, and recording time. Matching temporary
+    pole-zero files are cached by response epoch. The SAC backend processes at
+    most 100 files per SAC process by default, so two years of daily data does
+    not create one oversized session. Set `sac_batch_size` to tune the balance
+    between startup overhead and failure isolation.
 
 [See all parameters →](../api/response.md#remove-instrument-responses)

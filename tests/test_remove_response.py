@@ -1,14 +1,18 @@
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
 _MODULE_PATH = (
     Path(__file__).parents[1] / "src" / "seispy" / "response" / "remove_response.py"
 )
-_SPEC = importlib.util.spec_from_file_location("remove_response_under_test", _MODULE_PATH)
+_SPEC = importlib.util.spec_from_file_location(
+    "remove_response_under_test", _MODULE_PATH
+)
 assert _SPEC is not None and _SPEC.loader is not None
 remove_response = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = remove_response
@@ -39,7 +43,6 @@ def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
             source_root / "STA",
             "*.sac",
             object(),
-            None,
             source_root,
             output_root,
             False,
@@ -61,12 +64,12 @@ def test_remove_original_failure_preserves_source_and_is_reported(tmp_path):
     source = station / "trace.sac"
     source.write_bytes(b"original")
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError("response unavailable")
 
     with patch.object(remove_response, "stream_removed_response", side_effect=fail):
         results = remove_response.obspy_deconv(
-            station, "*.sac", object(), None, source_root, None, True, 20
+            station, "*.sac", object(), source_root, None, True, 20
         )
 
     assert source.read_bytes() == b"original"
@@ -87,7 +90,7 @@ def test_remove_original_success_creates_deconv_and_removes_source(tmp_path):
         remove_response, "stream_removed_response", return_value=_WritableStream()
     ):
         results = remove_response.obspy_deconv(
-            station, "*.sac", object(), None, source_root, None, True, 20
+            station, "*.sac", object(), source_root, None, True, 20
         )
 
     assert not source.exists()
@@ -122,7 +125,7 @@ def test_previous_deconv_result_is_not_processed_again(tmp_path):
         remove_response, "stream_removed_response", return_value=_WritableStream()
     ):
         results = remove_response.obspy_deconv(
-            station, "*.sac", object(), None, source_root, output_root, False, 20
+            station, "*.sac", object(), source_root, output_root, False, 20
         )
 
     assert results.total == 1
@@ -158,6 +161,139 @@ def test_invalid_pre_filter_is_rejected(pre_filt):
 
 def test_pre_filter_low_corner_must_be_below_nyquist():
     with pytest.raises(ValueError, match="Nyquist"):
-        remove_response._effective_pre_filt(
-            (0.4, 0.6, 3.0, 3.5), sampling_rate=1.0
+        remove_response._effective_pre_filt((0.4, 0.6, 3.0, 3.5), sampling_rate=1.0)
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        remove_response.deconvolution_by_station,
+        remove_response.obspy_deconv,
+        remove_response.sac_deconv,
+        remove_response.stream_removed_response,
+    ],
+)
+def test_response_removal_interfaces_do_not_accept_resample(function):
+    assert "resample" not in inspect.signature(function).parameters
+
+
+def test_sac_deconv_reuses_process_for_bounded_file_batches(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    for index in range(5):
+        (station / f"trace-{index}.sac").write_bytes(b"original")
+    output_root = tmp_path / "processed"
+
+    def run_sac(command, *, input, **kwargs):
+        assert command == ["sac"]
+        for line in input.decode().splitlines():
+            if line.startswith("w "):
+                Path(line[2:]).write_bytes(b"processed")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    sampling_rate = SimpleNamespace(stats=SimpleNamespace(sampling_rate=100.0))
+    with (
+        patch.object(remove_response.obspy, "read", return_value=[sampling_rate]),
+        patch.object(
+            remove_response,
+            "_sac_pz_for_trace",
+            return_value=tmp_path / "response.pz",
+        ),
+        patch.object(remove_response.subprocess, "run", side_effect=run_sac) as run,
+    ):
+        summary = remove_response.sac_deconv(
+            station,
+            "*.sac",
+            "response.pz",
+            source_root,
+            output_root,
+            False,
+            20,
+            batch_size=2,
         )
+
+    assert run.call_count == 3
+    assert summary.total == 5
+    assert summary.succeeded == 5
+    assert summary.failed == 0
+    assert len(list(output_root.rglob("*.sac"))) == 5
+
+
+def test_sac_batch_failure_preserves_all_sources(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    sources = [station / f"trace-{index}.sac" for index in range(3)]
+    for source in sources:
+        source.write_bytes(b"original")
+
+    failed_process = SimpleNamespace(returncode=1, stderr=b"SAC batch failed")
+    sampling_rate = SimpleNamespace(stats=SimpleNamespace(sampling_rate=100.0))
+    with (
+        patch.object(remove_response.obspy, "read", return_value=[sampling_rate]),
+        patch.object(
+            remove_response,
+            "_sac_pz_for_trace",
+            return_value=tmp_path / "response.pz",
+        ),
+        patch.object(remove_response.subprocess, "run", return_value=failed_process),
+    ):
+        summary = remove_response.sac_deconv(
+            station,
+            "*.sac",
+            "response.pz",
+            source_root,
+            None,
+            True,
+            20,
+        )
+
+    assert summary.failed == 3
+    assert summary.succeeded == 0
+    assert all(source.read_bytes() == b"original" for source in sources)
+    assert not list(station.glob("*.deconv.sac"))
+
+
+def test_sac_response_is_selected_by_full_id_and_epoch_and_cached(tmp_path):
+    class Container(list):
+        pass
+
+    channel = SimpleNamespace(
+        start_date=remove_response.obspy.UTCDateTime("2024-01-01"),
+        end_date=remove_response.obspy.UTCDateTime("2025-01-01"),
+    )
+    selected = Container([Container([Container([channel])])])
+    selected.get_response = Mock()
+
+    def write_pz(filename, format):
+        assert format == "SACPZ"
+        Path(filename).write_text("* INPUT UNIT : M\nZEROS 3\n")
+
+    selected.write = Mock(side_effect=write_pz)
+    inventory = Mock()
+    inventory.select.return_value = selected
+    stats = SimpleNamespace(
+        network="NZ",
+        station="AAA",
+        location="10",
+        channel="BHZ",
+        starttime=remove_response.obspy.UTCDateTime("2024-06-01"),
+        endtime=remove_response.obspy.UTCDateTime("2024-06-02"),
+    )
+    trace = SimpleNamespace(id="NZ.AAA.10.BHZ", stats=stats)
+    cache = {}
+
+    first = remove_response._sac_pz_for_trace(inventory, trace, tmp_path, cache)
+    second = remove_response._sac_pz_for_trace(inventory, trace, tmp_path, cache)
+
+    assert first == second
+    assert selected.write.call_count == 1
+    inventory.select.assert_called_with(
+        network="NZ",
+        station="AAA",
+        location="10",
+        channel="BHZ",
+        time=stats.starttime,
+    )
+    selected.get_response.assert_called_once_with(trace.id, stats.starttime)

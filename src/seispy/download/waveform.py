@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from obspy import UTCDateTime
+from obspy import UTCDateTime, read_inventory
 from obspy.clients.fdsn.header import (
     FDSNBadGatewayException,
     FDSNInternalServerException,
@@ -17,6 +17,7 @@ from obspy.clients.fdsn.header import (
     FDSNTimeoutException,
     FDSNTooManyRequestsException,
 )
+from obspy.core.inventory import Inventory
 from rose import get_logger
 from rose.batch import (
     ReportMixin,
@@ -132,6 +133,7 @@ def download_waveforms(
     retry_backoff: float = 1.0,
     save_report: bool | None = None,
     output_format: Literal["mseed", "sac"] = "mseed",
+    inventory: str | Path | Inventory | None = None,
 ) -> WaveformDownloadSummary:
     """Download daily waveform files for one network.
 
@@ -155,6 +157,9 @@ def download_waveforms(
         save_report: Force JSON report creation on or off. ``None`` writes a
             report only when issues occur.
         output_format: Output format, either ``"mseed"`` or ``"sac"``.
+        inventory: Optional StationXML path or ObsPy inventory used as the
+            waveform download manifest. It replaces the remote station lookup
+            and excludes station-days without matching active metadata.
 
     Returns:
         Counts, sampled failures, output location, and run duration.
@@ -185,8 +190,22 @@ def download_waveforms(
     start, end = UTCDateTime(starttime), UTCDateTime(endtime)
     if start >= end:
         raise ValueError("starttime must be earlier than endtime")
-    stations = _station_codes(client, username, password, network, station, start, end)
     days = tuple(_iter_days(start, end))
+    if inventory is None:
+        stations = _station_codes(
+            client, username, password, network, station, start, end
+        )
+        task_items = tuple((code, day) for code in stations for day in days)
+    else:
+        manifest = (
+            inventory
+            if isinstance(inventory, Inventory)
+            else read_inventory(str(inventory), format="STATIONXML")
+        )
+        task_items = _inventory_tasks(
+            manifest, network, station, location, channel, days, end
+        )
+        stations = sorted({code for code, _ in task_items})
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     logger.info(
@@ -199,7 +218,7 @@ def download_waveforms(
         channel,
         output_format,
     )
-    tasks = ((code, day) for code in stations for day in days)
+    tasks = iter(task_items)
     aggregate = {
         "total": 0,
         "downloaded": 0,
@@ -210,7 +229,7 @@ def download_waveforms(
     }
     error_samples = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(stations) * len(days), desc="Downloading waveforms") as bar:
+        with tqdm(total=len(task_items), desc="Downloading waveforms") as bar:
             pending = set()
             exhausted = False
             while pending or not exhausted:
@@ -305,6 +324,32 @@ def _station_codes(client, username, password, network, station, start, end):
         network=network, station=station, starttime=start, endtime=end, level="station"
     )
     return sorted({item.code for net in inventory for item in net.stations})
+
+
+def _inventory_tasks(inventory, network, station, location, channel, days, end):
+    """Return station-days backed by matching, active StationXML channels."""
+    station_selectors = station if isinstance(station, list) else station.split(",")
+    station_selectors = [value.strip() for value in station_selectors if value.strip()]
+    tasks = []
+    for day in days:
+        request_end = min(day + 86400, end)
+        selected = inventory.select(
+            network=network,
+            location=location,
+            channel=channel,
+            starttime=day,
+            endtime=request_end,
+        )
+        codes = {
+            item.code
+            for net in selected
+            for item in net.stations
+            if any(
+                fnmatch.fnmatchcase(item.code, pattern) for pattern in station_selectors
+            )
+        }
+        tasks.extend((code, day) for code in sorted(codes))
+    return tuple(tasks)
 
 
 def _iter_days(start, end):
