@@ -14,12 +14,13 @@ Pass the network directory containing the station folders:
 
 ```text
 data/waveforms/NZ/
-├── AAA/2024/001/*.sac
-├── AAA/2024/002/*.sac
-└── BBB/2024/001/*.mseed
+├── AAA/2024/NZ.AAA..BHZ.D.2024.001.000000.sac
+├── AAA/2024/NZ.AAA..BHZ.D.2024.002.000000.sac
+└── BBB/2024/NZ.BBB.2024.001.mseed
 ```
 
-Empty files and invalid year or Julian-day directories are ignored.
+Dates and station codes are read from waveform headers. Empty, unreadable, and
+noncanonical files are reported and ignored.
 
 ## Example
 
@@ -57,7 +58,8 @@ DataFrames or customize the Matplotlib axes.
 
 !!! note "Meaning of an available day"
 
-    Availability is based on at least one non-empty waveform file in the daily
-    directory. It does not inspect sample continuity inside each waveform.
+    Availability is based on at least one non-empty waveform file whose header
+    agrees with its canonical path. It does not inspect sample continuity inside
+    each waveform.
 
 [See all parameters →](../api/download.md#download-statistics)

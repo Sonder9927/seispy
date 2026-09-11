@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from obspy import UTCDateTime, read_inventory
+from obspy import UTCDateTime, read, read_inventory
 from obspy.clients.fdsn.header import (
     FDSNBadGatewayException,
     FDSNInternalServerException,
@@ -18,6 +18,12 @@ from obspy.clients.fdsn.header import (
     FDSNTooManyRequestsException,
 )
 from obspy.core.inventory import Inventory
+from seispy._archive import (
+    WaveformIdentity,
+    mseed_path,
+    preserve_sac_quality,
+    stream_day_identity,
+)
 from seispy._batch import (
     BatchSummary,
     cleanup_outputs,
@@ -520,11 +526,15 @@ def _write_waveforms(
     location="*",
     channel="*",
 ):
-    directory = output / network / station / str(day.year) / f"{day.julday:03d}"
     if output_format == "mseed":
-        destination = (
-            directory / f"{network}.{station}.{day.year}.{day.julday:03d}.mseed"
-        )
+        actual = stream_day_identity(stream)
+        expected = (network, station, int(day.year), int(day.julday))
+        if actual != expected:
+            raise ValueError(
+                f"downloaded stream identity {actual!r} does not match request "
+                f"{expected!r}"
+            )
+        destination = mseed_path(output, stream)
         if destination.exists() and not overwrite:
             return 0, True
         temporary = temporary_output_path(destination)
@@ -537,7 +547,18 @@ def _write_waveforms(
         return 1, False
 
     merge_short_gaps(stream)
-    destinations = [_sac_destination(trace, directory) for trace in stream]
+    destinations = []
+    for trace in stream:
+        preserve_sac_quality(trace)
+        identity = WaveformIdentity.from_trace(trace)
+        expected = (network, station, int(day.year), int(day.julday))
+        actual = (identity.network, identity.station, identity.year, identity.julday)
+        if actual != expected:
+            raise ValueError(
+                f"downloaded trace identity {actual!r} does not match request "
+                f"{expected!r}"
+            )
+        destinations.append(identity.sac_path(output))
     temporary_paths = []
     created = []
     try:
@@ -559,18 +580,36 @@ def _write_waveforms(
 
 
 def _day_is_complete(output, network, station, day, output_format, location, channel):
-    directory = output / network / station / str(day.year) / f"{day.julday:03d}"
+    directory = output / network / station / str(day.year)
+    expected = (network, station, int(day.year), int(day.julday))
     if output_format == "mseed":
         path = directory / f"{network}.{station}.{day.year}.{day.julday:03d}.mseed"
-        return path.is_file() and path.stat().st_size > 0
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+        try:
+            return stream_day_identity(read(path, headonly=True)) == expected
+        except Exception as exc:
+            logger.warning("ignoring invalid MiniSEED file %s: %s", path, exc)
+            return False
     records = []
     for path in directory.glob("*.sac"):
-        parts = path.name.split(".")
-        if len(parts) != 9 or path.stat().st_size == 0:
+        if path.stat().st_size == 0:
             continue
-        file_network, file_station, file_location, file_channel = parts[:4]
-        if file_network == network and file_station == station:
-            records.append((file_location, file_channel))
+        try:
+            traces = read(path, headonly=True)
+            if len(traces) != 1:
+                raise ValueError("SAC file must contain exactly one trace")
+            identity = WaveformIdentity.from_trace(traces[0])
+            actual = (
+                identity.network,
+                identity.station,
+                identity.year,
+                identity.julday,
+            )
+            if actual == expected and identity.matches_sac_path(path, output):
+                records.append((identity.location, identity.channel))
+        except Exception as exc:
+            logger.warning("ignoring invalid SAC file %s: %s", path, exc)
     return _selectors_are_complete(records, location, channel)
 
 
@@ -597,17 +636,7 @@ def _selectors_are_complete(records, location, channel):
 
 
 def _sac_destination(trace, directory):
-    stats = trace.stats
-    try:
-        quality = stats.mseed.dataquality
-    except (AttributeError, KeyError):
-        quality = "D"
-    start = stats.starttime
-    filename = (
-        f"{stats.network}.{stats.station}.{stats.location}.{stats.channel}.{quality}."
-        f"{start.year}.{start.julday:03d}.{start.strftime('%H%M%S')}.sac"
-    )
-    return directory / filename
+    return WaveformIdentity.from_trace(trace).sac_path(directory)
 
 
 def _combine(items, limit):

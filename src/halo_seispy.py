@@ -104,7 +104,7 @@ def _(seispy):
 
 @app.cell
 def _(mo):
-    mo.md(r"""4. 检查 `data/sac_src/NZ37/2024/01/01/` 下的 `BHZ` 分量多个文件，与 `data/sac_dest/NZ/NZ37/2024/001/` 下的 `BHZ` 分量单个文件。""")
+    mo.md(r"""4. 检查 `data/sac_src/NZ37/2024/01/01/` 下的 `BHZ` 分量多个文件，与 `data/sac_dest/NZ/NZ37/2024/` 下的 `BHZ` 分量单个文件。""")
     return
 
 
@@ -113,7 +113,7 @@ def _(halo):
     # check merged result
     halo.check_merge_result(
         src_dir="data/sac_src/NZ37/2024/01/01/", 
-        dest_file="data/sac_dest/NZ/NZ37/2024/001/NZ.NZ37..BHZ.D.2024.001.merged.sac",
+        dest_file="data/sac_dest/NZ/NZ37/2024/NZ.NZ37..BHZ.D.2024.001.merged.sac",
     )
     return
 
@@ -272,7 +272,7 @@ def _(mo):
         检查结果：
 
         1. 前文所述 sac 去仪器响应的文件 `data/diff_data/NZ37.BHZ.2024.001.rmpz.sac`
-        2. 对应 obspy 去仪器响应结果`data/sac_dest/NZ/NZ37/2024/001/NZ.NZ37..BHZ.D.2024.001.merged.deconv.sac`
+        2. 对应 obspy 去仪器响应结果`data/sac_dest/NZ/NZ37/2024/NZ.NZ37..BHZ.D.2024.001.merged.deconv.sac`
 
         二者都没做降采样。
         """
@@ -285,7 +285,7 @@ def _(halo):
     # check deconvolution result
     halo.check_deconv_result(
         "data/diff_data/NZ37.BHZ.2024.001.rmpz.sac", 
-        "data/sac_dest/NZ/NZ37/2024/001/NZ.NZ37..BHZ.D.2024.001.merged.deconv.sac"
+        "data/sac_dest/NZ/NZ37/2024/NZ.NZ37..BHZ.D.2024.001.merged.deconv.sac"
     )
     return
 

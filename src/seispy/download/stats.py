@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -9,6 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
+from obspy import read
+
+from seispy._archive import WaveformIdentity, matches_mseed_path, stream_day_identity
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -25,6 +29,7 @@ _SUMMARY_COLUMNS = [
     "last_date",
 ]
 _OKABE_ITO_BLUE = "#0072B2"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -147,11 +152,10 @@ def scan_download_availability(
     end_date: str | date | datetime | None = None,
     extensions: Iterable[str] = (".sac", ".mseed"),
 ) -> pd.DataFrame:
-    """Scan a ``station/year/Julian-day`` waveform archive.
+    """Scan a flattened ``station/year/files`` waveform archive.
 
-    A day is available only when its directory contains at least one non-empty
-    waveform file with an accepted extension. Invalid directory names and empty
-    files are ignored.
+    Station and date identities are read from waveform headers. Files whose
+    canonical paths disagree with their headers are reported and ignored.
 
     Args:
         data_dir: Network directory containing station subdirectories.
@@ -179,37 +183,55 @@ def scan_download_availability(
         raise FileNotFoundError(f"download directory does not exist: {root}")
     start, end = _date_bounds(start_date, end_date)
     suffixes = _normalize_extensions(extensions)
-    rows = []
-    for station_dir in sorted(path for path in root.iterdir() if path.is_dir()):
-        for year_dir in sorted(path for path in station_dir.iterdir() if path.is_dir()):
-            try:
-                year = int(year_dir.name)
-            except ValueError:
-                continue
-            for day_dir in sorted(path for path in year_dir.iterdir() if path.is_dir()):
-                observed = _julian_date(year, day_dir.name)
-                if (
-                    observed is None
-                    or (start and observed < start)
-                    or (end and observed > end)
-                ):
-                    continue
-                files = [
-                    path
-                    for path in day_dir.iterdir()
-                    if path.is_file()
-                    and path.suffix.lower() in suffixes
-                    and path.stat().st_size > 0
-                ]
-                if files:
-                    rows.append(
-                        {
-                            "station": station_dir.name,
-                            "date": pd.Timestamp(observed),
-                            "file_count": len(files),
-                            "size_bytes": sum(path.stat().st_size for path in files),
-                        }
+    archive_root = root.parent
+    grouped: dict[tuple[str, date], list[Path]] = {}
+    candidates = sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in suffixes
+    )
+    for path in candidates:
+        if path.stat().st_size == 0:
+            continue
+        try:
+            stream = read(path, headonly=True)
+            if path.suffix.lower() == ".sac":
+                if len(stream) != 1:
+                    raise ValueError("SAC file must contain exactly one trace")
+                identity = WaveformIdentity.from_trace(stream[0])
+                if not identity.matches_sac_path(path, archive_root):
+                    raise ValueError("filename or directory does not match the SAC header")
+                identities = [identity]
+            else:
+                network, station, year, julday = stream_day_identity(stream)
+                if not matches_mseed_path(path, archive_root, stream):
+                    raise ValueError(
+                        "filename or directory does not match the MiniSEED header"
                     )
+                identities = [WaveformIdentity.from_trace(stream[0])]
+                if (network, station, year, julday) != (
+                    identities[0].network,
+                    identities[0].station,
+                    identities[0].year,
+                    identities[0].julday,
+                ):
+                    raise ValueError("inconsistent MiniSEED stream identity")
+            for identity in identities:
+                observed = identity.day
+                if (start and observed < start) or (end and observed > end):
+                    continue
+                grouped.setdefault((identity.station, observed), []).append(path)
+        except Exception as exc:
+            logger.warning("ignoring invalid waveform file %s: %s", path, exc)
+    rows = [
+        {
+            "station": station,
+            "date": pd.Timestamp(observed),
+            "file_count": len(set(files)),
+            "size_bytes": sum(path.stat().st_size for path in set(files)),
+        }
+        for (station, observed), files in grouped.items()
+    ]
     return pd.DataFrame(rows, columns=_AVAILABILITY_COLUMNS).sort_values(
         ["station", "date"], ignore_index=True
     )

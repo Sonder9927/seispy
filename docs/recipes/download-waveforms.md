@@ -6,7 +6,7 @@ description: Download daily MiniSEED or SAC waveform files from FDSN.
 # Download waveforms
 
 **Use this when:** you want a daily waveform archive grouped by network,
-station, year, and Julian day.
+station, and year, with Julian day retained in each filename.
 
 ## Example
 
@@ -34,7 +34,7 @@ print(f"No data: {summary.no_data}; failed: {summary.failed}")
 
 ## Result
 
-Files are written below `data/waveforms/<network>/<station>/<year>/<day>/`.
+Files are written below `data/waveforms/<network>/<station>/<year>/`.
 The returned summary distinguishes downloaded, existing, no-data, and failed
 requests.
 
@@ -48,6 +48,12 @@ deterministic output filename. SAC files are matched directly by network,
 station, location, channel, and date, so no bookkeeping files are added to the
 waveform archive. This makes rerunning the same command an efficient way to
 resume an interrupted archive.
+
+## Experimental bulk downloader
+
+See the separate [MassDownloader guide](mass-download-waveforms.md) for
+provider discovery, bulk requests, StationXML filtering, concurrency settings,
+and a comparison with this stable downloader.
 
 !!! tip "Learn with a short interval"
 

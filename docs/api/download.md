@@ -17,6 +17,14 @@ services.
 
 ::: seispy.download.download_waveforms
 
+### Mass-download waveforms (experimental)
+
+This interface delegates provider discovery, availability selection, and bulk
+requests to ObsPy's `MassDownloader`. It writes one MiniSEED file per channel
+and requested time chunk.
+
+::: seispy.download.download_waveforms_mass
+
 ## Download statistics
 
 ### Check download status
@@ -49,3 +57,7 @@ their fields or serialize them; they do not need to instantiate them directly.
 ### Waveform download summary
 
 ::: seispy.download.WaveformDownloadSummary
+
+### Mass-download result
+
+::: seispy.download.MassDownloadResult

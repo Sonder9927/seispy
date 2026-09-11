@@ -1,4 +1,3 @@
-import datetime
 import logging
 import time
 from dataclasses import dataclass
@@ -6,10 +5,12 @@ from pathlib import Path
 
 import numpy as np
 import obspy
-from seispy._batch import BatchSummary, new_run_id
+from seispy._archive import WaveformIdentity
+from seispy._batch import BatchSummary, commit_output, new_run_id, temporary_output_path
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
+from seispy.event._archive_index import WaveformArchiveIndex, WaveformReader
 from seispy.event.catalog import load_events, load_stations
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class CutEventSummary(BatchSummary):
     def has_issues(self) -> bool:
         return bool(self.tasks_failed or self.input_read_failed)
 
+
 def cut_events(
     src_dir: str | Path,
     dest_dir: str | Path,
@@ -88,7 +90,7 @@ def cut_events(
     """Cut event windows from continuous SAC data.
 
     Args:
-        src_dir: Root directory containing continuous data by station.
+        src_dir: One network directory containing station/year SAC archives.
         dest_dir: Destination root for event waveform files.
         event_csv: Event table consumed by :func:`load_events`.
         station_csv: Optional station table. Directory names are used if omitted.
@@ -119,9 +121,13 @@ def cut_events(
 
     events = load_events(event_csv, time_window)
     stations = load_stations(src_dir, station_csv)
+    archive_index = WaveformArchiveIndex.build(
+        src_dir, stations={item["station"] for item in stations}
+    )
+    waveform_reader = WaveformReader()
+    events.sort(key=lambda item: item["start"])
     logger.info(
-        "run_id=%s started src=%s dest=%s stations=%d events=%d "
-        "time_window=%s",
+        "run_id=%s started src=%s dest=%s stations=%d events=%d time_window=%s",
         run_id,
         src_dir,
         dest_dir,
@@ -131,8 +137,18 @@ def cut_events(
     )
 
     total = len(events) * len(stations)
-    tasks_done = succeeded = failed = outputs = read_failed = no_data = 0
-    samples = []
+    tasks_done = succeeded = failed = outputs = no_data = 0
+    read_failed = len(archive_index.issues)
+    samples = [
+        CutEventIssue(
+            "",
+            issue.path.parent.parent.name,
+            "archive_index_failed",
+            issue.error,
+            issue.path,
+        )
+        for issue in archive_index.issues[:max_error_samples]
+    ]
     with tqdm(total=total, desc="Processing...") as pbar:
         for station in stations:
             for event in events:
@@ -141,6 +157,8 @@ def cut_events(
                     station,
                     src_dir,
                     dest_dir,
+                    archive_index=archive_index,
+                    waveform_reader=waveform_reader,
                     max_error_samples=min(max_error_samples, 1),
                 )
                 tasks_done += result.tasks
@@ -205,17 +223,23 @@ def cut_events(
 
 
 def cut_event_station(
-    event, station, src_dir, dest_dir, *, max_error_samples=1
+    event,
+    station,
+    src_dir,
+    dest_dir,
+    *,
+    archive_index=None,
+    waveform_reader=None,
+    max_error_samples=1,
 ) -> _CutCounts:
-    """处理单个事件-台站组合"""
-    # 生成时间覆盖范围
-    year_jdays = _calculate_julian_dates(event["start"], event["end"])
-
-    # 获取所有可能相关的SAC文件路径
+    """Cut one event-station window using a reusable header index."""
     station_name = station["station"]
     event_name = event["start"].strftime("%Y%m%d%H%M%S")
-    sac_files = _target_paths(src_dir, station_name, year_jdays)
-    if not sac_files:
+    index = archive_index or WaveformArchiveIndex.build(
+        src_dir, stations={station_name}
+    )
+    records = index.overlapping(station_name, event["start"], event["end"])
+    if not records:
         samples = ()
         if max_error_samples:
             samples = (
@@ -231,18 +255,31 @@ def cut_event_station(
     samples = []
     read_failed = 0
     had_issue = False
-    channel_data = {}
-    for sac_path in sac_files:
+    waveform_data = {}
+    for record in records:
         try:
-            st = obspy.read(sac_path)
+            st = (
+                waveform_reader.read(record)
+                if waveform_reader is not None
+                else obspy.read(record.path)
+            )
+            if len(st) != 1:
+                raise ValueError("SAC file must contain exactly one trace")
             tr = st[0]
-            if tr.stats.station != station_name:
-                raise ValueError("station in SAC header does not match directory")
-            channel = tr.stats.channel
-            if channel in channel_data:
-                channel_data[channel] += st
+            identity = WaveformIdentity.from_trace(tr)
+            if identity.day_key != record.identity.day_key:
+                raise ValueError("SAC identity changed after archive indexing")
+            key = (
+                identity.network,
+                identity.station,
+                identity.location,
+                identity.channel,
+                identity.quality,
+            )
+            if key in waveform_data:
+                waveform_data[key] += st
             else:
-                channel_data[channel] = st
+                waveform_data[key] = st
         except Exception as exc:
             read_failed += 1
             had_issue = True
@@ -253,22 +290,36 @@ def cut_event_station(
                         station_name,
                         "input_read_failed",
                         f"{type(exc).__name__}: {exc}",
-                        Path(sac_path),
+                        record.path,
                     )
                 )
 
     outputs = 0
-    if channel_data:
+    if waveform_data:
         event_dir = Path(dest_dir) / event_name
         event_dir.mkdir(parents=True, exist_ok=True)
-        for channel, stream in channel_data.items():
+        channel_counts = {}
+        for key in waveform_data:
+            channel_counts[key[3]] = channel_counts.get(key[3], 0) + 1
+        for identity_key, stream in waveform_data.items():
+            temporary = None
             try:
                 merged_tr = merge_short_gaps(stream)[0]
                 trimed_tr = _trimmed_trace(merged_tr, event, station)
-                out_name = f"{event_name}.{station_name}.{channel}.sac"
-                trimed_tr.write(str(event_dir / out_name), format="SAC")
+                out_name = _event_output_name(
+                    event_name, identity_key, channel_counts[identity_key[3]]
+                )
+                destination = event_dir / out_name
+                if destination.exists():
+                    raise FileExistsError(destination)
+                temporary = temporary_output_path(destination)
+                trimed_tr.write(str(temporary), format="SAC")
+                commit_output(temporary, destination)
+                temporary = None
                 outputs += 1
             except Exception as exc:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
                 had_issue = True
                 if len(samples) < max_error_samples:
                     samples.append(
@@ -298,6 +349,14 @@ def cut_event_station(
         read_failed=read_failed,
         samples=tuple(samples),
     )
+
+
+def _event_output_name(event_name, identity_key, same_channel_count):
+    network, station, location, channel, quality = identity_key
+    if same_channel_count == 1:
+        return f"{event_name}.{station}.{channel}.sac"
+    location = location or "--"
+    return f"{event_name}.{network}.{station}.{location}.{channel}.{quality}.sac"
 
 
 def _combine_cut_counts(items, limit):
@@ -361,33 +420,3 @@ def _trimmed_trace(merged_tr, event, station):
 
     trimed_tr.stats.sac.update(header_updates)
     return trimed_tr
-
-
-def _calculate_julian_dates(start, end):
-    """计算时间范围内包含的所有儒略日"""
-    dates = set()
-    current = start.datetime
-    end = end.datetime
-
-    while current <= end:
-        year = current.year
-        jday = current.timetuple().tm_yday
-        dates.add((year, f"{jday:03d}"))
-        current += datetime.timedelta(days=1)
-
-    return sorted(dates)
-
-
-def _target_paths(sac_base, station, year_jdays):
-    """构建预测的SAC文件路径"""
-    valid_paths = []
-    for year, jday in year_jdays:
-        dir_path = Path(sac_base) / station / str(year) / jday
-        if not dir_path.exists():
-            continue
-
-        # 预期文件名模式：*.{year}.{jday}.*.sac
-        pattern = f"*.{year}.{jday}.*.sac"
-        valid_paths.extend(dir_path.glob(pattern))
-
-    return valid_paths

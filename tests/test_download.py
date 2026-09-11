@@ -3,7 +3,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
 from obspy import UTCDateTime
+from obspy import Stream as ObsPyStream
+from obspy import Trace
 from obspy.clients.fdsn.header import FDSNForbiddenException
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
 from obspy.core.inventory.response import InstrumentSensitivity, Response
@@ -245,7 +248,7 @@ class _Stream(list):
 
     def write(self, filename, format):
         assert format == "MSEED"
-        Path(filename).write_bytes(b"waveform")
+        ObsPyStream([item.as_obspy() for item in self]).write(filename, format=format)
 
     def merge(self, **kwargs):
         return self
@@ -264,12 +267,21 @@ class _SacTrace:
 
     def write(self, filename, format):
         assert format == "SAC"
-        Path(filename).write_bytes(b"sac")
+        self.as_obspy().write(str(filename), format=format)
+
+    def as_obspy(self):
+        trace = Trace(data=np.arange(10, dtype=np.float32))
+        trace.stats.network = self.stats.network
+        trace.stats.station = self.stats.station
+        trace.stats.location = self.stats.location
+        trace.stats.channel = self.stats.channel
+        trace.stats.starttime = self.stats.starttime
+        return trace
 
 
 def test_waveform_worker_reuses_authenticated_client_and_writes_mseed(tmp_path):
     client = Mock()
-    client.get_waveforms.return_value = _Stream([object()])
+    client.get_waveforms.return_value = _Stream([_SacTrace("BHZ")])
     with patch.object(waveform, "_client", return_value=client) as factory:
         result = waveform._download_station(
             inventory.EARTHSCOPE_URL,
@@ -288,7 +300,9 @@ def test_waveform_worker_reuses_authenticated_client_and_writes_mseed(tmp_path):
     factory.assert_called_once_with(inventory.EARTHSCOPE_URL, "user", "password")
     assert result.downloaded == 1
     assert result.files_written == 1
-    assert len(list(tmp_path.rglob("*.mseed"))) == 1
+    assert (
+        tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed"
+    ).is_file()
 
 
 def test_waveform_worker_can_write_one_sac_per_channel(tmp_path):
@@ -312,7 +326,30 @@ def test_waveform_worker_can_write_one_sac_per_channel(tmp_path):
         )
     assert result.downloaded == 1
     assert result.files_written == 2
-    assert len(list(tmp_path.rglob("*.sac"))) == 2
+    assert (
+        tmp_path
+        / "NZ"
+        / "AAA"
+        / "2026"
+        / "NZ.AAA.10.BHZ.D.2026.001.000000.sac"
+    ).is_file()
+
+
+def test_download_rejects_trace_header_that_disagrees_with_request(tmp_path):
+    day = UTCDateTime("2026-01-01")
+    trace = _SacTrace("BHZ")
+    trace.stats.station = "WRONG"
+
+    with pytest.raises(ValueError, match="does not match request"):
+        waveform._write_waveforms(
+            _Stream([trace]),
+            tmp_path,
+            "NZ",
+            "AAA",
+            day,
+            "sac",
+            False,
+        )
 
 
 def test_invalid_waveform_format_is_rejected(tmp_path):
@@ -329,9 +366,9 @@ def test_invalid_waveform_format_is_rejected(tmp_path):
 
 def test_existing_mseed_is_skipped_without_network_request(tmp_path):
     day = UTCDateTime("2026-01-01")
-    destination = tmp_path / "NZ" / "AAA" / "2026" / "001" / "NZ.AAA.2026.001.mseed"
+    destination = tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed"
     destination.parent.mkdir(parents=True)
-    destination.write_bytes(b"existing")
+    _Stream([_SacTrace("BHZ")]).write(destination, "MSEED")
 
     with patch.object(waveform, "_fetch_waveforms") as fetch:
         result = waveform._download_day(
@@ -452,10 +489,9 @@ def test_sac_check_requires_each_explicit_channel(tmp_path):
 
 def test_incomplete_sac_day_downloads_only_missing_files(tmp_path):
     day = UTCDateTime("2026-01-01")
-    directory = tmp_path / "NZ" / "AAA" / "2026" / "001"
-    existing = waveform._sac_destination(_SacTrace("BHZ"), directory)
+    existing = waveform._sac_destination(_SacTrace("BHZ"), tmp_path)
     existing.parent.mkdir(parents=True)
-    existing.write_bytes(b"existing")
+    _SacTrace("BHZ").write(existing, "SAC")
 
     written, skipped = waveform._write_waveforms(
         _Stream([_SacTrace("BHZ"), _SacTrace("BHN")]),
@@ -471,7 +507,7 @@ def test_incomplete_sac_day_downloads_only_missing_files(tmp_path):
 
     assert written == 1
     assert not skipped
-    assert existing.read_bytes() == b"existing"
+    assert existing.is_file()
     assert waveform._day_is_complete(tmp_path, "NZ", "AAA", day, "sac", "*", "BH?")
 
 

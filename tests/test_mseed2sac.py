@@ -48,7 +48,15 @@ def test_conversion_writes_sac_and_can_remove_source(tmp_path):
     assert result.succeeded == 1
     assert result.traces_written == 1
     assert not source.exists()
-    assert next((tmp_path / "output").rglob("*.sac")).read_bytes() == b"sac"
+    destination = (
+        tmp_path
+        / "output"
+        / "NZ"
+        / "AAA"
+        / "2026"
+        / "NZ.AAA..BHZ.D.2026.008.010203.sac"
+    )
+    assert destination.read_bytes() == b"sac"
 
 
 def test_conflict_does_not_overwrite_or_remove_source(tmp_path):

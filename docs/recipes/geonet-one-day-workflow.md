@@ -285,9 +285,9 @@ data/geonet/2025-01-01/
 └── 02_sac_displacement_nm_25hz/     # Part 2 final output
 ```
 
-Waveform directories are organized by
-`network/station/year/Julian-day`. Existing MiniSEED files are skipped, so the
-download step can safely resume an interrupted archive.
+Waveform directories are organized by `network/station/year`, with year and
+Julian day retained in each canonical filename. Existing valid MiniSEED files
+are skipped, so the download step can safely resume an interrupted archive.
 
 All times are UTC. GeoNet may return a first or last MiniSEED record slightly
 outside the requested interval to avoid re-encoding records. Trim explicitly

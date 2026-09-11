@@ -54,6 +54,7 @@ nav:
           - Station metadata: recipes/download-inventory.md
           - Earthquake catalog: recipes/download-events.md
           - Waveforms: recipes/download-waveforms.md
+          - Experimental MassDownloader: recipes/mass-download-waveforms.md
           - Download completeness: recipes/download-statistics.md
       - Prepare waveforms:
           - MiniSEED to SAC: recipes/convert-miniseed.md

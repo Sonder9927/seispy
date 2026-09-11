@@ -14,6 +14,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 | Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
 | Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
+| Bulk-download from providers | [Experimental MassDownloader](recipes/mass-download-waveforms.md) | `download_waveforms_mass` |
 | Check waveform download gaps | [Download completeness](recipes/download-statistics.md) | `download_status` |
 | Convert MiniSEED files | [MiniSEED to SAC](recipes/convert-miniseed.md) | `mseed2sac` |
 | Organize daily files | [Sort and merge SAC](recipes/sort-merge.md) | `sort_to`, `merge_by_day` |

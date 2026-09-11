@@ -29,6 +29,13 @@ def test_event_public_api_uses_new_names():
     assert callable(event.write_event_catalog)
 
 
+def test_download_public_api_exposes_experimental_mass_downloader():
+    from seispy import download
+
+    assert callable(download.download_waveforms_mass)
+    assert download.MassDownloadResult.__name__ == "MassDownloadResult"
+
+
 def test_decimation_public_interface_uses_file_name():
     import seispy
 

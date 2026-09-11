@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import obspy
+from seispy._archive import WaveformIdentity, preserve_sac_quality
 from seispy._batch import (
     BatchSummary,
     cleanup_outputs,
@@ -209,6 +210,7 @@ def _convert_file(source, output, remove_original, limit):
         if not len(stream):
             raise ValueError("MiniSEED contains no traces")
         for trace in stream:
+            preserve_sac_quality(trace)
             destination = _trace_destination(trace, output)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
@@ -243,13 +245,7 @@ def _convert_file(source, output, remove_original, limit):
 
 
 def _trace_destination(trace, output):
-    stats = trace.stats
-    try:
-        quality = stats.mseed.dataquality
-    except (AttributeError, KeyError):
-        quality = "D"
-    return build_sac_path(output, stats.network, stats.station, stats.location,
-                          stats.channel, quality, stats.starttime)
+    return WaveformIdentity.from_trace(trace).sac_path(output)
 
 
 def build_sac_path(
@@ -286,11 +282,10 @@ def build_sac_path(
         # => True
         ```
     """
-    directory = Path(output) / network / station / str(starttime.year) / f"{starttime.julday:03d}"
-    filename = (f"{network}.{station}.{location}.{channel}.{quality}."
-                f"{starttime.year}.{starttime.julday:03d}."
-                f"{starttime.strftime('%H%M%S')}.sac")
-    return directory / filename
+    identity = WaveformIdentity(
+        network, station, location, channel, quality, starttime
+    )
+    return identity.sac_path(output)
 
 
 def _failed_batch(files, exc, limit):

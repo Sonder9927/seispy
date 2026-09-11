@@ -4,14 +4,16 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import batched
 from pathlib import Path
 
+import obspy
 from tqdm import tqdm
+
+from seispy._archive import WaveformIdentity
 
 
 def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):
-    """Copy SAC files into a station/year/Julian-day directory tree.
+    """Copy SAC files into a network/station/year directory tree.
 
-    Files produced by :func:`seispy.collate.mseed2sac` are copied into a
-    ``network/station/year/day`` hierarchy.
+    Each destination is derived from the SAC header, never the source filename.
 
     Args:
         src: Source directory searched recursively.
@@ -39,9 +41,13 @@ def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):
 
 def _copy_targets(targets: list[Path], dest_path: Path):
     for target in targets:
-        # change these parts to parse filename.
-        net, sta, _, _, _, year, day, _ = target.stem.split(".")
-        dest_file = dest_path / net / sta / year / day / target.name
+        stream = obspy.read(target, headonly=True)
+        if len(stream) != 1:
+            raise ValueError(f"SAC file must contain exactly one trace: {target}")
+        identity = WaveformIdentity.from_trace(stream[0])
+        dest_file = identity.sac_path(dest_path)
+        if dest_file.exists():
+            raise FileExistsError(dest_file)
         dest_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(target, dest_file)
     time.sleep(0.1)

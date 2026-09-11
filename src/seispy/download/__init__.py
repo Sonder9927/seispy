@@ -6,6 +6,7 @@ from seispy.download.inventory import (
     ResponseConflictWarning,
     download_inventory,
 )
+from seispy.download.mass import MassDownloadResult, download_waveforms_mass
 from seispy.download.stats import (
     DownloadAnalysis,
     download_status,
@@ -21,10 +22,12 @@ __all__ = [
     "ResponseConflictWarning",
     "download_earthquake_events",
     "download_waveforms",
+    "download_waveforms_mass",
     "download_status",
     "scan_download_availability",
     "summarize_download_availability",
     "plot_download_availability",
     "DownloadAnalysis",
     "WaveformDownloadSummary",
+    "MassDownloadResult",
 ]
