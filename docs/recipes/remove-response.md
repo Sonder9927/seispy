@@ -48,13 +48,45 @@ The SAC backend rejects MiniSEED input before processing; use `backend="obspy"`
 for MiniSEED.
 
 The default pre-filter is `(0.004, 0.006, 4.0, 5.0)` Hz. Both backends taper
-at most 5% from each edge and cap each edge at 600 seconds for daily records.
+at most 5% from each edge and cap each edge at 150 seconds for daily records.
 Only gaps of one second or less are interpolated; longer gaps fail explicitly.
 Before processing, inventories with overlapping response epochs trigger a
 lightweight header preflight. `summary.response_conflicts` reports how many
 waveform files do not have one unambiguous response covering the complete
 trace. Those files fail safely; the remaining files continue and no response
 is selected arbitrarily.
+
+## Why these processing defaults are used
+
+The project defaults target the current surface-wave and body-wave research
+workflow:
+
+- Surface-wave periods of interest do not exceed 150 seconds. The low-frequency
+  pre-filter transition from 0.004 to 0.006 Hz protects the passband beginning
+  near `1 / 150 s = 0.0067 Hz`, while the time-domain taper is capped at 150
+  seconds per edge.
+- Body-wave frequencies of interest do not exceed 2 Hz. The default high-side
+  pre-filter corners at 4 and 5 Hz place the transition above that research
+  band when the sampling rate permits it.
+- Decimation factors should be chosen from the required research band, not only
+  from the desired file size. For example, 100 Hz to 25 Hz with factor 4 leaves
+  a 12.5 Hz Nyquist frequency and preserves the complete default pre-filter.
+  Reducing the data to 1 Hz leaves a 0.5 Hz Nyquist frequency and is therefore
+  suitable for the surface-wave workflow, but cannot retain body waves up to
+  2 Hz.
+
+!!! warning "Nyquist adjustment during integrated decimation"
+
+    When `decimate_factors` is set, SeisPy evaluates `pre_filt` against the
+    final sampling rate before removing the response. If the requested fourth
+    corner reaches or exceeds the final Nyquist frequency, the third and fourth
+    corners automatically fall back to at most `0.80 × Nyquist` and
+    `0.95 × Nyquist`. This keeps the frequency taper valid, but narrows the
+    usable high-frequency band. If the second corner reaches or exceeds the
+    adjusted fourth corner (`0.95 × Nyquist`), processing fails instead of
+    inventing an invalid rolloff; reaching Nyquist also fails. Always confirm
+    that the adjusted third corner remains above the highest frequency required
+    by the analysis.
 
 Every generated file is validated before it replaces or accompanies the
 source. Empty, constant, non-finite, truncated, time-shifted, or sampling-rate

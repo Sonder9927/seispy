@@ -26,7 +26,7 @@ IssueStatus = Literal["deconvolution_failed", "original_removal_failed"]
 PreFilter = tuple[float, float, float, float]
 DEFAULT_PRE_FILTER: PreFilter = (0.004, 0.006, 4.0, 5.0)
 DEFAULT_SAC_BATCH_SIZE = 100
-TAPER_MAX_SECONDS = 600.0
+TAPER_MAX_SECONDS = 150.0
 
 
 @dataclass(frozen=True)
@@ -137,6 +137,17 @@ def deconvolution_by_station(
         NotADirectoryError: If ``src_dir`` does not exist.
         ValueError: If the backend, limits, or output policy is invalid, or if
             MiniSEED input is selected with the SAC backend.
+
+    Notes:
+        The default 150-second taper cap and
+        ``pre_filt=(0.004, 0.006, 4.0, 5.0)`` target surface-wave periods up to
+        150 seconds and body-wave frequencies up to 2 Hz. With integrated
+        decimation, the final Nyquist frequency is checked before response
+        removal. High-frequency pre-filter corners are lowered to fit below
+        Nyquist when possible. Processing fails if the second corner leaves no
+        room for a rolloff below ``0.95 * Nyquist``; the caller must still
+        confirm that the adjusted passband covers the scientific frequency
+        range of interest.
 
     Examples:
         ```python
@@ -965,6 +976,7 @@ def _final_sampling_rate(sampling_rate, factors, pre_filt) -> float:
             f"decimation leaves Nyquist at {nyquist:g} Hz, which must exceed "
             f"pre_filt low passband corner {f2:g} Hz"
         )
+    _effective_pre_filt(pre_filt, rate)
     return rate
 
 
@@ -982,6 +994,11 @@ def _effective_pre_filt(pre_filt, sampling_rate: float) -> PreFilter:
 
     # Leave headroom below Nyquist and retain a finite high-frequency rolloff.
     f4 = nyquist * 0.95
+    if f2 >= f4:
+        raise ValueError(
+            f"pre_filt low passband corner {f2:g} Hz leaves no room for a "
+            f"high-frequency rolloff below 0.95 × Nyquist ({f4:g} Hz)"
+        )
     f3 = min(f3, nyquist * 0.80)
     if f3 <= f2:
         f3 = f2 + (f4 - f2) * 0.5

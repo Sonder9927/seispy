@@ -239,7 +239,7 @@ def test_pre_filter_is_unchanged_when_below_nyquist():
 def test_default_pre_filter_and_daily_taper_are_conservative():
     assert remove_response.DEFAULT_PRE_FILTER == (0.004, 0.006, 4.0, 5.0)
     trace = SimpleNamespace(stats=SimpleNamespace(sampling_rate=100.0, npts=8_640_000))
-    assert remove_response._sac_taper_width(trace) == pytest.approx(600 / 86_400)
+    assert remove_response._sac_taper_width(trace) == pytest.approx(150 / 86_400)
 
 
 def test_pre_filter_upper_corners_are_reduced_below_nyquist():
@@ -266,6 +266,22 @@ def test_invalid_pre_filter_is_rejected(pre_filt):
 def test_pre_filter_low_corner_must_be_below_nyquist():
     with pytest.raises(ValueError, match="Nyquist"):
         remove_response._effective_pre_filt((0.4, 0.6, 3.0, 3.5), sampling_rate=1.0)
+
+
+def test_pre_filter_requires_high_frequency_rolloff_room_below_nyquist():
+    with pytest.raises(ValueError, match="rolloff"):
+        remove_response._effective_pre_filt(
+            (0.4, 0.96, 1.2, 1.5), sampling_rate=2.0
+        )
+
+
+def test_adjusted_pre_filter_remains_strictly_increasing():
+    result = remove_response._effective_pre_filt(
+        (0.4, 0.94, 1.2, 1.5), sampling_rate=2.0
+    )
+
+    assert all(left < right for left, right in zip(result, result[1:]))
+    assert result[-1] < 1.0
 
 
 @pytest.mark.parametrize("factors", [0, 1, 8, [5, 1], [2, 8], [2.0]])
