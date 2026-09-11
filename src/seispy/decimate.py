@@ -89,7 +89,7 @@ class DecimationSummary(ReportMixin):
 def decimate_files(
     src_dir: str | Path,
     factors: int | Sequence[int],
-    method: str = "scipy",
+    backend: str = "scipy",
     pattern: str = "*.sac",
     max_workers: int = 5,
     *,
@@ -112,7 +112,7 @@ def decimate_files(
         src_dir: Root directory searched recursively for waveform files.
         factors: One factor or an ordered sequence of factors from 2 through 7.
             The output rate is the input rate divided by their product.
-        method: Processing adapter, ``"scipy"`` or ``"sac"``. Both use the
+        backend: Processing backend, ``"scipy"`` or ``"sac"``. Both use the
             same SAC FIR coefficients and preserve sample alignment.
         pattern: Recursive file pattern below ``src_dir``.
         max_workers: Maximum number of file-batch worker processes.
@@ -128,7 +128,7 @@ def decimate_files(
 
     Raises:
         NotADirectoryError: If ``src_dir`` does not exist.
-        ValueError: If the method, limits, or output policy is invalid.
+        ValueError: If the backend, limits, or output policy is invalid.
 
     Examples:
         ```python
@@ -143,7 +143,7 @@ def decimate_files(
     started = time.monotonic()
     run_id = create_run_id()
     logger = get_logger(**_LOG_DECIMATE)
-    method = method.lower()
+    backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
     if not src_path.is_dir():
         raise NotADirectoryError(f"Source directory does not exist: {src_path}")
@@ -154,15 +154,15 @@ def decimate_files(
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     values = _normalize_factors(factors)
-    worker = _decimation_method(method)
+    worker = _decimation_backend(backend)
     output_path = _resolve_output_dir(src_path, output_dir, remove_original)
     worker_sample_limit = min(max_error_samples, 1)
 
     logger.info(
-        "run_id=%s started method=%s src_dir=%s output_dir=%s "
+        "run_id=%s started backend=%s src_dir=%s output_dir=%s "
         "remove_original=%s factors=%s pattern=%s max_workers=%d batch_size=%d",
         run_id,
-        method,
+        backend,
         src_path,
         output_path,
         remove_original,
@@ -258,12 +258,12 @@ def _normalize_factors(factors):
     return values
 
 
-def _decimation_method(method) -> Callable:
-    if method == "scipy":
+def _decimation_backend(backend) -> Callable:
+    if backend == "scipy":
         return _scipy_decimate_batch
-    if method == "sac":
+    if backend == "sac":
         return _sac_decimate_batch
-    raise ValueError(f"Unknown method: {method}")
+    raise ValueError(f"Unknown backend: {backend}")
 
 
 def _resolve_output_dir(src_path, output_dir, remove_original):

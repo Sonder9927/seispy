@@ -16,7 +16,7 @@ from seispy import decimate_files
 summary = decimate_files(
     "data/deconvolved",
     factors=[5, 5, 4],
-    method="scipy",
+    backend="scipy",
     output_dir="data/decimated",
     remove_original=False,
     max_workers=2,
@@ -45,7 +45,7 @@ For the SAC backend, values are sequential decimation factors:
 summary = decimate_files(
     "data/deconvolved",
     factors=[2, 2, 5],
-    method="sac",
+    backend="sac",
     output_dir="data/decimated",
     remove_original=False,
     batch_size=100,

@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -6,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 _MODULE_PATH = Path(__file__).parents[1] / "src" / "seispy" / "decimate.py"
 _SPEC = importlib.util.spec_from_file_location("decimate_under_test", _MODULE_PATH)
@@ -104,6 +106,18 @@ def test_summary_exports_compact_json(tmp_path):
 def test_factors_have_sac_compatible_range():
     assert decimate._normalize_factors(5) == (5,)
     assert decimate._normalize_factors([5, 5, 4]) == (5, 5, 4)
+
+
+def test_decimation_public_interface_uses_backend_term():
+    signature = inspect.signature(decimate.decimate_files)
+
+    assert signature.parameters["backend"].default == "scipy"
+    assert "method" not in signature.parameters
+
+
+def test_unknown_decimation_backend_is_rejected():
+    with pytest.raises(ValueError, match="Unknown backend"):
+        decimate._decimation_backend("unknown")
 
 
 def test_scipy_decimation_preserves_impulse_alignment():

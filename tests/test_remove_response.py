@@ -105,12 +105,12 @@ def test_sac_backend_rejects_miniseed_before_reading_inventory(tmp_path):
 
     with (
         patch.object(remove_response.obspy, "read_inventory") as read_inventory,
-        pytest.raises(ValueError, match='method="sac" does not support MiniSEED'),
+        pytest.raises(ValueError, match='backend="sac" does not support MiniSEED'),
     ):
         remove_response.deconvolution_by_station(
             source_root,
             tmp_path / "stations.xml",
-            method="sac",
+            backend="sac",
             pattern="*.mseed",
             output_dir=tmp_path / "output",
             save_report=False,
@@ -268,17 +268,124 @@ def test_pre_filter_low_corner_must_be_below_nyquist():
         remove_response._effective_pre_filt((0.4, 0.6, 3.0, 3.5), sampling_rate=1.0)
 
 
-@pytest.mark.parametrize(
-    "function",
-    [
-        remove_response.deconvolution_by_station,
-        remove_response.obspy_deconv,
-        remove_response.sac_deconv,
-        remove_response.stream_removed_response,
-    ],
-)
-def test_response_removal_interfaces_do_not_accept_resample(function):
-    assert "resample" not in inspect.signature(function).parameters
+@pytest.mark.parametrize("factors", [0, 1, 8, [5, 1], [2, 8], [2.0]])
+def test_deconvolution_rejects_non_sac_decimation_factors(tmp_path, factors):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises(ValueError, match="integers from 2 through 7"):
+        remove_response.deconvolution_by_station(
+            source,
+            tmp_path / "stations.xml",
+            output_dir=tmp_path / "output",
+            decimate_factors=factors,
+        )
+
+
+def test_decimation_must_leave_passband_below_nyquist():
+    with pytest.raises(ValueError, match="decimation leaves Nyquist"):
+        remove_response._final_sampling_rate(
+            1.0, (5, 5, 4), remove_response.DEFAULT_PRE_FILTER
+        )
+
+
+def test_deconvolution_decimation_is_optional():
+    signature = inspect.signature(remove_response.deconvolution_by_station)
+
+    assert signature.parameters["decimate_factors"].default is None
+
+
+def test_deconvolution_public_interface_uses_backend_term():
+    signature = inspect.signature(remove_response.deconvolution_by_station)
+
+    assert signature.parameters["backend"].default == "obspy"
+    assert "method" not in signature.parameters
+
+
+def test_unknown_deconvolution_backend_is_rejected():
+    with pytest.raises(ValueError, match="Unknown backend"):
+        remove_response._deconvolution_backend("unknown")
+
+
+def test_obspy_preprocesses_then_decimates_before_removing_response():
+    calls = []
+    trace = Mock()
+    trace.stats = SimpleNamespace(sampling_rate=100.0, npts=10_000)
+    trace.data = np.arange(10_000, dtype=np.float32)
+    trace.detrend.side_effect = lambda *args, **kwargs: calls.append("detrend")
+    trace.taper.side_effect = lambda *args, **kwargs: calls.append("taper")
+    trace.remove_response.side_effect = lambda *args, **kwargs: calls.append("response")
+
+    class Stream(list):
+        def get_gaps(self):
+            return []
+
+        def merge(self, **kwargs):
+            return self
+
+    def decimate(item, factors):
+        calls.append("decimate")
+        item.stats.sampling_rate = 1.0
+
+    with (
+        patch.object(remove_response.obspy, "read", return_value=Stream([trace])),
+        patch.object(
+            remove_response, "_response_epoch_for_trace", return_value=(object(), object())
+        ),
+        patch.object(
+            remove_response, "_sac_compatible_decimate_trace", side_effect=decimate
+        ),
+    ):
+        remove_response.stream_removed_response(
+            "trace.sac", object(), decimate_factors=[5, 5, 4]
+        )
+
+    assert calls == ["detrend", "detrend", "taper", "decimate", "response"]
+
+
+def test_sac_decimation_commands_precede_response_removal(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    (station / "trace.sac").write_bytes(b"original")
+    output_root = tmp_path / "processed"
+    scripts = []
+
+    def run_sac(command, *, input, **kwargs):
+        script = input.decode()
+        scripts.append(script)
+        for line in script.splitlines():
+            if line.startswith("w "):
+                Path(line[2:]).write_bytes(b"processed")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    header = SimpleNamespace(stats=SimpleNamespace(sampling_rate=100.0, npts=10_000))
+    with (
+        patch.object(remove_response.obspy, "read", return_value=[header]),
+        patch.object(
+            remove_response,
+            "_sac_pz_for_trace",
+            return_value=tmp_path / "response.pz",
+        ),
+        patch.object(remove_response.subprocess, "run", side_effect=run_sac),
+        patch.object(remove_response, "_validate_deconvolved_file"),
+    ):
+        result = remove_response.sac_deconv(
+            station,
+            "*.sac",
+            object(),
+            source_root,
+            output_root,
+            False,
+            20,
+            decimate_factors=[5, 5, 4],
+        )
+
+    assert result.succeeded == 1
+    script = scripts[0]
+    assert script.index("rmean; rtr; taper") < script.index("decimate 5")
+    assert script.index("decimate 5") < script.index("trans from pol")
+    assert script.index("decimate 4") < script.index("trans from pol")
 
 
 def test_deconvolution_summary_status_includes_removal_failures():

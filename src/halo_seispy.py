@@ -214,7 +214,7 @@ def _(mo):
 
         `rmean; rtr; taper` 每一步都有所差异，反而去仪器响应只有数值精度的差异。总的来看误差主要由去线性趋势这一步造成。误差相比原数据很小，应该是可以接受的。
 
-        不过我们也提供了调用 sac 的方法，通过修改参数 `method=“sac”`。由于 sac 需要另外安装，所以默认方法是 obspy。
+        不过我们也提供了调用 sac 的后端，通过设置参数 `backend="sac"`。由于 sac 需要另外安装，所以默认后端是 obspy。
 
         ### resample
         #### Comparison between SAC and ObsPy

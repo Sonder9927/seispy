@@ -6,13 +6,14 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Sequence
 
 import obspy
 import numpy as np
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
+from seispy.decimate import _normalize_factors, _sac_compatible_decimate_trace
 from rose import get_logger
 from rose.batch import (
     ReportMixin,
@@ -101,7 +102,7 @@ class DeconvolutionSummary(ReportMixin):
 def deconvolution_by_station(
     src_dir: str | Path,
     resp: str | Path,
-    method: str = "obspy",
+    backend: str = "obspy",
     pattern: str = "*.sac",
     max_workers: int = 5,
     *,
@@ -111,15 +112,16 @@ def deconvolution_by_station(
     save_report: bool | None = None,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     sac_batch_size: int = DEFAULT_SAC_BATCH_SIZE,
+    decimate_factors: int | Sequence[int] | None = None,
 ) -> DeconvolutionSummary:
     """Remove responses from station-grouped SAC or MiniSEED waveform files.
 
     Args:
         src_dir: Root directory containing one subdirectory per station.
         resp: StationXML file containing the matching response metadata.
-        method: Processing backend, ``"obspy"`` or ``"sac"``.
+        backend: Processing backend, ``"obspy"`` or ``"sac"``.
         pattern: Recursive file pattern within each station directory. Use a
-            MiniSEED pattern only with ``method="obspy"``.
+            MiniSEED pattern only with ``backend="obspy"``.
         max_workers: Maximum number of station worker processes.
         output_dir: Optional output root. A sibling directory is used by default.
         remove_original: Remove each source only after output commits safely.
@@ -130,14 +132,19 @@ def deconvolution_by_station(
             requested low-frequency corners.
         sac_batch_size: Maximum files handled by one SAC process. This limits
             the failure scope while avoiding one process launch per file. Only
-            used when ``method="sac"``.
+            used when ``backend="sac"``.
+        decimate_factors: Optional factor or ordered factors from 2 through 7.
+            After detrending and tapering, decimation with anti-alias filtering
+            is applied before instrument-response removal. The final Nyquist
+            frequency must stay above the second ``pre_filt`` corner. By
+            default, no decimation is performed.
 
     Returns:
         Processing counts, sampled issues, output location, and run duration.
 
     Raises:
         NotADirectoryError: If ``src_dir`` does not exist.
-        ValueError: If the method, limits, or output policy is invalid, or if
+        ValueError: If the backend, limits, or output policy is invalid, or if
             MiniSEED input is selected with the SAC backend.
 
     Examples:
@@ -153,7 +160,7 @@ def deconvolution_by_station(
     started = time.monotonic()
     run_id = create_run_id()
     logger = get_logger(**_LOG_DECONVOLUTION)
-    method = method.lower()
+    backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
     if not src_path.is_dir():
         raise NotADirectoryError(f"Source directory does not exist: {src_path}")
@@ -161,31 +168,33 @@ def deconvolution_by_station(
         raise ValueError("max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
-    if method == "sac" and sac_batch_size < 1:
+    if backend == "sac" and sac_batch_size < 1:
         raise ValueError("sac_batch_size must be at least 1")
     pre_filt = _validate_pre_filt(pre_filt)
-    worker = deconv_by_method(method)
+    factors = _normalize_decimate_factors(decimate_factors)
+    worker = _deconvolution_backend(backend)
     output_path = _resolve_output_dir(src_path, output_dir, remove_original)
     worker_error_samples = min(max_error_samples, 1)
     logger.info(
-        "run_id=%s started method=%s src_dir=%s output_dir=%s "
-        "remove_original=%s pattern=%s max_workers=%d",
+        "run_id=%s started backend=%s src_dir=%s output_dir=%s "
+        "remove_original=%s pattern=%s max_workers=%d decimate_factors=%s",
         run_id,
-        method,
+        backend,
         src_path,
         output_path,
         remove_original,
         pattern,
         max_workers,
+        factors,
     )
 
     stations = sorted(path for path in src_path.iterdir() if path.is_dir())
-    if method == "sac":
+    if backend == "sac":
         miniseed = _first_miniseed_input(stations, pattern)
         if miniseed is not None:
             raise ValueError(
-                f'method="sac" does not support MiniSEED input: {miniseed}; '
-                'use method="obspy"'
+                f'backend="sac" does not support MiniSEED input: {miniseed}; '
+                'use backend="obspy"'
             )
     inv = obspy.read_inventory(str(resp))
     response_conflicts = _preflight_response_conflicts(stations, pattern, inv)
@@ -201,7 +210,7 @@ def deconvolution_by_station(
         futures = {}
         for station in stations:
             try:
-                response = _get_response(method, inv, station.name)
+                response = _get_response(backend, inv, station.name)
             except Exception as exc:
                 batches.append(
                     _failed_batch(
@@ -224,8 +233,10 @@ def deconvolution_by_station(
                 worker_error_samples,
                 pre_filt,
             )
-            if method == "sac":
-                worker_args += (sac_batch_size,)
+            if backend == "sac":
+                worker_args += (sac_batch_size, factors)
+            else:
+                worker_args += (factors,)
             future = executor.submit(worker, *worker_args)
             futures[future] = station
         with tqdm(total=len(futures), desc="Processing stations") as pbar:
@@ -345,21 +356,21 @@ def _resolve_output_dir(src_path, output_dir, remove_original):
     return destination
 
 
-def _get_response(method, resp, station):
-    if method in {"obspy", "sac"}:
+def _get_response(backend, resp, station):
+    if backend in {"obspy", "sac"}:
         inv = resp.select(station=station)
         if len(inv):
             return inv
         raise ValueError(f"station={station!r} not found in the inventory")
-    raise ValueError(f"Unknown method: {method}")
+    raise ValueError(f"Unknown backend: {backend}")
 
 
-def deconv_by_method(method) -> Callable:
-    if method == "obspy":
+def _deconvolution_backend(backend) -> Callable:
+    if backend == "obspy":
         return obspy_deconv
-    if method == "sac":
+    if backend == "sac":
         return sac_deconv
-    raise ValueError(f"Unknown method: {method}")
+    raise ValueError(f"Unknown backend: {backend}")
 
 
 def _destination_for(target, src_root, output_dir, remove_original):
@@ -410,6 +421,7 @@ def obspy_deconv(
     remove_original,
     max_error_samples,
     pre_filt=DEFAULT_PRE_FILTER,
+    decimate_factors=(),
 ):
     return _process_obspy_targets(
         _input_files(directory, pattern),
@@ -419,11 +431,19 @@ def obspy_deconv(
         remove_original,
         max_error_samples,
         pre_filt,
+        decimate_factors,
     )
 
 
 def _process_obspy_targets(
-    targets, inv, src_root, output_dir, remove_original, limit, pre_filt
+    targets,
+    inv,
+    src_root,
+    output_dir,
+    remove_original,
+    limit,
+    pre_filt,
+    decimate_factors,
 ):
     succeeded = failed = removal_failed = 0
     samples = []
@@ -434,7 +454,12 @@ def _process_obspy_targets(
         temporary_outputs = []
         committed_outputs = []
         try:
-            stream = stream_removed_response(target, inv, pre_filt=pre_filt)
+            stream = stream_removed_response(
+                target,
+                inv,
+                pre_filt=pre_filt,
+                decimate_factors=decimate_factors,
+            )
             destinations = _obspy_destinations(
                 target, stream, src_root, output_dir, remove_original
             )
@@ -523,9 +548,11 @@ def sac_deconv(
     max_error_samples,
     pre_filt=DEFAULT_PRE_FILTER,
     batch_size=DEFAULT_SAC_BATCH_SIZE,
+    decimate_factors=(),
 ):
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    decimate_factors = _normalize_decimate_factors(decimate_factors)
     targets = _input_files(directory, pattern)
     environment = os.environ.copy()
     environment["SAC_DISPLAY_COPYRIGHT"] = "0"
@@ -545,6 +572,7 @@ def sac_deconv(
                     max_error_samples,
                     pre_filt,
                     environment,
+                    decimate_factors,
                 )
             )
     return _combine_batches(summaries, max_error_samples)
@@ -561,6 +589,7 @@ def _process_sac_batch(
     limit,
     pre_filt,
     environment,
+    decimate_factors,
 ):
     """Run a bounded group of files in one SAC process."""
     failed = removal_failed = 0
@@ -584,7 +613,10 @@ def _process_sac_batch(
         temporary = temporary_output_path(destination)
         try:
             trace = obspy.read(target, headonly=True)[0]
-            f1, f2, f3, f4 = _effective_pre_filt(pre_filt, trace.stats.sampling_rate)
+            final_rate = _final_sampling_rate(
+                trace.stats.sampling_rate, decimate_factors, pre_filt
+            )
+            f1, f2, f3, f4 = _effective_pre_filt(pre_filt, final_rate)
             pzs = _sac_pz_for_trace(inv, trace, cache_dir, response_cache)
             taper_width = _sac_taper_width(trace)
         except Exception as exc:
@@ -597,6 +629,11 @@ def _process_sac_batch(
             (
                 f"r {target}",
                 f"rmean; rtr; taper type hanning width {taper_width:g}",
+            )
+        )
+        commands.extend(f"decimate {factor}" for factor in decimate_factors)
+        commands.extend(
+            (
                 f"trans from pol s {pzs} to none freq {f1:g} {f2:g} {f3:g} {f4:g}",
                 "mul 1.0e9",
                 f"w {temporary}",
@@ -639,6 +676,7 @@ def _process_sac_batch(
                     limit,
                     pre_filt,
                     environment,
+                    decimate_factors,
                 )
                 for group in (prepared[:middle], prepared[middle:])
             ]
@@ -654,7 +692,9 @@ def _process_sac_batch(
             try:
                 if process_error is not None:
                     raise process_error
-                _validate_deconvolved_file(target, temporary)
+                _validate_deconvolved_file(
+                    target, temporary, decimate_factors=decimate_factors
+                )
                 commit_output(temporary, destination, overwrite=True)
             except Exception as exc:
                 temporary.unlink(missing_ok=True)
@@ -789,11 +829,13 @@ def _inventory_has_overlapping_epochs(inv) -> bool:
     return False
 
 
-def _validate_deconvolved_file(source, output, processed=None) -> None:
+def _validate_deconvolved_file(
+    source, output, processed=None, decimate_factors=()
+) -> None:
     """Validate output using headers and, when available, in-memory samples."""
     source_trace = obspy.read(source, headonly=True)[0]
     output_trace = obspy.read(output, headonly=True)[0]
-    _validate_trace_headers(source_trace, output_trace)
+    _validate_trace_headers(source_trace, output_trace, decimate_factors)
     if processed is not None:
         for trace in processed:
             _validate_sample_values(trace.data)
@@ -810,14 +852,20 @@ def _validate_output_trace(expected, output) -> None:
     _validate_sample_values(expected.data)
 
 
-def _validate_trace_headers(expected, output) -> None:
+def _validate_trace_headers(expected, output, decimate_factors=()) -> None:
     if output.stats.npts <= 0:
         raise ValueError("deconvolved output contains no samples")
-    if output.stats.npts != expected.stats.npts:
+    expected_npts = int(expected.stats.npts)
+    for factor in decimate_factors:
+        expected_npts = (expected_npts + factor - 1) // factor
+    if output.stats.npts != expected_npts:
         raise ValueError("deconvolved output sample count differs from input")
-    if not np.isclose(output.stats.sampling_rate, expected.stats.sampling_rate):
+    expected_rate = float(expected.stats.sampling_rate)
+    for factor in decimate_factors:
+        expected_rate /= factor
+    if not np.isclose(output.stats.sampling_rate, expected_rate):
         raise ValueError("deconvolved output sampling rate differs from input")
-    tolerance = 0.5 / float(expected.stats.sampling_rate)
+    tolerance = 0.5 / expected_rate
     if abs(output.stats.starttime - expected.stats.starttime) > tolerance:
         raise ValueError("deconvolved output start time differs from input")
 
@@ -846,6 +894,7 @@ def stream_removed_response(
     file: str | Path,
     inv: Any,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
+    decimate_factors: int | Sequence[int] | None = None,
 ) -> obspy.Stream:
     """Remove the instrument response from one waveform file.
 
@@ -854,23 +903,32 @@ def stream_removed_response(
         inv: ObsPy inventory containing the matching response.
         pre_filt: Four corner frequencies in hertz. Upper corners are reduced
             when necessary so that the taper finishes below Nyquist.
+        decimate_factors: Optional factor or ordered factors from 2 through 7.
+            After detrending and tapering, decimation is applied before response
+            removal. By default, no decimation is performed.
 
     Returns:
         The processed ObsPy stream.
 
     Examples:
         ```python
-        stream = stream_removed_response("trace.sac", inventory)
+        stream = stream_removed_response(
+            "trace.sac", inventory, decimate_factors=[5, 5, 4]
+        )
         ```
     """
     st = obspy.read(file)
     merge_short_gaps(st)
+    factors = _normalize_decimate_factors(decimate_factors)
     for tr in st:
         response_inventory, _ = _response_epoch_for_trace(inv, tr)
-        effective_pre_filt = _effective_pre_filt(pre_filt, tr.stats.sampling_rate)
+        final_rate = _final_sampling_rate(tr.stats.sampling_rate, factors, pre_filt)
         tr.detrend("demean")
         tr.detrend("linear")
         tr.taper(max_percentage=0.05, max_length=TAPER_MAX_SECONDS, type="hann")
+        if factors:
+            _sac_compatible_decimate_trace(tr, factors)
+        effective_pre_filt = _effective_pre_filt(pre_filt, final_rate)
         tr.remove_response(
             inventory=response_inventory,
             water_level=None,
@@ -900,6 +958,28 @@ def _validate_pre_filt(pre_filt) -> PreFilter:
     if not all(left < right for left, right in zip(values, values[1:])):
         raise ValueError("pre_filt frequencies must be strictly increasing")
     return values
+
+
+def _normalize_decimate_factors(factors) -> tuple[int, ...]:
+    if factors is None or factors == ():
+        return ()
+    return _normalize_factors(factors)
+
+
+def _final_sampling_rate(sampling_rate, factors, pre_filt) -> float:
+    rate = float(sampling_rate)
+    if not np.isfinite(rate) or rate <= 0:
+        raise ValueError("sampling rate must be positive and finite")
+    for factor in factors:
+        rate /= factor
+    nyquist = rate / 2.0
+    f2 = _validate_pre_filt(pre_filt)[1]
+    if f2 >= nyquist:
+        raise ValueError(
+            f"decimation leaves Nyquist at {nyquist:g} Hz, which must exceed "
+            f"pre_filt low passband corner {f2:g} Hz"
+        )
+    return rate
 
 
 def _effective_pre_filt(pre_filt, sampling_rate: float) -> PreFilter:

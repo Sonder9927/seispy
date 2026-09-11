@@ -18,7 +18,7 @@ from seispy import response
 summary = response.deconvolution_by_station(
     "data/sac",
     "data/metadata/stations.xml",
-    method="obspy",
+    backend="obspy",
     pattern="*.sac",
     output_dir="data/deconvolved",
     remove_original=False,
@@ -29,12 +29,22 @@ print(f"Processed: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
 ```
 
+By default, response removal does not change the sampling rate. To decimate as
+part of this workflow, pass `decimate_factors=[5, 5, 4]`, for example, to change
+100 Hz data to 1 Hz. Each factor must be an integer from 2 through 7. SeisPy
+removes the mean and trend, tapers the trace, then applies the SAC-compatible
+anti-alias filter at each decimation stage before removing the instrument
+response. The final Nyquist frequency must remain above the second `pre_filt`
+corner; otherwise that file fails with a clear error. Upper `pre_filt` corners
+are reduced when needed to finish the frequency taper below the final Nyquist
+frequency.
+
 The ObsPy backend also accepts MiniSEED by selecting it with, for example,
 `pattern="*.mseed"`. Output is always SAC: a single trace keeps the input stem
 with a `.sac` suffix, while a multi-trace MiniSEED file produces one uniquely
 named SAC file per trace. With `remove_original=True`, the MiniSEED source is
 removed only after every trace has been written and validated successfully.
-The SAC backend rejects MiniSEED input before processing; use `method="obspy"`
+The SAC backend rejects MiniSEED input before processing; use `backend="obspy"`
 for MiniSEED.
 
 The default pre-filter is `(0.004, 0.006, 4.0, 5.0)` Hz. Both backends taper
@@ -62,7 +72,7 @@ for issue in summary.issue_samples:
 
 !!! note "SAC backend"
 
-    `method="sac"` uses the same StationXML input and selects the response by
+    `backend="sac"` uses the same StationXML input and selects the response by
     network, station, location, channel, and recording time. Matching temporary
     pole-zero files are cached by response epoch. The SAC backend processes at
     most 100 files per SAC process by default, so two years of daily data does
