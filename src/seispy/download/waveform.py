@@ -227,49 +227,49 @@ def download_waveforms(
         "files_written": 0,
     }
     error_samples = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(task_items), desc="Downloading waveforms") as bar:
-            pending = set()
-            exhausted = False
-            while pending or not exhausted:
-                while not exhausted and len(pending) < max_workers * 3:
-                    try:
-                        code, day = next(tasks)
-                    except StopIteration:
-                        exhausted = True
-                        break
-                    pending.add(
-                        executor.submit(
-                            _download_day,
-                            client,
-                            username,
-                            password,
-                            output,
-                            network,
-                            code,
-                            location,
-                            channel,
-                            day,
-                            min(day + 86400, end),
-                            overwrite,
-                            min(max_error_samples, 1),
-                            output_format,
-                            max_retries,
-                            retry_backoff,
-                        )
+    with (
+        ThreadPoolExecutor(max_workers=max_workers) as executor,
+        tqdm(total=len(task_items), desc="Downloading waveforms") as bar,
+    ):
+        pending = set()
+        exhausted = False
+        while pending or not exhausted:
+            while not exhausted and len(pending) < max_workers * 3:
+                try:
+                    code, day = next(tasks)
+                except StopIteration:
+                    exhausted = True
+                    break
+                pending.add(
+                    executor.submit(
+                        _download_day,
+                        client,
+                        username,
+                        password,
+                        output,
+                        network,
+                        code,
+                        location,
+                        channel,
+                        day,
+                        min(day + 86400, end),
+                        overwrite,
+                        min(max_error_samples, 1),
+                        output_format,
+                        max_retries,
+                        retry_backoff,
                     )
-                if pending:
-                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        result = future.result()
-                        for name in aggregate:
-                            aggregate[name] += getattr(result, name)
-                        error_samples.extend(
-                            result.samples[
-                                : max(0, max_error_samples - len(error_samples))
-                            ]
-                        )
-                        bar.update(1)
+                )
+            if pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    result = future.result()
+                    for name in aggregate:
+                        aggregate[name] += getattr(result, name)
+                    error_samples.extend(
+                        result.samples[: max(0, max_error_samples - len(error_samples))]
+                    )
+                    bar.update(1)
     combined = _Counts(**aggregate, samples=tuple(error_samples))
     summary = WaveformDownloadSummary(
         run_id=run_id,

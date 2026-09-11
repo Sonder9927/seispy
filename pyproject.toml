@@ -26,6 +26,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+  "pylint>=4.0.0",
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
   "ruff>=0.16.6",
@@ -66,7 +67,18 @@ line-length = 88
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F63", "F7", "F82"]
+select = ["E4", "E7", "E9", "F63", "F7", "F82", "B", "SIM", "PERF"]
+
+[tool.pylint.main]
+disable = ["all"]
+enable = ["duplicate-code"]
+persistent = false
+
+[tool.pylint.similarities]
+ignore-comments = true
+ignore-docstrings = true
+ignore-imports = true
+min-similarity-lines = 20
 
 [tool.ruff.format]
 quote-style = "double"

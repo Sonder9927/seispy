@@ -270,9 +270,7 @@ def test_pre_filter_low_corner_must_be_below_nyquist():
 
 def test_pre_filter_requires_high_frequency_rolloff_room_below_nyquist():
     with pytest.raises(ValueError, match="rolloff"):
-        remove_response._effective_pre_filt(
-            (0.4, 0.96, 1.2, 1.5), sampling_rate=2.0
-        )
+        remove_response._effective_pre_filt((0.4, 0.96, 1.2, 1.5), sampling_rate=2.0)
 
 
 def test_adjusted_pre_filter_remains_strictly_increasing():
@@ -280,7 +278,7 @@ def test_adjusted_pre_filter_remains_strictly_increasing():
         (0.4, 0.94, 1.2, 1.5), sampling_rate=2.0
     )
 
-    assert all(left < right for left, right in zip(result, result[1:]))
+    assert all(left < right for left, right in zip(result, result[1:], strict=False))
     assert result[-1] < 1.0
 
 
@@ -346,7 +344,9 @@ def test_obspy_preprocesses_then_decimates_before_removing_response():
     with (
         patch.object(remove_response.obspy, "read", return_value=Stream([trace])),
         patch.object(
-            remove_response, "_response_epoch_for_trace", return_value=(object(), object())
+            remove_response,
+            "_response_epoch_for_trace",
+            return_value=(object(), object()),
         ),
         patch.object(
             remove_response, "_sac_compatible_decimate_trace", side_effect=decimate

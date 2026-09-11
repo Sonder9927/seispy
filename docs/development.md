@@ -1,5 +1,19 @@
 # Documentation development
 
+## Check code quality
+
+Run the regular lint checks with Ruff:
+
+```bash
+uv run ruff check src tests
+```
+
+Run the focused cross-file duplicate-code check with Pylint:
+
+```bash
+uv run pylint src/seispy src/halo
+```
+
 ## Preview the site
 
 ```bash

@@ -460,7 +460,7 @@ def _process_obspy_targets(
             destinations = _obspy_destinations(
                 target, stream, src_root, output_dir, remove_original
             )
-            for trace, destination in zip(stream, destinations):
+            for trace, destination in zip(stream, destinations, strict=True):
                 temporary = temporary_output_path(destination)
                 temporary_outputs.append((temporary, destination))
                 trace.write(str(temporary), format="SAC")
@@ -555,23 +555,22 @@ def sac_deconv(
     environment["SAC_DISPLAY_COPYRIGHT"] = "0"
     with tempfile.TemporaryDirectory(prefix="seispy-sac-pz-") as cache_dir:
         response_cache = {}
-        summaries = []
-        for start in range(0, len(targets), batch_size):
-            summaries.append(
-                _process_sac_batch(
-                    targets[start : start + batch_size],
-                    inv,
-                    Path(cache_dir),
-                    response_cache,
-                    src_root,
-                    output_dir,
-                    remove_original,
-                    max_error_samples,
-                    pre_filt,
-                    environment,
-                    decimate_factors,
-                )
+        summaries = [
+            _process_sac_batch(
+                targets[start : start + batch_size],
+                inv,
+                Path(cache_dir),
+                response_cache,
+                src_root,
+                output_dir,
+                remove_original,
+                max_error_samples,
+                pre_filt,
+                environment,
+                decimate_factors,
             )
+            for start in range(0, len(targets), batch_size)
+        ]
     return _combine_batches(summaries, max_error_samples)
 
 
@@ -818,7 +817,7 @@ def _inventory_has_overlapping_epochs(inv) -> bool:
                 float("-inf") if item.start_date is None else item.start_date.timestamp
             ),
         )
-        for previous, current in zip(ordered, ordered[1:]):
+        for previous, current in zip(ordered, ordered[1:], strict=False):
             if previous.end_date is None or current.start_date is None:
                 return True
             if current.start_date <= previous.end_date:
@@ -952,7 +951,7 @@ def _validate_pre_filt(pre_filt) -> PreFilter:
         raise ValueError("pre_filt must contain four numeric frequencies") from exc
     if len(values) != 4 or not all(value > 0 for value in values):
         raise ValueError("pre_filt must contain four positive frequencies")
-    if not all(left < right for left, right in zip(values, values[1:])):
+    if not all(left < right for left, right in zip(values, values[1:], strict=False)):
         raise ValueError("pre_filt frequencies must be strictly increasing")
     return values
 

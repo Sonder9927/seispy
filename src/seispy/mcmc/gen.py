@@ -156,7 +156,7 @@ class PhaseCurve:
         return len(self.periods)
 
     def rows(self) -> Iterable[tuple[float, float, float]]:
-        return zip(self.periods, self.velocities, self.sigmas)
+        return zip(self.periods, self.velocities, self.sigmas, strict=True)
 
     def valid_rows(self, default_sigma: float) -> list[tuple[float, float, float]]:
         """Return only rows that can be safely written to phase.input.
@@ -203,6 +203,7 @@ class GridData:
             self.topo.ravel(),
             self.sediment.ravel(),
             self.moho.ravel(),
+            strict=True,
         )
 
 
@@ -816,7 +817,7 @@ class GridWriter:
         )
         half_widths = self._vs_perturbation(section, n_coeff)
         lower, upper = self._apply_vs_limits(centers, half_widths, section)
-        return list(zip(lower, upper))
+        return list(zip(lower, upper, strict=True))
 
     def _apply_mantle_crust_constraint(
         self,
