@@ -76,6 +76,11 @@ nav:
       - Events: api/event.md
       - Corrections: api/correct.md
       - MCMC: api/mcmc.md
+  - Design and development:
+      - Archive layout: design/archive-layout.md
+      - Event cutting: design/event-cutting.md
+      - Testing strategy: development/testing.md
+      - Roadmap: development/roadmap.md
   - Contributing docs: development.md
 
 plugins:
