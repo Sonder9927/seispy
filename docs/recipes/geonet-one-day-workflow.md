@@ -40,7 +40,7 @@ from obspy import read
 from seispy import collate, decimate_files, download, response
 
 
-GEONET = "https://service.geonet.org.nz"
+FDSN_BASE_URL = "https://service.geonet.org.nz"
 NETWORK = "NZ"
 STATIONS = ["ABAZ", "AKFZ"]
 CHANNEL = "HH?"
@@ -63,7 +63,7 @@ def require_ok(stage, summary):
 
 inventory = download.download_inventory(
     STATIONXML,
-    client=GEONET,
+    client=FDSN_BASE_URL,
     network=NETWORK,
     station=",".join(STATIONS),
     location="*",
@@ -83,7 +83,7 @@ if rates != [100.0]:
 
 waveforms = download.download_waveforms(
     MSEED,
-    client=GEONET,
+    client=FDSN_BASE_URL,
     network=NETWORK,
     station=STATIONS,
     location="*",
