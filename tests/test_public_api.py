@@ -7,9 +7,7 @@ from pathlib import Path
 def test_top_level_import_is_lazy():
     root = Path(__file__).parents[1]
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(root / "src"), str(root / "packages" / "rose" / "src")]
-    )
+    environment["PYTHONPATH"] = str(root / "src")
     subprocess.run(
         [
             sys.executable,

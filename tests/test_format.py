@@ -75,9 +75,18 @@ def test_conflict_is_not_overwritten(tmp_path):
 
 def test_summary_json(tmp_path):
     summary = module.FormatSummary(
-        "run", 1, 1, 0, 0, 1, 0, 1, 0,
-        (module.FormatResult(Path("a"), "format_failed", "bad"),),
-        Path("out"), 1.0,
+        run_id="run",
+        events_total=1,
+        events_processed=1,
+        events_skipped=0,
+        invalid_event_times=0,
+        files_total=1,
+        succeeded=0,
+        failed=1,
+        output_conflicts=0,
+        error_samples=(module.FormatIssue(Path("a"), "format_failed", "bad"),),
+        output_dir=Path("out"),
+        duration_seconds=1.0,
     )
     data = json.loads(summary.to_json(tmp_path / "summary.json").read_text())
     assert data["failed"] == 1

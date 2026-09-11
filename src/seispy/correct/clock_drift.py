@@ -5,14 +5,9 @@ from pathlib import Path
 import obspy
 import pandas as pd
 from obspy import UTCDateTime
-from rose import get_logger
 from tqdm import tqdm
 
-_LOG_DRIFT = {
-    "name": "correct",
-    "file": "correct.log",
-    "level": logging.INFO,
-}
+logger = logging.getLogger(__name__)
 
 
 def clock_drift(src_dir: str, dest_dir:str, drift_csv: str, max_workers: int = 4):
@@ -33,7 +28,6 @@ def clock_drift(src_dir: str, dest_dir:str, drift_csv: str, max_workers: int = 4
         ```
     """
 
-    logger = get_logger(**_LOG_DRIFT)
     logger.info(f"Correct clock drift for {src_dir} with {drift_csv}")
 
     # 加载钟漂数据
@@ -97,7 +91,6 @@ def _get_valid_stations(src_dir, drift_stations):
 
 def _process_station_drift_correction(station_name, station_drift, src_dir, dest_dir):
     """处理单个台站的钟漂修正"""
-    logger = get_logger(**_LOG_DRIFT)
     
     # 获取该台站的所有SAC文件
     station_path = Path(src_dir) / station_name
@@ -163,4 +156,3 @@ if __name__ == "__main__":
         drift_csv=drift_file,
         max_workers=4
     )
-

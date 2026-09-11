@@ -481,11 +481,7 @@ def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
 
     with (
         patch.object(waveform, "_client"),
-        patch.object(waveform, "get_logger", return_value=Mock()),
         patch.object(waveform, "_download_day", side_effect=completed) as worker,
-        patch.object(
-            waveform, "auto_save_report", side_effect=lambda report, *args: report
-        ),
     ):
         summary = waveform.download_waveforms(
             tmp_path,
@@ -517,10 +513,6 @@ def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):
             waveform,
             "_download_day",
             return_value=waveform._Counts(total=1, downloaded=1, files_written=1),
-        ),
-        patch.object(waveform, "get_logger", return_value=Mock()),
-        patch.object(
-            waveform, "auto_save_report", side_effect=lambda report, *args: report
         ),
     ):
         summary = waveform.download_waveforms(

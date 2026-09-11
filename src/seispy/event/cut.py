@@ -6,22 +6,17 @@ from pathlib import Path
 
 import numpy as np
 import obspy
-from rose import get_logger
-from rose.batch import ReportMixin, auto_save_report, create_run_id
+from seispy._batch import BatchSummary, new_run_id
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
 from seispy.event.catalog import load_events, load_stations
 
-_LOG_CUTEVENT = {
-    "file": "cutevent.log",
-    "name": "cut_event",
-    "level": logging.INFO,
-}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class CutEventResult:
+class CutEventIssue:
     """A sampled event/station processing issue."""
 
     event: str
@@ -39,11 +34,11 @@ class _CutCounts:
     outputs: int = 0
     read_failed: int = 0
     no_data: int = 0
-    samples: tuple[CutEventResult, ...] = ()
+    samples: tuple[CutEventIssue, ...] = ()
 
 
 @dataclass(frozen=True)
-class CutEventSummary(ReportMixin):
+class CutEventSummary(BatchSummary):
     """Summarize an event-by-station waveform cutting run.
 
     This class is returned by :func:`cut_events`; applications normally do not
@@ -68,16 +63,13 @@ class CutEventSummary(ReportMixin):
         ```
     """
 
-    run_id: str
     tasks_total: int
     tasks_succeeded: int
     tasks_failed: int
     outputs_written: int
     input_read_failed: int
     no_data: int
-    error_samples: tuple[CutEventResult, ...]
-    duration_seconds: float
-    report_path: Path | None = None
+    error_samples: tuple[CutEventIssue, ...]
 
     @property
     def has_issues(self) -> bool:
@@ -121,8 +113,7 @@ def cut_events(
         ```
     """
     started = time.monotonic()
-    run_id = create_run_id()
-    logger = get_logger(**_LOG_CUTEVENT)
+    run_id = new_run_id()
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
 
@@ -173,7 +164,7 @@ def cut_events(
         error_samples=tuple(samples),
         duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "cut-events", save_report)
+    summary = summary.save_report("cut-events", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(
@@ -228,7 +219,7 @@ def cut_event_station(
         samples = ()
         if max_error_samples:
             samples = (
-                CutEventResult(
+                CutEventIssue(
                     event_name,
                     station_name,
                     "no_data",
@@ -257,7 +248,7 @@ def cut_event_station(
             had_issue = True
             if len(samples) < max_error_samples:
                 samples.append(
-                    CutEventResult(
+                    CutEventIssue(
                         event_name,
                         station_name,
                         "input_read_failed",
@@ -281,7 +272,7 @@ def cut_event_station(
                 had_issue = True
                 if len(samples) < max_error_samples:
                     samples.append(
-                        CutEventResult(
+                        CutEventIssue(
                             event_name,
                             station_name,
                             "output_failed",
@@ -292,7 +283,7 @@ def cut_event_station(
         had_issue = True
         if len(samples) < max_error_samples:
             samples.append(
-                CutEventResult(
+                CutEventIssue(
                     event_name,
                     station_name,
                     "no_output",

@@ -5,14 +5,9 @@ from pathlib import Path
 import obspy
 import pandas as pd
 from obspy.signal.rotate import rotate2zne
-from rose import get_logger
 from tqdm import tqdm
 
-_LOG_DRIFT = {
-    "name": "correct",
-    "file": "correct.log",
-    "level": logging.INFO,
-}
+logger = logging.getLogger(__name__)
 
 
 def orientation(src_dir: str, dest_dir: str, cor_csv: str, max_workers: int = 4):
@@ -33,7 +28,6 @@ def orientation(src_dir: str, dest_dir: str, cor_csv: str, max_workers: int = 4)
         ```
     """
 
-    logger = get_logger(**_LOG_DRIFT)
     logger.info(f"\nCorrect orientation for {src_dir} with {cor_csv}")
 
     # 加载钟漂数据
@@ -92,7 +86,6 @@ def _get_valid_stations(src_dir, cor_stations):
 
 def _process_station_orientation(station_name, station_cor, src_dir, dest_dir):
     """处理单个台站的钟漂修正"""
-    logger = get_logger(**_LOG_DRIFT)
 
     # 获取该台站的所有SAC文件
     station_path = Path(src_dir) / station_name

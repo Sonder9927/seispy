@@ -18,13 +18,11 @@ from obspy.clients.fdsn.header import (
     FDSNTooManyRequestsException,
 )
 from obspy.core.inventory import Inventory
-from rose import get_logger
-from rose.batch import (
-    ReportMixin,
-    auto_save_report,
+from seispy._batch import (
+    BatchSummary,
     cleanup_outputs,
     commit_output,
-    create_run_id,
+    new_run_id,
     temporary_output_path,
 )
 from tqdm import tqdm
@@ -32,11 +30,7 @@ from tqdm import tqdm
 from seispy._waveform import merge_short_gaps
 from seispy.download.inventory import EARTHSCOPE_URL, _client
 
-_LOG = {
-    "name": "waveform_download",
-    "file": "waveform-download.log",
-    "level": logging.INFO,
-}
+logger = logging.getLogger(__name__)
 _THREAD_STATE = threading.local()
 _RETRYABLE_ERRORS = (
     ConnectionError,
@@ -76,7 +70,7 @@ class _Counts:
 
 
 @dataclass(frozen=True)
-class WaveformDownloadSummary(ReportMixin):
+class WaveformDownloadSummary(BatchSummary):
     """Summarize a waveform download run without retaining every task.
 
     This class is returned by :func:`download_waveforms`; applications normally
@@ -104,7 +98,6 @@ class WaveformDownloadSummary(ReportMixin):
         ```
     """
 
-    run_id: str
     total: int
     downloaded: int
     skipped: int
@@ -113,8 +106,6 @@ class WaveformDownloadSummary(ReportMixin):
     files_written: int
     error_samples: tuple[WaveformDownloadError, ...]
     output_dir: Path
-    duration_seconds: float
-    report_path: Path | None = None
 
     @property
     def has_issues(self) -> bool:
@@ -185,8 +176,7 @@ def download_waveforms(
         ```
     """
     started = time.monotonic()
-    run_id = create_run_id()
-    logger = get_logger(**_LOG)
+    run_id = new_run_id()
     if max_workers < 1 or max_error_samples < 0 or max_retries < 0 or retry_backoff < 0:
         raise ValueError(
             "max_workers must be positive; sample/retry counts and backoff "
@@ -293,7 +283,7 @@ def download_waveforms(
         output_dir=output,
         duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "waveform-download", save_report)
+    summary = summary.save_report("waveform-download", save_report)
     logger.info(
         "run_id=%s completed total=%d downloaded=%d skipped=%d no_data=%d "
         "failed=%d files_written=%d duration=%.3f report=%s",

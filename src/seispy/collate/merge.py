@@ -3,10 +3,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
-from rose import pather, write_errors
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
+from seispy._paths import find_leaf_directories
 
 
 def merge_by_day(
@@ -25,7 +25,7 @@ def merge_by_day(
         ```
     """
     src_path = Path(src)
-    days = pather.find_last_subdirs(src_path)
+    days = find_leaf_directories(src_path)
     errs = []
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
@@ -43,7 +43,8 @@ def merge_by_day(
             if future:
                 errs.append(future)
     if errs:
-        write_errors(errs)
+        Path("errors.txt").write_text("".join(errs))
+        print("Check errors.txt for more information")
     else:
         print("All done with no errors.")
 

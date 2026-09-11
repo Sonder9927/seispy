@@ -6,21 +6,19 @@ from pathlib import Path
 
 import obspy
 import pandas as pd
-from rose import get_logger
-from rose.batch import (
-    ReportMixin,
-    auto_save_report,
+from seispy._batch import (
+    BatchSummary,
     commit_output,
-    create_run_id,
+    new_run_id,
     temporary_output_path,
 )
 from tqdm import tqdm
 
-_LOG_FORMAT = {"file": "format.log", "name": "format", "level": logging.INFO}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class FormatResult:
+class FormatIssue:
     """Describe one sampled SAC header-formatting issue."""
 
     source: Path
@@ -35,11 +33,11 @@ class _EventSummary:
     succeeded: int = 0
     failed: int = 0
     conflicts: int = 0
-    samples: tuple[FormatResult, ...] = ()
+    samples: tuple[FormatIssue, ...] = ()
 
 
 @dataclass(frozen=True)
-class FormatSummary(ReportMixin):
+class FormatSummary(BatchSummary):
     """Summarize a batch SAC header-formatting run.
 
     This class is returned by :func:`format_head`; applications normally do not
@@ -67,7 +65,6 @@ class FormatSummary(ReportMixin):
         ```
     """
 
-    run_id: str
     events_total: int
     events_processed: int
     events_skipped: int
@@ -76,10 +73,8 @@ class FormatSummary(ReportMixin):
     succeeded: int
     failed: int
     output_conflicts: int
-    error_samples: tuple[FormatResult, ...]
+    error_samples: tuple[FormatIssue, ...]
     output_dir: Path
-    duration_seconds: float
-    report_path: Path | None = None
 
     @property
     def has_issues(self) -> bool:
@@ -128,8 +123,7 @@ def format_head(
         ```
     """
     started = time.monotonic()
-    run_id = create_run_id()
-    logger = get_logger(**_LOG_FORMAT)
+    run_id = new_run_id()
     src_path = Path(src_dir).expanduser().resolve()
     dest_path = Path(dest_dir).expanduser().resolve()
     if not src_path.is_dir():
@@ -202,7 +196,7 @@ def format_head(
         output_dir=dest_path,
         duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "format", save_report)
+    summary = summary.save_report("format", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(
@@ -257,7 +251,7 @@ def format_per_event(
             conflict = isinstance(exc, FileExistsError)
             conflicts += int(conflict)
             if len(samples) < max_error_samples:
-                samples.append(FormatResult(
+                samples.append(FormatIssue(
                     source, "output_conflict" if conflict else "format_failed",
                     f"{type(exc).__name__}: {exc}", destination,
                 ))
@@ -299,7 +293,7 @@ def _require_columns(frame, name, required):
 
 
 def _failed_event(files, exc, limit):
-    samples = (FormatResult(files[0], "event_failed",
+    samples = (FormatIssue(files[0], "event_failed",
                             f"{type(exc).__name__}: {exc}"),) if files and limit else ()
     return _EventSummary(len(files), 0, len(files), 0, samples)
 

@@ -2,15 +2,17 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from rose.batch import ReportMixin, auto_save_report, commit_output, temporary_output_path
+from seispy._batch import (
+    BatchSummary,
+    commit_output,
+    temporary_output_path,
+)
 
 
 @dataclass(frozen=True)
-class _Summary(ReportMixin):
-    run_id: str
+class _Summary(BatchSummary):
     value: Path
     has_issues: bool = False
-    report_path: Path | None = None
 
 
 def test_commit_output_does_not_overwrite_by_default(tmp_path):
@@ -37,22 +39,24 @@ def test_commit_output_can_replace(tmp_path):
 
 
 def test_auto_report_and_path_serialization(tmp_path):
-    summary = _Summary("run", Path("data"))
-    saved = auto_save_report(summary, "task", True, tmp_path)
+    summary = _Summary(value=Path("data"), run_id="run", duration_seconds=0)
+    saved = summary.save_report("task", True, tmp_path)
     assert saved.report_path == tmp_path / "task-run.json"
     data = json.loads(saved.report_path.read_text())
     assert data["value"] == "data"
     assert data["report_path"] == str(saved.report_path)
-    assert auto_save_report(summary, "task", False, tmp_path).report_path is None
+    assert summary.save_report("task", False, tmp_path).report_path is None
 
 
 def test_summary_status_and_automatic_issue_report(tmp_path):
-    clean = _Summary("clean", Path("data"))
-    problem = _Summary("problem", Path("data"), has_issues=True)
+    clean = _Summary(value=Path("data"), run_id="clean", duration_seconds=0)
+    problem = _Summary(
+        value=Path("data"), run_id="problem", duration_seconds=0, has_issues=True
+    )
 
     assert clean.ok
     assert not problem.ok
-    assert auto_save_report(clean, "task", None, tmp_path).report_path is None
-    assert auto_save_report(problem, "task", None, tmp_path).report_path == (
+    assert clean.save_report("task", None, tmp_path).report_path is None
+    assert problem.save_report("task", None, tmp_path).report_path == (
         tmp_path / "task-problem.json"
     )

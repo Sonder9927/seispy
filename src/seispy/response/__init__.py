@@ -18,9 +18,9 @@ _EXPORTS = {
         "seispy.response.remove_response",
         "stream_removed_response",
     ),
-    "DeconvolutionResult": (
+    "DeconvolutionIssue": (
         "seispy.response.remove_response",
-        "DeconvolutionResult",
+        "DeconvolutionIssue",
     ),
     "DeconvolutionSummary": (
         "seispy.response.remove_response",

@@ -9,14 +9,14 @@ _MODULES = {
 }
 _ATTRS = {
     "decimate_files": ("seispy.decimate", "decimate_files"),
-    "DecimationResult": ("seispy.decimate", "DecimationResult"),
+    "DecimationIssue": ("seispy.decimate", "DecimationIssue"),
     "DecimationSummary": ("seispy.decimate", "DecimationSummary"),
 }
 
 if TYPE_CHECKING:
     from seispy import collate, correct, download, event, mcmc, response
     from seispy.decimate import (
-        DecimationResult,
+        DecimationIssue,
         DecimationSummary,
         decimate_files,
     )
@@ -46,6 +46,6 @@ __all__ = [
     "mcmc",
     "response",
     "decimate_files",
-    "DecimationResult",
+    "DecimationIssue",
     "DecimationSummary",
 ]

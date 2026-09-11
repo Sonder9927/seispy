@@ -81,9 +81,19 @@ def test_partial_conversion_is_rolled_back(tmp_path):
 
 def test_summary_json_is_compact(tmp_path):
     summary = module.Mseed2SacSummary(
-        "run", 2, 1, 1, 0, 0, 1, 0,
-        (module.Mseed2SacResult(Path("a"), "conversion_failed", "bad"),),
-        Path("out"), 1.0,
+        run_id="run",
+        input_total=2,
+        input_succeeded=1,
+        input_failed=1,
+        originals_removed=0,
+        removal_failed=0,
+        traces_written=1,
+        output_conflicts=0,
+        error_samples=(
+            module.Mseed2SacIssue(Path("a"), "conversion_failed", "bad"),
+        ),
+        output_dir=Path("out"),
+        duration_seconds=1.0,
     )
     data = json.loads(summary.to_json(tmp_path / "result.json").read_text())
     assert data["input_failed"] == 1

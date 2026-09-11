@@ -14,20 +14,14 @@ from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
 from seispy.decimate import _normalize_factors, _sac_compatible_decimate_trace
-from rose import get_logger
-from rose.batch import (
-    ReportMixin,
-    auto_save_report,
+from seispy._batch import (
+    BatchSummary,
     commit_output,
-    create_run_id,
+    new_run_id,
     temporary_output_path,
 )
 
-_LOG_DECONVOLUTION = {
-    "name": "deconvolution",
-    "file": "deconvolution.log",
-    "level": logging.INFO,
-}
+logger = logging.getLogger(__name__)
 IssueStatus = Literal["deconvolution_failed", "original_removal_failed"]
 PreFilter = tuple[float, float, float, float]
 DEFAULT_PRE_FILTER: PreFilter = (0.004, 0.006, 4.0, 5.0)
@@ -36,7 +30,7 @@ TAPER_MAX_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
-class DeconvolutionResult:
+class DeconvolutionIssue:
     """A sampled issue; successful file details are not retained."""
 
     source: Path
@@ -51,11 +45,11 @@ class _WorkerSummary:
     succeeded: int = 0
     failed: int = 0
     removal_failed: int = 0
-    issue_samples: tuple[DeconvolutionResult, ...] = ()
+    issue_samples: tuple[DeconvolutionIssue, ...] = ()
 
 
 @dataclass(frozen=True)
-class DeconvolutionSummary(ReportMixin):
+class DeconvolutionSummary(BatchSummary):
     """Summarize a batch instrument-response removal run.
 
     This class is returned by :func:`deconvolution_by_station`; applications
@@ -82,17 +76,14 @@ class DeconvolutionSummary(ReportMixin):
         ```
     """
 
-    run_id: str
     total: int
     succeeded: int
     failed: int
     removal_failed: int
     response_conflicts: int
-    issue_samples: tuple[DeconvolutionResult, ...]
+    issue_samples: tuple[DeconvolutionIssue, ...]
     output_dir: Path | None
     remove_original: bool
-    duration_seconds: float
-    report_path: Path | None = None
 
     @property
     def has_issues(self) -> bool:
@@ -158,8 +149,7 @@ def deconvolution_by_station(
         ```
     """
     started = time.monotonic()
-    run_id = create_run_id()
-    logger = get_logger(**_LOG_DECONVOLUTION)
+    run_id = new_run_id()
     backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
     if not src_path.is_dir():
@@ -270,11 +260,7 @@ def deconvolution_by_station(
         remove_original=remove_original,
         duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(
-        summary,
-        "deconvolution",
-        save_report,
-    )
+    summary = summary.save_report("deconvolution", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(
@@ -327,7 +313,7 @@ def _combine_batches(batches, limit: int) -> _WorkerSummary:
 def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
     error = f"{type(exc).__name__}: {exc}"
     samples = tuple(
-        DeconvolutionResult(
+        DeconvolutionIssue(
             target,
             _destination_for(target, src_root, output_dir, remove_original),
             "deconvolution_failed",
@@ -479,7 +465,7 @@ def _process_obspy_targets(
             failed += 1
             if len(samples) < limit:
                 samples.append(
-                    DeconvolutionResult(
+                    DeconvolutionIssue(
                         target,
                         base_destination,
                         "deconvolution_failed",
@@ -495,7 +481,7 @@ def _process_obspy_targets(
                 removal_failed += 1
                 if len(samples) < limit:
                     samples.append(
-                        DeconvolutionResult(
+                        DeconvolutionIssue(
                             target,
                             base_destination,
                             "original_removal_failed",
@@ -599,7 +585,7 @@ def _process_sac_batch(
     def record(target, destination, status: IssueStatus, exc):
         if len(samples) < limit:
             samples.append(
-                DeconvolutionResult(
+                DeconvolutionIssue(
                     target,
                     destination,
                     status,

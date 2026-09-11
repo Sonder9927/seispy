@@ -4,7 +4,7 @@ from importlib import import_module
 
 _EXPORTS = {
     "cut_events": ("seispy.event.cut", "cut_events"),
-    "CutEventResult": ("seispy.event.cut", "CutEventResult"),
+    "CutEventIssue": ("seispy.event.cut", "CutEventIssue"),
     "CutEventSummary": ("seispy.event.cut", "CutEventSummary"),
     "cut_events_binary": ("seispy.event.cut_binary", "cut_events_binary"),
     "filter_events": ("seispy.event.catalog", "filter_events"),

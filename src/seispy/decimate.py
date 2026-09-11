@@ -10,27 +10,21 @@ from typing import Callable, Sequence
 
 import obspy
 import numpy as np
-from rose import get_logger
-from rose.batch import (
-    ReportMixin,
-    auto_save_report,
+from seispy._batch import (
+    BatchSummary,
     commit_output,
-    create_run_id,
+    new_run_id,
     temporary_output_path,
 )
 from scipy.signal import resample_poly
 from tqdm import tqdm
 
-_LOG_DECIMATE = {
-    "name": "decimate",
-    "file": "decimate.log",
-    "level": logging.INFO,
-}
+logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 100
 
 
 @dataclass(frozen=True)
-class DecimationResult:
+class DecimationIssue:
     """A sampled decimation failure."""
 
     source: Path
@@ -43,11 +37,11 @@ class _WorkerSummary:
     total: int = 0
     succeeded: int = 0
     failed: int = 0
-    error_samples: tuple[DecimationResult, ...] = ()
+    error_samples: tuple[DecimationIssue, ...] = ()
 
 
 @dataclass(frozen=True)
-class DecimationSummary(ReportMixin):
+class DecimationSummary(BatchSummary):
     """Summarize a potentially large decimation run.
 
     This class is returned by :func:`decimate_files`; applications
@@ -71,15 +65,12 @@ class DecimationSummary(ReportMixin):
         ```
     """
 
-    run_id: str
     total: int
     succeeded: int
     failed: int
-    error_samples: tuple[DecimationResult, ...]
+    error_samples: tuple[DecimationIssue, ...]
     output_dir: Path | None
     remove_original: bool
-    duration_seconds: float
-    report_path: Path | None = None
 
     @property
     def has_issues(self) -> bool:
@@ -141,8 +132,7 @@ def decimate_files(
         ```
     """
     started = time.monotonic()
-    run_id = create_run_id()
-    logger = get_logger(**_LOG_DECIMATE)
+    run_id = new_run_id()
     backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
     if not src_path.is_dir():
@@ -215,7 +205,7 @@ def decimate_files(
         remove_original=remove_original,
         duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "decimate", save_report)
+    summary = summary.save_report("decimate", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(
@@ -314,7 +304,7 @@ def _combine_batches(batches, limit):
 def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
     error = f"{type(exc).__name__}: {exc}"
     samples = tuple(
-        DecimationResult(
+        DecimationIssue(
             target,
             _destination_for(target, src_root, output_dir, remove_original),
             error,
@@ -349,7 +339,7 @@ def _scipy_decimate_batch(
             failed += 1
             if len(samples) < max_error_samples:
                 samples.append(
-                    DecimationResult(
+                    DecimationIssue(
                         target, destination, f"{type(exc).__name__}: {exc}"
                     )
                 )
@@ -442,5 +432,5 @@ def _sac_decimate_batch(targets, factors, src_root, output_dir, remove_original,
         temporary.unlink(missing_ok=True)
         failed += 1
         if len(samples) < limit:
-            samples.append(DecimationResult(target, destination, error))
+            samples.append(DecimationIssue(target, destination, error))
     return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))

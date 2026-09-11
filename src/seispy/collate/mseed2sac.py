@@ -6,24 +6,22 @@ from pathlib import Path
 from typing import Any
 
 import obspy
-from rose import get_logger
-from rose.batch import (
-    ReportMixin,
-    auto_save_report,
+from seispy._batch import (
+    BatchSummary,
     cleanup_outputs,
     commit_output,
-    create_run_id,
+    new_run_id,
     temporary_output_path,
 )
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
 
-_LOG = {"name": "mseed2sac", "file": "mseed2sac.log", "level": logging.INFO}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class Mseed2SacResult:
+class Mseed2SacIssue:
     """Describe one sampled MiniSEED conversion issue."""
 
     source: Path
@@ -41,11 +39,11 @@ class _Counts:
     removal_failed: int = 0
     traces_written: int = 0
     conflicts: int = 0
-    samples: tuple[Mseed2SacResult, ...] = ()
+    samples: tuple[Mseed2SacIssue, ...] = ()
 
 
 @dataclass(frozen=True)
-class Mseed2SacSummary(ReportMixin):
+class Mseed2SacSummary(BatchSummary):
     """Summarize a MiniSEED-to-SAC conversion run.
 
     This class is returned by :func:`mseed2sac`; applications normally do not
@@ -72,7 +70,6 @@ class Mseed2SacSummary(ReportMixin):
         ```
     """
 
-    run_id: str
     input_total: int
     input_succeeded: int
     input_failed: int
@@ -80,10 +77,8 @@ class Mseed2SacSummary(ReportMixin):
     removal_failed: int
     traces_written: int
     output_conflicts: int
-    error_samples: tuple[Mseed2SacResult, ...]
+    error_samples: tuple[Mseed2SacIssue, ...]
     output_dir: Path
-    duration_seconds: float
-    report_path: Path | None = None
 
     @property
     def has_issues(self) -> bool:
@@ -130,8 +125,7 @@ def mseed2sac(
         ```
     """
     started = time.monotonic()
-    run_id = create_run_id()
-    logger = get_logger(**_LOG)
+    run_id = new_run_id()
     source = Path(source).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     if not source.exists():
@@ -180,7 +174,7 @@ def mseed2sac(
         output_dir=output,
         duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = auto_save_report(summary, "mseed2sac", save_report)
+    summary = summary.save_report("mseed2sac", save_report)
     if summary.report_path:
         logger.info("run_id=%s report=%s", run_id, summary.report_path)
     logger.info(
@@ -229,7 +223,7 @@ def _convert_file(source, output, remove_original, limit):
             temporary.unlink(missing_ok=True)
         cleanup_outputs(created)
         conflict = isinstance(exc, FileExistsError)
-        sample = (Mseed2SacResult(
+        sample = (Mseed2SacIssue(
             source, "output_conflict" if conflict else "conversion_failed",
             f"{type(exc).__name__}: {exc}", destination,
         ),) if limit else ()
@@ -242,7 +236,7 @@ def _convert_file(source, output, remove_original, limit):
             removed = 1
         except OSError as exc:
             removal_failed = 1
-            samples = (Mseed2SacResult(
+            samples = (Mseed2SacIssue(
                 source, "original_removal_failed", f"{type(exc).__name__}: {exc}"
             ),) if limit else ()
     return _Counts(1, 1, 0, removed, removal_failed, len(created), 0, samples)
@@ -300,7 +294,7 @@ def build_sac_path(
 
 
 def _failed_batch(files, exc, limit):
-    samples = (Mseed2SacResult(files[0], "conversion_failed",
+    samples = (Mseed2SacIssue(files[0], "conversion_failed",
                               f"{type(exc).__name__}: {exc}"),) if files and limit else ()
     return _Counts(total=len(files), failed=len(files), samples=samples)
 

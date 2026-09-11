@@ -45,9 +45,19 @@ def test_read_failures_are_compact(tmp_path):
 
 def test_summary_exports_json(tmp_path):
     summary = module.CutEventSummary(
-        "run", 2, 1, 1, 3, 1, 0,
-        (module.CutEventResult("event", "AAA", "input_read_failed", "bad", Path("a")),),
-        1.0,
+        run_id="run",
+        tasks_total=2,
+        tasks_succeeded=1,
+        tasks_failed=1,
+        outputs_written=3,
+        input_read_failed=1,
+        no_data=0,
+        error_samples=(
+            module.CutEventIssue(
+                "event", "AAA", "input_read_failed", "bad", Path("a")
+            ),
+        ),
+        duration_seconds=1.0,
     )
     data = json.loads(summary.to_json(tmp_path / "summary.json").read_text())
     assert data["tasks_failed"] == 1

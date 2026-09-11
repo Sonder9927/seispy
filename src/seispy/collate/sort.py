@@ -1,9 +1,9 @@
 import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from itertools import batched
 from pathlib import Path
 
-from rose import batch_generator, pather
 from tqdm import tqdm
 
 
@@ -25,12 +25,12 @@ def sort_to(src: str | Path, dest: str | Path, pattern: str = "*.SAC"):
     """
     src_path = Path(src)
     dest_path = Path(dest)
-    targets = pather.glob(src_path, "rglob", [pattern])
+    targets = list(src_path.rglob(pattern))
     batch_size = 2000
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(_copy_targets, batch, dest_path)
-            for batch in batch_generator(targets, batch_size)
+            for batch in batched(targets, batch_size)
         }
         for future in tqdm(as_completed(futures), total=len(futures)):
             future.result()

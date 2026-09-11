@@ -87,14 +87,14 @@ def test_failure_keeps_original_and_limits_samples(tmp_path):
 
 def test_summary_exports_compact_json(tmp_path):
     summary = decimate.DecimationSummary(
-        "run-1",
-        2,
-        1,
-        1,
-        (decimate.DecimationResult(Path("a"), Path("b"), "bad"),),
-        Path("output"),
-        False,
-        1.2,
+        run_id="run-1",
+        total=2,
+        succeeded=1,
+        failed=1,
+        error_samples=(decimate.DecimationIssue(Path("a"), Path("b"), "bad"),),
+        output_dir=Path("output"),
+        remove_original=False,
+        duration_seconds=1.2,
     )
     report = summary.to_json(tmp_path / "summary.json")
     data = json.loads(report.read_text())

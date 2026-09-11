@@ -3,7 +3,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
-from rose import pather
+from seispy._paths import bundled_command
 from tqdm import tqdm
 
 
@@ -35,8 +35,8 @@ def cut_events_binary(
         ```
     """
     stations = sorted(path for path in Path(src_dir).iterdir() if path.is_dir())
-    mktraceiodb = pather.binuse("mktraceiodb")
-    cutevent = pather.binuse("cutevent")
+    mktraceiodb = bundled_command("mktraceiodb")
+    cutevent = bundled_command("cutevent")
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(

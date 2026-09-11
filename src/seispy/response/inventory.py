@@ -5,7 +5,7 @@ from typing import Any
 import obspy
 from obspy import UTCDateTime
 from obspy.core.inventory import Inventory
-from rose.batch import commit_output, temporary_output_path
+from seispy._batch import commit_output, temporary_output_path
 
 InventorySource = str | Path | Inventory
 
