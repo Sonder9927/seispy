@@ -8,6 +8,7 @@ import pytest
 from obspy import Stream as ObsPyStream
 from obspy import Trace, UTCDateTime
 from obspy.clients.fdsn.header import FDSNForbiddenException
+from obspy.core.inventory import Channel, Inventory, Network, Site, Station
 
 from seispy.download import inventory, waveform
 
@@ -25,13 +26,14 @@ class _Stream(list):
 
 
 class _SacTrace:
-    def __init__(self, channel):
+    def __init__(self, channel, *, location="10", sampling_rate=1.0):
         self.stats = SimpleNamespace(
             network="NZ",
             station="AAA",
-            location="10",
+            location=location,
             channel=channel,
             starttime=UTCDateTime("2026-01-01"),
+            sampling_rate=sampling_rate,
             mseed=SimpleNamespace(dataquality="D"),
         )
 
@@ -46,7 +48,41 @@ class _SacTrace:
         trace.stats.location = self.stats.location
         trace.stats.channel = self.stats.channel
         trace.stats.starttime = self.stats.starttime
+        trace.stats.sampling_rate = self.stats.sampling_rate
         return trace
+
+
+def _inventory_channel(
+    code,
+    *,
+    location="10",
+    rate=100.0,
+    start="2026-01-01",
+    end=None,
+):
+    return Channel(
+        code=code,
+        location_code=location,
+        latitude=-40,
+        longitude=175,
+        elevation=0,
+        depth=0,
+        sample_rate=rate,
+        start_date=UTCDateTime(start) if start else None,
+        end_date=UTCDateTime(end) if end else None,
+    )
+
+
+def _inventory(*channels):
+    station = Station(
+        code="AAA",
+        latitude=-40,
+        longitude=175,
+        elevation=0,
+        site=Site(name="AAA"),
+        channels=list(channels),
+    )
+    return Inventory([Network(code="NZ", stations=[station])], source="test")
 
 
 def test_waveform_worker_reuses_authenticated_client_and_writes_mseed(tmp_path):
@@ -302,7 +338,17 @@ def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
 
 def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):
     manifest = Mock()
-    guided_tasks = (("AAA", UTCDateTime("2026-01-01")),)
+    guided_tasks = (
+        waveform._InventoryTask(
+            "NZ",
+            "AAA",
+            "10",
+            "HHZ",
+            100.0,
+            UTCDateTime("2026-01-01"),
+            UTCDateTime("2026-01-02"),
+        ),
+    )
 
     with (
         patch.object(waveform, "_client"),
@@ -311,9 +357,9 @@ def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):
         patch.object(waveform, "_inventory_tasks", return_value=guided_tasks),
         patch.object(
             waveform,
-            "_download_day",
+            "_download_inventory_task",
             return_value=waveform._Counts(total=1, downloaded=1, files_written=1),
-        ),
+        ) as worker,
     ):
         summary = waveform.download_waveforms(
             tmp_path,
@@ -326,4 +372,89 @@ def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):
 
     read.assert_called_once_with(str(tmp_path / "stations.xml"), format="STATIONXML")
     station_codes.assert_not_called()
+    assert worker.call_args.args[4] == guided_tasks[0]
     assert summary.total == 1
+
+
+def test_inventory_tasks_are_exact_and_clip_channel_epochs_to_days():
+    manifest = _inventory(
+        _inventory_channel(
+            "HHZ", location="10", start="2026-01-01T12:00:00", end="2026-01-03"
+        ),
+        _inventory_channel("HHN", location="10"),
+        _inventory_channel("HHZ", location="11"),
+    )
+
+    tasks = waveform._inventory_tasks(
+        manifest,
+        "NZ",
+        ["AAA"],
+        "10",
+        "HHZ",
+        UTCDateTime("2026-01-01"),
+        UTCDateTime("2026-01-04"),
+    )
+
+    assert [(task.location, task.channel) for task in tasks] == [
+        ("10", "HHZ"),
+        ("10", "HHZ"),
+    ]
+    assert tasks[0].starttime == UTCDateTime("2026-01-01T12:00:00")
+    assert tasks[0].endtime == UTCDateTime("2026-01-02")
+    assert tasks[1].starttime == UTCDateTime("2026-01-02")
+    assert tasks[1].endtime == UTCDateTime("2026-01-03")
+
+
+def test_inventory_guided_mseed_path_prevents_nslc_collisions(tmp_path):
+    base = dict(
+        network="NZ",
+        station="AAA",
+        sample_rate=100.0,
+        starttime=UTCDateTime("2026-01-01"),
+        endtime=UTCDateTime("2026-01-02"),
+    )
+    left = waveform._InventoryTask(location="10", channel="HHZ", **base)
+    right = waveform._InventoryTask(location="11", channel="HHZ", **base)
+
+    assert waveform._inventory_mseed_path(
+        tmp_path, left
+    ) != waveform._inventory_mseed_path(tmp_path, right)
+    assert waveform._inventory_mseed_path(tmp_path, left).name == (
+        "NZ.AAA.10.HHZ.2026.001.000000-2026002T000000.mseed"
+    )
+
+
+def test_inventory_worker_requests_and_validates_exact_xml_channel(tmp_path):
+    task = waveform._InventoryTask(
+        "NZ",
+        "AAA",
+        "10",
+        "HHZ",
+        100.0,
+        UTCDateTime("2026-01-01"),
+        UTCDateTime("2026-01-02"),
+    )
+    stream = _Stream([_SacTrace("HHZ", sampling_rate=100.0)])
+    with patch.object(waveform, "_fetch_waveforms", return_value=stream) as fetch:
+        result = waveform._download_inventory_task(
+            inventory.EARTHSCOPE_URL,
+            None,
+            None,
+            tmp_path,
+            task,
+            False,
+            1,
+            "mseed",
+            2,
+            1.0,
+        )
+
+    assert fetch.call_args.args[5:9] == (
+        "10",
+        "HHZ",
+        task.starttime,
+        task.endtime,
+    )
+    assert result.downloaded == 1
+    assert result.files_written == 1
+    assert waveform._inventory_mseed_path(tmp_path, task).is_file()

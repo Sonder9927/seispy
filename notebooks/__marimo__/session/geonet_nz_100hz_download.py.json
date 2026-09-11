@@ -1,0 +1,150 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.24.0",
+    "script_metadata_hash": null
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "1d0db38904205bec4d6f6f6a1f6cec3e",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "751c38422c28e30dd39573c8f572e4a1",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"geonet-nz-100-hz\">GeoNet NZ \u53f0\u7f51 100 Hz \u6ce2\u5f62\u4e0b\u8f7d</h1>\n<span class=\"paragraph\">\u672c notebook \u5b8c\u6210\u4ee5\u4e0b\u5de5\u4f5c\uff1a</span>\n<ol>\n<li>\u4ece GeoNet \u4e0b\u8f7d\u539f\u59cb StationXML\uff1b</li>\n<li>\u5206\u6790\u539f\u59cb XML \u4e2d\u7684\u53f0\u7ad9\u3001\u901a\u9053\u3001\u91c7\u6837\u7387\u548c location\uff1b</li>\n<li>\u56fa\u5b9a\u9009\u62e9 <code>NZ</code> \u53f0\u7f51\u4e0e\u7ecf\u7eac\u5ea6\u533a\u57df <code>[170, 180, -43.5, -34]</code>\uff1b</li>\n<li>\u4fdd\u7559 100 Hz \u5730\u9707\u901a\u9053\uff0c\u6392\u9664\u538b\u529b\u901a\u9053 <code>HDF</code>\uff1b</li>\n<li>\u9488\u5bf9\u540c\u53f0\u7ad9\u591a location \u7684\u60c5\u51b5\u5206\u6790\u6709\u6548\u671f\uff0c\u5e76\u4fdd\u8bc1\u540c\u4e00\u65f6\u523b\u53ea\u9009\u62e9\u4e00\u5957\u4e09\u5206\u91cf\u4f20\u611f\u5668\uff1b</li>\n<li>\u4f7f\u7528\u7b5b\u9009\u540e\u7684 XML \u751f\u6210\u7cbe\u786e\u7684 NSLC \u4e0b\u8f7d\u4efb\u52a1\uff0c\u6309\u65e5\u4e0b\u8f7d MiniSEED\u3002</li>\n</ol>\n<blockquote>\n<span class=\"paragraph\">\u65f6\u95f4\u8303\u56f4\u4e3a <code>2023-08-01T00:00:00Z</code> \u81f3 <code>2025-05-01T00:00:00Z</code>\uff0c\u7ed3\u675f\u65f6\u95f4\u4e0d\u5305\u542b\u5728\u5185\u3002</span>\n</blockquote></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "dd6aba4ae1a045c9285dba7321d25b50",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "fd8c39fee1bb082c038b8d40b92b9a15",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "655871dda73fe68562cd85377c155002",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "7369d335f06e4780cb1a852c6190379b",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"1-stationxml\">1. \u4e0b\u8f7d\u539f\u59cb StationXML</h2></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": "dddad28c478b01d68931b9efd8a002da",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "SFPL",
+      "code_hash": "2d86b71e719809d8563087e6d69ea05e",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "BYtC",
+      "code_hash": "058dd816fcfca0a97f7766a3ddf0107c",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "RGSE",
+      "code_hash": "8f385a1b45818d17e46308a364a5251b",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Kclp",
+      "code_hash": "3938eea780cc77472a0c404fd1f594d0",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "emfo",
+      "code_hash": "3d86e6c92837592e90572864efed8e1b",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Hstk",
+      "code_hash": "e69f5b0a6db3e89801912541c59ac02b",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "nWHF",
+      "code_hash": "58adc23796aa9bb8d4dfe3554d357719",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"4-geonet\">4. \u67e5\u9605 GeoNet \u5b98\u65b9\u5b9a\u4e49</h2>\n<span class=\"paragraph\">GeoNet \u89c4\u5b9a\u4e00\u6761\u6570\u636e\u6d41\u7531 <code>NETWORK.STATION.LOCATION.CHANNEL</code> \u552f\u4e00\u6807\u8bc6\uff1a</span>\n<ul>\n<li><a href=\"https://www.geonet.org.nz/data/supplementary/channels\" rel=\"noopener noreferrer\" target=\"_blank\">GeoNet Stream Naming Conventions</a></li>\n<li><a href=\"https://www.geonet.org.nz/data/access/FDSN\" rel=\"noopener noreferrer\" target=\"_blank\">GeoNet FDSN Webservice</a></li>\n</ul>\n<span class=\"paragraph\">\u5b98\u65b9\u8bf4\u660e location \u7528\u4e8e\u533a\u5206\u540c\u4e00 station \u4e0b\u7684\u4e0d\u540c\u4f20\u611f\u5668\u4f4d\u7f6e\u6216\u91c7\u96c6\u5668\uff1b<code>1?</code>\n\u4fdd\u7559\u7ed9\u5f31\u9707\u52a8\u4f20\u611f\u5668\u3002\u56e0\u6b64\u8fd9\u91cc\u7684 <code>10/11/12/13</code> \u662f\u4e0d\u540c NSLC \u6570\u636e\u6d41\uff0c\u4e0d\u80fd\u5f53\u4f5c\n\u53ef\u4efb\u610f\u5408\u5e76\u7684\u91cd\u590d\u526f\u672c\u3002\u5b98\u65b9\u540c\u65f6\u5b9a\u4e49 <code>HDF</code> \u4e3a\u6c14\u538b\u8ba1\u538b\u529b\u901a\u9053\uff0c\u6240\u4ee5\u672c\u4efb\u52a1\u5c06\u5176\u6392\u9664\u3002</span>\n<span class=\"paragraph\"><code>HHN/HHE</code> \u662f\u5317/\u4e1c\u5411\u5206\u91cf\uff1b<code>HH1/HH2</code> \u662f\u975e\u6807\u51c6\u5b9a\u5411\u6c34\u5e73\u5206\u91cf\uff0c\u540e\u7eed\u5904\u7406\u5fc5\u987b\u4f7f\u7528\nStationXML \u4e2d\u7684 azimuth \u65cb\u8f6c\uff0c\u4e0d\u80fd\u4ec5\u9760\u901a\u9053\u540d\u79f0\u5f53\u6210 N/E\u3002</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "iLit",
+      "code_hash": "fedeef953d8a9d50f864d7c714c12160",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ZHCJ",
+      "code_hash": "e2ffad23d9be54d119b0616163616eef",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ROlb",
+      "code_hash": "46fc94b6af8ef98ac347b6a8e8bf217f",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "qnkX",
+      "code_hash": "10dc0ef211a0af04f65bf96cb8cecc1f",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "TqIu",
+      "code_hash": "7ffa1afa3cb032bbb0ebd8c45f09d362",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Vxnm",
+      "code_hash": "9fd98868e8addafb121669ef62435818",
+      "outputs": [],
+      "console": []
+    }
+  ]
+}

@@ -75,6 +75,19 @@ class _Counts:
     samples: tuple[WaveformDownloadError, ...] = ()
 
 
+@dataclass(frozen=True, order=True)
+class _InventoryTask:
+    """One exact StationXML-backed waveform request."""
+
+    network: str
+    station: str
+    location: str
+    channel: str
+    sample_rate: float
+    starttime: UTCDateTime
+    endtime: UTCDateTime
+
+
 @dataclass(frozen=True)
 class WaveformDownloadSummary(BatchSummary):
     """Summarize a waveform download run without retaining every task.
@@ -84,8 +97,8 @@ class WaveformDownloadSummary(BatchSummary):
 
     Attributes:
         run_id: Unique identifier for the processing run.
-        total: Number of requested station-day tasks.
-        downloaded: Number of station-days downloaded successfully.
+        total: Number of requested station-day or XML-guided NSLC-day tasks.
+        downloaded: Number of tasks downloaded successfully.
         skipped: Number skipped because output already existed.
         no_data: Number for which the FDSN service returned no data.
         failed: Number of unexpected failures.
@@ -152,7 +165,7 @@ def download_waveforms(
         client: ObsPy FDSN client name or service URL.
         username: Username for restricted data.
         password: Password for restricted data.
-        max_workers: Maximum number of concurrent station-day requests.
+        max_workers: Maximum number of concurrent waveform requests.
         overwrite: Whether existing destination files may be replaced.
         max_error_samples: Maximum number of failures retained in the summary.
         max_retries: Number of retries after a transient waveform request failure.
@@ -161,9 +174,10 @@ def download_waveforms(
         save_report: Force JSON report creation on or off. ``None`` writes a
             report only when issues occur.
         output_format: Output format, either ``"mseed"`` or ``"sac"``.
-        inventory: Optional StationXML path or ObsPy inventory used as the
-            waveform download manifest. It replaces the remote station lookup
-            and excludes station-days without matching active metadata.
+        inventory: Optional StationXML path or ObsPy inventory used as an exact
+            waveform manifest. Matching NSLC epochs are clipped to the request
+            interval and split at UTC-day boundaries. Remote station discovery
+            is not performed.
 
     Returns:
         Counts, sampled failures, output location, and run duration.
@@ -201,6 +215,7 @@ def download_waveforms(
             client, username, password, network, station, start, end
         )
         task_items = tuple((code, day) for code in stations for day in days)
+        inventory_guided = False
     else:
         manifest = (
             inventory
@@ -208,9 +223,10 @@ def download_waveforms(
             else read_inventory(str(inventory), format="STATIONXML")
         )
         task_items = _inventory_tasks(
-            manifest, network, station, location, channel, days, end
+            manifest, network, station, location, channel, start, end
         )
-        stations = sorted({code for code, _ in task_items})
+        stations = sorted({task.station for task in task_items})
+        inventory_guided = True
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     logger.info(
@@ -242,12 +258,27 @@ def download_waveforms(
         while pending or not exhausted:
             while not exhausted and len(pending) < max_workers * 3:
                 try:
-                    code, day = next(tasks)
+                    task = next(tasks)
                 except StopIteration:
                     exhausted = True
                     break
-                pending.add(
-                    executor.submit(
+                if inventory_guided:
+                    future = executor.submit(
+                        _download_inventory_task,
+                        client,
+                        username,
+                        password,
+                        output,
+                        task,
+                        overwrite,
+                        min(max_error_samples, 1),
+                        output_format,
+                        max_retries,
+                        retry_backoff,
+                    )
+                else:
+                    code, day = task
+                    future = executor.submit(
                         _download_day,
                         client,
                         username,
@@ -265,7 +296,7 @@ def download_waveforms(
                         max_retries,
                         retry_backoff,
                     )
-                )
+                pending.add(future)
             if pending:
                 done, pending = wait(pending, return_when=FIRST_COMPLETED)
                 for future in done:
@@ -329,30 +360,66 @@ def _station_codes(client, username, password, network, station, start, end):
     return sorted({item.code for net in inventory for item in net.stations})
 
 
-def _inventory_tasks(inventory, network, station, location, channel, days, end):
-    """Return station-days backed by matching, active StationXML channels."""
-    station_selectors = station if isinstance(station, list) else station.split(",")
-    station_selectors = [value.strip() for value in station_selectors if value.strip()]
+def _inventory_tasks(inventory, network, station, location, channel, start, end):
+    """Return exact NSLC-day requests backed by StationXML channel epochs."""
+    station_patterns = _patterns(station)
+    location_patterns = _patterns(location, normalize_empty_location=True)
+    channel_patterns = _patterns(channel)
+    intervals = {}
+    for net in inventory:
+        if not fnmatch.fnmatchcase(net.code, network):
+            continue
+        for sta in net:
+            if not _matches_any(sta.code, station_patterns):
+                continue
+            for item in sta:
+                item_location = item.location_code or ""
+                if not _matches_any(item_location, location_patterns):
+                    continue
+                if not _matches_any(item.code, channel_patterns):
+                    continue
+                epoch_start = max(start, item.start_date or start)
+                epoch_end = min(end, item.end_date or end)
+                if epoch_start >= epoch_end:
+                    continue
+                key = (
+                    net.code,
+                    sta.code,
+                    item_location,
+                    item.code,
+                    float(item.sample_rate),
+                )
+                intervals.setdefault(key, []).append((epoch_start, epoch_end))
+
     tasks = []
-    for day in days:
-        request_end = min(day + 86400, end)
-        selected = inventory.select(
-            network=network,
-            location=location,
-            channel=channel,
-            starttime=day,
-            endtime=request_end,
-        )
-        codes = {
-            item.code
-            for net in selected
-            for item in net.stations
-            if any(
-                fnmatch.fnmatchcase(item.code, pattern) for pattern in station_selectors
-            )
-        }
-        tasks.extend((code, day) for code in sorted(codes))
-    return tuple(tasks)
+    for key, epochs in sorted(intervals.items()):
+        merged = []
+        for epoch_start, epoch_end in sorted(epochs):
+            if merged and epoch_start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], epoch_end))
+            else:
+                merged.append((epoch_start, epoch_end))
+        for epoch_start, epoch_end in merged:
+            day = UTCDateTime(epoch_start.date)
+            while day < epoch_end:
+                task_start = max(epoch_start, day)
+                task_end = min(epoch_end, day + 86400)
+                if task_start < task_end:
+                    tasks.append(_InventoryTask(*key, task_start, task_end))
+                day += 86400
+    return tuple(sorted(tasks))
+
+
+def _patterns(value, *, normalize_empty_location=False):
+    values = value if isinstance(value, list) else value.split(",")
+    patterns = [item.strip() for item in values if item.strip()]
+    if normalize_empty_location:
+        patterns = ["" if item == "--" else item for item in patterns]
+    return patterns
+
+
+def _matches_any(value, patterns):
+    return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns)
 
 
 def _iter_days(start, end):
@@ -412,6 +479,145 @@ def _download_station(
         ],
         sample_limit,
     )
+
+
+def _download_inventory_task(
+    base_url,
+    username,
+    password,
+    output,
+    task,
+    overwrite,
+    sample_limit,
+    output_format,
+    max_retries,
+    retry_backoff,
+):
+    if not overwrite and _inventory_task_is_complete(output, task, output_format):
+        return _Counts(total=1, skipped=1)
+    try:
+        stream = _fetch_waveforms(
+            base_url,
+            username,
+            password,
+            task.network,
+            task.station,
+            task.location or "--",
+            task.channel,
+            task.starttime,
+            task.endtime,
+            max_retries,
+            retry_backoff,
+        )
+        _validate_inventory_stream(stream, task)
+        if output_format == "mseed":
+            destination = _inventory_mseed_path(output, task)
+            if destination.exists() and not overwrite:
+                raise FileExistsError(
+                    f"existing MiniSEED is invalid for its XML task: {destination}; "
+                    "use overwrite=True to replace it"
+                )
+            temporary = temporary_output_path(destination)
+            try:
+                stream.write(str(temporary), format="MSEED")
+                commit_output(temporary, destination, overwrite=overwrite)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+            written, was_skipped = 1, False
+        else:
+            written, was_skipped = _write_waveforms(
+                stream,
+                output,
+                task.network,
+                task.station,
+                UTCDateTime(task.starttime.date),
+                output_format,
+                overwrite,
+                task.location or "--",
+                task.channel,
+            )
+        return _Counts(
+            total=1,
+            downloaded=int(not was_skipped),
+            skipped=int(was_skipped),
+            files_written=written,
+        )
+    except FDSNNoDataException:
+        return _Counts(total=1, no_data=1)
+    except Exception as exc:
+        samples = ()
+        if sample_limit:
+            samples = (
+                WaveformDownloadError(
+                    task.station,
+                    task.starttime.strftime("%Y-%m-%d"),
+                    f"{type(exc).__name__}: {exc}",
+                ),
+            )
+        return _Counts(total=1, failed=1, samples=samples)
+
+
+def _inventory_mseed_path(output, task):
+    location = task.location or "--"
+    start = task.starttime.strftime("%H%M%S")
+    end = task.endtime.strftime("%Y%jT%H%M%S")
+    filename = (
+        f"{task.network}.{task.station}.{location}.{task.channel}."
+        f"{task.starttime.year}.{task.starttime.julday:03d}.{start}-{end}.mseed"
+    )
+    return output / task.network / task.station / str(task.starttime.year) / filename
+
+
+def _validate_inventory_stream(stream, task):
+    if not len(stream):
+        raise ValueError("waveform stream is empty")
+    expected = (task.network, task.station, task.location, task.channel)
+    for trace in stream:
+        identity = WaveformIdentity.from_trace(trace)
+        actual = (
+            identity.network,
+            identity.station,
+            identity.location,
+            identity.channel,
+        )
+        if actual != expected:
+            raise ValueError(
+                f"downloaded trace identity {actual!r} does not match XML task "
+                f"{expected!r}"
+            )
+        if abs(float(trace.stats.sampling_rate) - task.sample_rate) > 1e-6:
+            raise ValueError(
+                f"downloaded sample rate {trace.stats.sampling_rate} does not "
+                f"match XML task {task.sample_rate}"
+            )
+
+
+def _inventory_task_is_complete(output, task, output_format):
+    if output_format == "mseed":
+        path = _inventory_mseed_path(output, task)
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+        try:
+            stream = read(path, headonly=True)
+            _validate_inventory_stream(stream, task)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "ignoring invalid XML-guided MiniSEED file %s: %s", path, exc
+            )
+            return False
+    directory = output / task.network / task.station / str(task.starttime.year)
+    location = task.location or "--"
+    pattern = f"{task.network}.{task.station}.{location}.{task.channel}.*.sac"
+    for path in directory.glob(pattern):
+        try:
+            stream = read(path, headonly=True)
+            _validate_inventory_stream(stream, task)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _download_day(

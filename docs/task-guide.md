@@ -10,6 +10,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 
 | Goal | Recipe | Primary function |
 | --- | --- | --- |
+| Learn XML-guided GeoNet 100 Hz downloads interactively | [GeoNet Marimo notebook](recipes/geonet-100hz-notebook.md) | `download_inventory`, `download_waveforms` |
 | Process one GeoNet day end to end | [GeoNet one-day workflow](recipes/geonet-one-day-workflow.md) | download, response removal, decimation |
 | Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |

@@ -38,16 +38,27 @@ Files are written below `data/waveforms/<network>/<station>/<year>/`.
 The returned summary distinguishes downloaded, existing, no-data, and failed
 requests.
 
-When `inventory` is a StationXML path or an ObsPy `Inventory`, it acts as the
-download manifest. Matching stations and active station-days are read locally,
-so the station service is not queried again. The `network`, `station`,
-`location`, and `channel` selectors are still applied to the manifest.
+When `inventory` is a StationXML path or an ObsPy `Inventory`, it is an exact
+download manifest. Matching channel epochs are read locally and converted into
+NSLC requests, clipped to both the metadata epoch and the requested time range,
+then split at UTC-day boundaries. The station service is not queried again.
+The `network`, `station`, `location`, and `channel` selectors are applied to
+the manifest before tasks are created.
 
-Existing days are checked before a network request is made. MiniSEED uses its
-deterministic output filename. SAC files are matched directly by network,
-station, location, channel, and date, so no bookkeeping files are added to the
-waveform archive. This makes rerunning the same command an efficient way to
-resume an interrupted archive.
+XML-guided MiniSEED uses one collision-free file per exact channel request:
+
+```text
+NZ.WEL.10.HHZ.2025.001.000000-2025002T000000.mseed
+```
+
+The filename records network, station, location, channel, start day/time, and
+end time. A channel epoch beginning or ending during a UTC day produces a
+partial-day filename with its exact boundary. Downloaded trace identity and
+sample rate are validated against StationXML before the file is committed.
+
+Without `inventory`, the original station-day behavior and daily MiniSEED name
+are retained for compatibility. Existing outputs are checked before a network
+request is made, so rerunning the same command resumes an interrupted archive.
 
 ## Experimental bulk downloader
 

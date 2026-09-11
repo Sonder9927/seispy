@@ -20,7 +20,6 @@ organizing, processing, and preparing waveform data for analysis and inversion.
 - Apply phase-preserving, SAC-compatible waveform decimation
 - Cut event windows and correct station clock drift or sensor orientation
 - Prepare grid inputs and collect results for MCMC inversion
-- Inspect processing results with an interactive Marimo application
 
 ## Requirements
 
@@ -74,16 +73,19 @@ For complete, copyable workflows, start with the
 The documentation covers expected directory layouts, input tables, safety
 notes, output summaries, and the full public API.
 
-## Result inspector
+## Interactive GeoNet tutorial
 
-Launch the interactive Marimo application from the repository root:
+To learn the complete workflow from raw StationXML analysis and location-code
+selection to XML-guided 100 Hz MiniSEED downloads, open the Chinese Marimo
+notebook from the repository root:
 
 ```bash
-uv run marimo run src/halo_seispy.py
+uv run marimo edit notebooks/geonet_nz_100hz_download.py
 ```
 
-An exported `halo-seispy.html` may also be available from the project's
-[releases](https://github.com/Sonder9927/seispy/releases).
+Use `uv run marimo run notebooks/geonet_nz_100hz_download.py` for a read-only
+application view. The notebook does not start the large waveform download until
+you explicitly click its download button.
 
 ## Development
 
