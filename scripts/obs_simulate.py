@@ -90,7 +90,8 @@ def _pp_gen():
         "zeros": [1 + 0j],
     }
     patterns = ["*BHZ*.sac", "*BHN*.sac", "*BHE*.sac", "*BHH*.sac"]
-    for pattern, paz in zip(patterns, [paz_seis, paz_seis, paz_seis, paz_pres]):
+    responses = [paz_seis, paz_seis, paz_seis, paz_pres]
+    for pattern, paz in zip(patterns, responses, strict=True):
         yield pattern, paz
 
 
