@@ -102,10 +102,8 @@ def _require_sac_decimation():
 
 @pytest.fixture
 def comparison_path():
-    """Use a short SAC-compatible writable path outside macOS private var."""
-    with tempfile.TemporaryDirectory(
-        prefix="seispy-equivalence-", dir="/private/tmp"
-    ) as path:
+    """Use the short POSIX temporary path supported by SAC and CI runners."""
+    with tempfile.TemporaryDirectory(prefix="seispy-equivalence-", dir="/tmp") as path:
         yield Path(path)
 
 
