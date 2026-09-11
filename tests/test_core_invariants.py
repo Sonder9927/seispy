@@ -1,4 +1,4 @@
-from collections import defaultdict
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,14 +13,24 @@ from seispy._archive import (
     mseed_path,
     stream_day_identity,
 )
-from seispy.event._archive_index import WaveformArchiveIndex, WaveformRecord
+from seispy.event._archive_index import intervals_overlap
 
 
 _CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _CODE = st.text(alphabet=_CODE_ALPHABET, min_size=1, max_size=5)
 _LOCATION = st.one_of(st.just(""), _CODE)
 _QUALITY = st.sampled_from(("D", "M", "Q", "R"))
-_DATE = st.dates(min_value=date(2000, 1, 1), max_value=date(2035, 12, 30))
+_DATE = st.one_of(
+    st.sampled_from(
+        (
+            date(2000, 2, 29),
+            date(2024, 12, 31),
+            date(2025, 1, 1),
+            date(2032, 2, 29),
+        )
+    ),
+    st.dates(min_value=date(2000, 1, 1), max_value=date(2035, 12, 31)),
+)
 
 
 def _trace(identity: WaveformIdentity):
@@ -72,13 +82,23 @@ def test_sac_archive_path_round_trips_header_identity(identity, merged):
     assert identity.matches_sac_path(path, root)
 
 
-@given(identity=_identities())
-def test_sac_archive_path_rejects_wrong_station(identity):
+@given(
+    identity=_identities(),
+    field=st.sampled_from(
+        ("network", "station", "location", "channel", "quality", "starttime")
+    ),
+)
+def test_sac_archive_path_rejects_any_changed_identity_field(identity, field):
     root = Path("archive")
     path = identity.sac_path(root)
-    wrong_path = path.with_name(f"WRONG-{path.name}")
+    value = (
+        identity.starttime + 86_400
+        if field == "starttime"
+        else f"{getattr(identity, field)}X"
+    )
+    changed = replace(identity, **{field: value})
 
-    assert not identity.matches_sac_path(wrong_path, root)
+    assert not changed.matches_sac_path(path, root)
 
 
 @given(
@@ -141,7 +161,7 @@ def test_miniseed_identity_rejects_mixed_station_or_day(identity, change_station
     query_offset=st.integers(min_value=-172_800, max_value=172_800),
     query_duration=st.integers(min_value=0, max_value=172_800),
 )
-def test_archive_index_returns_each_overlapping_record_once(
+def test_inclusive_interval_overlap_matches_reference_expression(
     base_day,
     record_offset,
     record_duration,
@@ -153,18 +173,8 @@ def test_archive_index_returns_each_overlapping_record_once(
     record_end = record_start + record_duration
     query_start = origin + query_offset
     query_end = query_start + query_duration
-    identity = WaveformIdentity("NZ", "WEL", "10", "BHZ", "D", record_start)
-    record = WaveformRecord(Path("record.sac"), identity, record_start, record_end)
-    buckets = defaultdict(list)
-    current = record_start.date
-    while current <= record_end.date:
-        buckets[(identity.station, current)].append(record)
-        current += timedelta(days=1)
-    index = WaveformArchiveIndex(
-        {key: tuple(records) for key, records in buckets.items()}
+    expected = record_start <= query_end and record_end >= query_start
+
+    assert (
+        intervals_overlap(record_start, record_end, query_start, query_end) is expected
     )
-
-    result = index.overlapping(identity.station, query_start, query_end)
-    overlaps = record_start <= query_end and record_end >= query_start
-
-    assert result == ((record,) if overlaps else ())

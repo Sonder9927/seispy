@@ -1,16 +1,10 @@
-import importlib.util
+from importlib import import_module
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-_PATH = Path(__file__).parents[1] / "src" / "seispy" / "collate" / "mseed2sac.py"
-_SPEC = importlib.util.spec_from_file_location("mseed2sac_under_test", _PATH)
-assert _SPEC is not None and _SPEC.loader is not None
-module = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = module
-_SPEC.loader.exec_module(module)
+module = import_module("seispy.collate.mseed2sac")
 
 
 class _Time:
@@ -23,8 +17,12 @@ class _Time:
 
 class _Trace:
     stats = SimpleNamespace(
-        network="NZ", station="AAA", location="", channel="BHZ",
-        mseed=SimpleNamespace(dataquality="D"), starttime=_Time(),
+        network="NZ",
+        station="AAA",
+        location="",
+        channel="BHZ",
+        mseed=SimpleNamespace(dataquality="D"),
+        starttime=_Time(),
     )
 
     def write(self, filename, format):
@@ -97,9 +95,7 @@ def test_summary_json_is_compact(tmp_path):
         removal_failed=0,
         traces_written=1,
         output_conflicts=0,
-        error_samples=(
-            module.Mseed2SacIssue(Path("a"), "conversion_failed", "bad"),
-        ),
+        error_samples=(module.Mseed2SacIssue(Path("a"), "conversion_failed", "bad"),),
         output_dir=Path("out"),
         duration_seconds=1.0,
     )

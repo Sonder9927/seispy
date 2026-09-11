@@ -1,16 +1,10 @@
-import importlib.util
+from importlib import import_module
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-_PATH = Path(__file__).parents[1] / "src" / "seispy" / "collate" / "format.py"
-_SPEC = importlib.util.spec_from_file_location("format_under_test", _PATH)
-assert _SPEC is not None and _SPEC.loader is not None
-module = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = module
-_SPEC.loader.exec_module(module)
+module = import_module("seispy.collate.format")
 
 
 class _Trace:
@@ -55,7 +49,9 @@ def test_invalid_filename_does_not_delete_existing_output(tmp_path):
     output.parent.mkdir(parents=True)
     output.write_bytes(b"keep")
     event, stations = _metadata()
-    result = module.format_per_event(event_dir, event, tmp_path / "output", "*.sac", stations)
+    result = module.format_per_event(
+        event_dir, event, tmp_path / "output", "*.sac", stations
+    )
     assert result.failed == 1
     assert output.read_bytes() == b"keep"
 
@@ -68,7 +64,9 @@ def test_conflict_is_not_overwritten(tmp_path):
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"existing")
     event, stations = _metadata()
-    result = module.format_per_event(event_dir, event, tmp_path / "output", "*.sac", stations)
+    result = module.format_per_event(
+        event_dir, event, tmp_path / "output", "*.sac", stations
+    )
     assert result.conflicts == 1
     assert destination.read_bytes() == b"existing"
 

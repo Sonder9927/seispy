@@ -1,18 +1,12 @@
-import importlib.util
+from importlib import import_module
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from obspy import UTCDateTime
 
-_PATH = Path(__file__).parents[1] / "src" / "seispy" / "event" / "cut.py"
-_SPEC = importlib.util.spec_from_file_location("cut_event_under_test", _PATH)
-assert _SPEC is not None and _SPEC.loader is not None
-module = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = module
-_SPEC.loader.exec_module(module)
+module = import_module("seispy.event.cut")
 
 
 def _event():

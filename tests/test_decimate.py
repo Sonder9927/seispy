@@ -1,7 +1,6 @@
-import importlib.util
+from importlib import import_module
 import inspect
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,12 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-_MODULE_PATH = Path(__file__).parents[1] / "src" / "seispy" / "decimate.py"
-_SPEC = importlib.util.spec_from_file_location("decimate_under_test", _MODULE_PATH)
-assert _SPEC is not None and _SPEC.loader is not None
-decimate = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = decimate
-_SPEC.loader.exec_module(decimate)
+decimate = import_module("seispy.decimate")
 
 
 class _Trace:

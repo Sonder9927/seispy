@@ -1,16 +1,9 @@
 from types import SimpleNamespace
 
-import pytest
 import numpy as np
 from obspy import Trace, UTCDateTime, read
 
-from seispy._archive import (
-    WaveformIdentity,
-    matches_mseed_path,
-    mseed_path,
-    preserve_sac_quality,
-    stream_day_identity,
-)
+from seispy._archive import WaveformIdentity, matches_mseed_path, preserve_sac_quality
 
 
 def _trace(
@@ -42,21 +35,6 @@ def test_sac_path_uses_header_identity_and_flattens_julian_day(tmp_path):
         tmp_path / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.D.2025.001.010203.sac"
     )
     assert identity.matches_sac_path(path, tmp_path)
-
-
-def test_mseed_path_uses_stream_headers_and_flattens_julian_day(tmp_path):
-    stream = [_trace(channel="BHZ"), _trace(channel="BHN")]
-
-    assert mseed_path(tmp_path, stream) == (
-        tmp_path / "NZ" / "WEL" / "2025" / "NZ.WEL.2025.001.mseed"
-    )
-
-
-def test_mseed_stream_rejects_mixed_station_or_day():
-    stream = [_trace(), _trace(station="ABC")]
-
-    with pytest.raises(ValueError, match="multiple stations or start days"):
-        stream_day_identity(stream)
 
 
 def test_mass_downloader_channel_chunk_path_matches_headers(tmp_path):

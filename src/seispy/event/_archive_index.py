@@ -84,7 +84,9 @@ class WaveformArchiveIndex:
         unique = {}
         for day in _covered_days(starttime, endtime):
             for record in self._buckets.get((station, day), ()):
-                if record.starttime <= endtime and record.endtime >= starttime:
+                if intervals_overlap(
+                    record.starttime, record.endtime, starttime, endtime
+                ):
                     unique[record.path] = record
         return tuple(sorted(unique.values(), key=lambda item: item.path))
 
@@ -107,6 +109,11 @@ class WaveformReader:
         while len(self._cache) > self._max_files:
             self._cache.popitem(last=False)
         return stream.copy()
+
+
+def intervals_overlap(first_start, first_end, second_start, second_end) -> bool:
+    """Return whether two inclusive time intervals overlap."""
+    return first_start <= second_end and first_end >= second_start
 
 
 def _covered_days(starttime, endtime):

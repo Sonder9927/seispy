@@ -52,6 +52,20 @@ def test_index_finds_previous_day_file_by_actual_time_overlap(tmp_path):
     assert [record.path for record in records] == [path]
 
 
+def test_index_returns_cross_day_file_only_once(tmp_path):
+    archive_root = tmp_path / "archive"
+    path = _archived_sac(archive_root)
+    index = WaveformArchiveIndex.build(archive_root / "NZ")
+
+    records = index.overlapping(
+        "WEL",
+        UTCDateTime("2025-01-01T23:59:55"),
+        UTCDateTime("2025-01-02T00:00:05"),
+    )
+
+    assert [record.path for record in records] == [path]
+
+
 def test_repeated_queries_do_not_reread_headers(tmp_path):
     archive_root = tmp_path / "archive"
     _archived_sac(archive_root)
