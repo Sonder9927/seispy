@@ -1,3 +1,5 @@
+import json
+import warnings
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +11,7 @@ from obspy import Stream as ObsPyStream
 from obspy import Trace, UTCDateTime
 from obspy.clients.fdsn.header import FDSNForbiddenException
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
+from obspy.io.mseed import InternalMSEEDWarning
 
 from seispy.download import inventory, waveform
 
@@ -222,6 +225,98 @@ def test_waveform_request_retries_transient_failure():
     sleep.assert_called_once_with(0.5)
 
 
+def test_waveform_request_retries_mseed_integrity_warning():
+    client = Mock()
+    journal = Mock()
+    valid_stream = _Stream([object()])
+
+    def corrupt_then_valid(*args, **kwargs):
+        if client.get_waveforms.call_count == 1:
+            warnings.warn(
+                "data integrity check for Steim1 failed, last sample=-791353968, "
+                "xn=-348",
+                InternalMSEEDWarning,
+                stacklevel=2,
+            )
+        return valid_stream
+
+    client.get_waveforms.side_effect = corrupt_then_valid
+    with (
+        warnings.catch_warnings(),
+        patch.object(waveform, "_thread_client", return_value=client),
+        patch.object(waveform.time, "sleep") as sleep,
+        patch.object(waveform.random, "uniform", return_value=0),
+    ):
+        warnings.simplefilter("error", InternalMSEEDWarning)
+        result = waveform._fetch_waveforms(
+            inventory.EARTHSCOPE_URL,
+            None,
+            None,
+            "NZ",
+            "ABAZ",
+            "11",
+            "HHZ",
+            UTCDateTime("2026-01-01"),
+            UTCDateTime("2026-01-02"),
+            2,
+            0.5,
+            journal,
+        )
+
+    assert result is valid_stream
+    assert client.get_waveforms.call_count == 2
+    sleep.assert_called_once_with(0.5)
+    assert "retrying request" in journal.warning.call_args.args[0]
+
+
+def test_persistent_mseed_integrity_warning_fails_without_output(tmp_path):
+    client = Mock()
+
+    def corrupt(*args, **kwargs):
+        warnings.warn(
+            "data integrity check for Steim1 failed, last sample=1347756467, xn=-597",
+            InternalMSEEDWarning,
+            stacklevel=2,
+        )
+        return _Stream([_SacTrace("HH1", location="12", sampling_rate=100.0)])
+
+    client.get_waveforms.side_effect = corrupt
+    task = waveform._InventoryTask(
+        "NZ",
+        "ABAZ",
+        "12",
+        "HH1",
+        100.0,
+        UTCDateTime("2026-01-01"),
+        UTCDateTime("2026-01-02"),
+    )
+    with (
+        warnings.catch_warnings(),
+        patch.object(waveform, "_thread_client", return_value=client),
+        patch.object(waveform.time, "sleep"),
+        patch.object(waveform.random, "uniform", return_value=0),
+    ):
+        warnings.simplefilter("error", InternalMSEEDWarning)
+        result = waveform._download_inventory_task(
+            inventory.EARTHSCOPE_URL,
+            None,
+            None,
+            tmp_path,
+            task,
+            False,
+            1,
+            "mseed",
+            2,
+            0,
+        )
+
+    assert client.get_waveforms.call_count == 3
+    assert result.failed == 1
+    assert result.files_written == 0
+    assert "InternalMSEEDWarning" in result.samples[0].error
+    assert not list(tmp_path.rglob("*.mseed"))
+
+
 def test_waveform_request_does_not_retry_permanent_fdsn_failure():
     client = Mock()
     client.get_waveforms.side_effect = FDSNForbiddenException("forbidden")
@@ -332,8 +427,65 @@ def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
     assert summary.total == 2
     assert summary.downloaded == 2
     assert summary.files_written == 2
+    assert summary.status == "completed"
+    assert summary.report_path.is_file()
+    assert summary.log_path.is_file()
+    assert json.loads(summary.report_path.read_text())["status"] == "completed"
+    assert "progress=2/2" in summary.log_path.read_text()
+    assert "completed duration_seconds=" in summary.log_path.read_text()
     assert summary.ok
     assert not replace(summary, no_data=1).ok
+
+
+def test_interrupted_download_leaves_report_and_log(tmp_path):
+    with (
+        patch.object(waveform, "_client"),
+        patch.object(waveform, "_download_day", side_effect=KeyboardInterrupt),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        waveform.download_waveforms(
+            tmp_path,
+            "NZ",
+            "2026-01-01",
+            "2026-01-02",
+            station=["AAA"],
+            max_workers=1,
+        )
+
+    reports = list((tmp_path / "logs" / "reports").glob("*.json"))
+    logs = list((tmp_path / "logs").glob("*.log"))
+    assert len(reports) == 1
+    assert len(logs) == 1
+    report = json.loads(reports[0].read_text())
+    assert report["status"] == "interrupted"
+    assert report["total"] == 1
+    assert report["downloaded"] == 0
+    assert "interrupted progress=0/1" in logs[0].read_text()
+
+
+def test_waveform_run_artifacts_can_be_disabled(tmp_path):
+    with (
+        patch.object(waveform, "_client"),
+        patch.object(
+            waveform,
+            "_download_day",
+            return_value=waveform._Counts(total=1, downloaded=1, files_written=1),
+        ),
+    ):
+        summary = waveform.download_waveforms(
+            tmp_path,
+            "NZ",
+            "2026-01-01",
+            "2026-01-02",
+            station=["AAA"],
+            max_workers=1,
+            save_report=False,
+            save_log=False,
+        )
+
+    assert summary.report_path is None
+    assert summary.log_path is None
+    assert not (tmp_path / "logs").exists()
 
 
 def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):

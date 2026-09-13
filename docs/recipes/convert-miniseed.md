@@ -40,6 +40,10 @@ for issue in summary.error_samples:
 
 if summary.report_path:
     print(f"JSON report: {summary.report_path}")
+print(f"Run log: {summary.log_path}")
 ```
+
+Reports and logs are enabled by default, track every conversion batch, and
+flush progress periodically. See [Batch reports and logs](batch-reports.md).
 
 [See all parameters →](../api/collate.md#convert-miniseed-to-sac)

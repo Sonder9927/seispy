@@ -1,5 +1,4 @@
 import logging
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +7,7 @@ from typing import Any
 import obspy
 from seispy._archive import WaveformIdentity, preserve_sac_quality
 from seispy._batch import (
+    BatchRun,
     BatchSummary,
     cleanup_outputs,
     commit_output,
@@ -85,6 +85,7 @@ class Mseed2SacSummary(BatchSummary):
     def has_issues(self) -> bool:
         return bool(self.input_failed or self.removal_failed)
 
+
 def mseed2sac(
     source: str | Path,
     output_dir: str | Path,
@@ -94,7 +95,8 @@ def mseed2sac(
     *,
     remove_original: bool = False,
     max_error_samples: int = 20,
-    save_report: bool | None = None,
+    save_report: bool | None = True,
+    save_log: bool = True,
 ) -> Mseed2SacSummary:
     """Convert a MiniSEED file or directory tree to SAC.
 
@@ -106,8 +108,9 @@ def mseed2sac(
         max_workers: Maximum number of worker processes.
         remove_original: Remove each input only after all its outputs commit.
         max_error_samples: Maximum number of issues retained in the summary.
-        save_report: Force JSON report creation on or off. ``None`` writes a
-            report only when issues occur.
+        save_report: Write a continuously updated JSON report. Defaults to
+            ``True``. ``None`` retains it only when issues occur.
+        save_log: Write a persistent run log. Defaults to ``True``.
 
     Returns:
         Conversion counts, sampled issues, output location, and run duration.
@@ -125,7 +128,6 @@ def mseed2sac(
         # => 'sac'
         ```
     """
-    started = time.monotonic()
     run_id = new_run_id()
     source = Path(source).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
@@ -141,63 +143,123 @@ def mseed2sac(
     files = [source] if source.is_file() else sorted(source.rglob(pattern))
     files = [path for path in files if path.is_file()]
     batches = [files[i : i + batch_size] for i in range(0, len(files), batch_size)]
-    logger.info(
-        "run_id=%s started source=%s output=%s files=%d remove_original=%s",
-        run_id, source, output, len(files), remove_original,
+    with BatchRun(
+        "mseed2sac",
+        output,
+        run_id=run_id,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(
+            total=len(files),
+            input_total=len(files),
+            input_completed=0,
+            input_succeeded=0,
+            input_failed=0,
+            originals_removed=0,
+            removal_failed=0,
+            traces_written=0,
+            output_conflicts=0,
+            error_samples=(),
+            output_dir=output,
+        )
+        run.info(
+            "run_id=%s source=%s output=%s remove_original=%s",
+            run_id,
+            source,
+            output,
+            remove_original,
+        )
+        combined = _run_conversion_batches(
+            batches,
+            output,
+            remove_original,
+            max_workers,
+            max_error_samples,
+            run,
+        )
+        summary = run.complete(
+            Mseed2SacSummary(
+                run_id=run_id,
+                input_total=combined.total,
+                input_succeeded=combined.succeeded,
+                input_failed=combined.failed,
+                originals_removed=combined.removed,
+                removal_failed=combined.removal_failed,
+                traces_written=combined.traces_written,
+                output_conflicts=combined.conflicts,
+                error_samples=combined.samples,
+                output_dir=output,
+                duration_seconds=0,
+            )
+        )
+        for item in summary.error_samples:
+            run.error(
+                "run_id=%s status=%s source=%s destination=%s error=%s",
+                run_id,
+                item.status,
+                item.source,
+                item.destination,
+                item.error,
+            )
+        if summary.input_failed + summary.removal_failed > len(summary.error_samples):
+            run.warning(
+                "run_id=%s error_samples_truncated shown=%d",
+                run_id,
+                len(summary.error_samples),
+            )
+    print(
+        f"MiniSEED conversion [{run_id}]: {summary.input_succeeded} succeeded, "
+        f"{summary.input_failed} failed, {summary.traces_written} SAC written."
     )
+    return summary
+
+
+def _run_conversion_batches(
+    batches, output, remove_original, max_workers, max_error_samples, run
+):
     counts = []
+    total = sum(len(batch) for batch in batches)
+    worker_limit = min(max_error_samples, 1)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_process_batch, batch, output, remove_original,
-                            min(max_error_samples, 1)): batch
+            executor.submit(
+                _process_batch, batch, output, remove_original, worker_limit
+            ): batch
             for batch in batches
         }
-        with tqdm(total=len(files), desc="Converting MiniSEED") as bar:
+        with tqdm(total=total, desc="Converting MiniSEED") as bar:
             for future in as_completed(futures):
                 batch = futures[future]
                 try:
                     result = future.result()
                 except Exception as exc:
-                    result = _failed_batch(batch, exc, min(max_error_samples, 1))
+                    result = _failed_batch(batch, exc, worker_limit)
                 counts.append(result)
+                combined = _combine(counts, max_error_samples)
                 bar.update(result.total)
-    combined = _combine(counts, max_error_samples)
-    summary = Mseed2SacSummary(
-        run_id=run_id,
-        input_total=combined.total,
-        input_succeeded=combined.succeeded,
-        input_failed=combined.failed,
-        originals_removed=combined.removed,
-        removal_failed=combined.removal_failed,
-        traces_written=combined.traces_written,
-        output_conflicts=combined.conflicts,
-        error_samples=combined.samples,
-        output_dir=output,
-        duration_seconds=round(time.monotonic() - started, 3),
-    )
-    summary = summary.save_report("mseed2sac", save_report)
-    if summary.report_path:
-        logger.info("run_id=%s report=%s", run_id, summary.report_path)
-    logger.info(
-        "run_id=%s completed total=%d succeeded=%d failed=%d traces=%d "
-        "conflicts=%d removal_failed=%d duration=%.3f",
-        run_id, summary.input_total, summary.input_succeeded,
-        summary.input_failed, summary.traces_written, summary.output_conflicts,
-        summary.removal_failed, summary.duration_seconds,
-    )
-    for item in summary.error_samples:
-        logger.error("run_id=%s status=%s source=%s destination=%s error=%s",
-                     run_id, item.status, item.source, item.destination, item.error)
-    if summary.input_failed + summary.removal_failed > len(summary.error_samples):
-        logger.warning("run_id=%s error_samples_truncated shown=%d",
-                       run_id, len(summary.error_samples))
-    print(f"MiniSEED conversion [{run_id}]: {summary.input_succeeded} succeeded, "
-          f"{summary.input_failed} failed, {summary.traces_written} SAC written.")
-    return summary
+                run.checkpoint(
+                    completed=combined.total,
+                    total=total,
+                    input_total=total,
+                    input_completed=combined.total,
+                    input_succeeded=combined.succeeded,
+                    input_failed=combined.failed,
+                    originals_removed=combined.removed,
+                    removal_failed=combined.removal_failed,
+                    traces_written=combined.traces_written,
+                    output_conflicts=combined.conflicts,
+                    error_samples=combined.samples,
+                    output_dir=output,
+                )
+    return _combine(counts, max_error_samples)
 
 
 def _process_batch(files, output, remove_original, limit):
-    return _combine([_convert_file(f, output, remove_original, limit) for f in files], limit)
+    return _combine(
+        [_convert_file(f, output, remove_original, limit) for f in files], limit
+    )
 
 
 def _convert_file(source, output, remove_original, limit):
@@ -225,10 +287,18 @@ def _convert_file(source, output, remove_original, limit):
             temporary.unlink(missing_ok=True)
         cleanup_outputs(created)
         conflict = isinstance(exc, FileExistsError)
-        sample = (Mseed2SacIssue(
-            source, "output_conflict" if conflict else "conversion_failed",
-            f"{type(exc).__name__}: {exc}", destination,
-        ),) if limit else ()
+        sample = (
+            (
+                Mseed2SacIssue(
+                    source,
+                    "output_conflict" if conflict else "conversion_failed",
+                    f"{type(exc).__name__}: {exc}",
+                    destination,
+                ),
+            )
+            if limit
+            else ()
+        )
         return _Counts(total=1, failed=1, conflicts=int(conflict), samples=sample)
     removed = removal_failed = 0
     samples = ()
@@ -238,9 +308,17 @@ def _convert_file(source, output, remove_original, limit):
             removed = 1
         except OSError as exc:
             removal_failed = 1
-            samples = (Mseed2SacIssue(
-                source, "original_removal_failed", f"{type(exc).__name__}: {exc}"
-            ),) if limit else ()
+            samples = (
+                (
+                    Mseed2SacIssue(
+                        source,
+                        "original_removal_failed",
+                        f"{type(exc).__name__}: {exc}",
+                    ),
+                )
+                if limit
+                else ()
+            )
     return _Counts(1, 1, 0, removed, removal_failed, len(created), 0, samples)
 
 
@@ -282,25 +360,30 @@ def build_sac_path(
         # => True
         ```
     """
-    identity = WaveformIdentity(
-        network, station, location, channel, quality, starttime
-    )
+    identity = WaveformIdentity(network, station, location, channel, quality, starttime)
     return identity.sac_path(output)
 
 
 def _failed_batch(files, exc, limit):
-    samples = (Mseed2SacIssue(files[0], "conversion_failed",
-                              f"{type(exc).__name__}: {exc}"),) if files and limit else ()
+    samples = (
+        (Mseed2SacIssue(files[0], "conversion_failed", f"{type(exc).__name__}: {exc}"),)
+        if files and limit
+        else ()
+    )
     return _Counts(total=len(files), failed=len(files), samples=samples)
 
 
 def _combine(items, limit):
     samples = []
     for item in items:
-        samples.extend(item.samples[:max(0, limit - len(samples))])
+        samples.extend(item.samples[: max(0, limit - len(samples))])
     return _Counts(
-        sum(x.total for x in items), sum(x.succeeded for x in items),
-        sum(x.failed for x in items), sum(x.removed for x in items),
-        sum(x.removal_failed for x in items), sum(x.traces_written for x in items),
-        sum(x.conflicts for x in items), tuple(samples),
+        sum(x.total for x in items),
+        sum(x.succeeded for x in items),
+        sum(x.failed for x in items),
+        sum(x.removed for x in items),
+        sum(x.removal_failed for x in items),
+        sum(x.traces_written for x in items),
+        sum(x.conflicts for x in items),
+        tuple(samples),
     )

@@ -1,12 +1,17 @@
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import obspy
 from seispy._archive import WaveformIdentity
-from seispy._batch import BatchSummary, commit_output, new_run_id, temporary_output_path
+from seispy._batch import (
+    BatchRun,
+    BatchSummary,
+    commit_output,
+    new_run_id,
+    temporary_output_path,
+)
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
@@ -85,7 +90,8 @@ def cut_events(
     time_window: float = 10800,
     *,
     max_error_samples: int = 20,
-    save_report: bool | None = None,
+    save_report: bool | None = True,
+    save_log: bool = True,
 ) -> CutEventSummary:
     """Cut event windows from continuous SAC data.
 
@@ -96,7 +102,9 @@ def cut_events(
         station_csv: Optional station table. Directory names are used if omitted.
         time_window: Window length after each event origin, in seconds.
         max_error_samples: Maximum number of issues retained in the summary.
-        save_report: Force JSON report creation on or off.
+        save_report: Write a continuously updated JSON report. Defaults to
+            ``True``. ``None`` retains it only when issues occur.
+        save_log: Write a persistent run log. Defaults to ``True``.
 
     Returns:
         Task counts, written output count, sampled issues, and run duration.
@@ -114,7 +122,6 @@ def cut_events(
         # => True
         ```
     """
-    started = time.monotonic()
     run_id = new_run_id()
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
@@ -126,16 +133,6 @@ def cut_events(
     )
     waveform_reader = WaveformReader()
     events.sort(key=lambda item: item["start"])
-    logger.info(
-        "run_id=%s started src=%s dest=%s stations=%d events=%d time_window=%s",
-        run_id,
-        src_dir,
-        dest_dir,
-        len(stations),
-        len(events),
-        time_window,
-    )
-
     total = len(events) * len(stations)
     tasks_done = succeeded = failed = outputs = no_data = 0
     read_failed = len(archive_index.issues)
@@ -149,72 +146,100 @@ def cut_events(
         )
         for issue in archive_index.issues[:max_error_samples]
     ]
-    with tqdm(total=total, desc="Processing...") as pbar:
-        for station in stations:
-            for event in events:
-                result = cut_event_station(
-                    event,
-                    station,
-                    src_dir,
-                    dest_dir,
-                    archive_index=archive_index,
-                    waveform_reader=waveform_reader,
-                    max_error_samples=min(max_error_samples, 1),
-                )
-                tasks_done += result.tasks
-                succeeded += result.succeeded
-                failed += result.failed
-                outputs += result.outputs
-                read_failed += result.read_failed
-                no_data += result.no_data
-                samples.extend(
-                    result.samples[: max(0, max_error_samples - len(samples))]
-                )
-                pbar.update(1)
-    summary = CutEventSummary(
+    artifact_root = Path(dest_dir).expanduser().resolve()
+    with BatchRun(
+        "cut-events",
+        artifact_root,
         run_id=run_id,
-        tasks_total=tasks_done,
-        tasks_succeeded=succeeded,
-        tasks_failed=failed,
-        outputs_written=outputs,
-        input_read_failed=read_failed,
-        no_data=no_data,
-        error_samples=tuple(samples),
-        duration_seconds=round(time.monotonic() - started, 3),
-    )
-    summary = summary.save_report("cut-events", save_report)
-    if summary.report_path:
-        logger.info("run_id=%s report=%s", run_id, summary.report_path)
-    logger.info(
-        "run_id=%s completed tasks=%d succeeded=%d failed=%d outputs=%d "
-        "read_failed=%d no_data=%d duration=%.3f",
-        run_id,
-        summary.tasks_total,
-        summary.tasks_succeeded,
-        summary.tasks_failed,
-        summary.outputs_written,
-        summary.input_read_failed,
-        summary.no_data,
-        summary.duration_seconds,
-    )
-    for item in summary.error_samples:
-        logger.error(
-            "run_id=%s status=%s event=%s station=%s source=%s error=%s",
-            run_id,
-            item.status,
-            item.event,
-            item.station,
-            item.source,
-            item.error,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(
+            total=total,
+            tasks_total=total,
+            tasks_completed=0,
+            tasks_succeeded=0,
+            tasks_failed=0,
+            outputs_written=0,
+            input_read_failed=read_failed,
+            no_data=0,
+            error_samples=tuple(samples),
         )
-    issue_total = summary.tasks_failed + summary.input_read_failed
-    if issue_total > len(summary.error_samples):
-        logger.warning(
-            "run_id=%s error_samples_truncated shown=%d total_issues=%d",
+        run.info(
+            "run_id=%s src=%s dest=%s stations=%d events=%d time_window=%s",
             run_id,
-            len(summary.error_samples),
-            issue_total,
+            src_dir,
+            dest_dir,
+            len(stations),
+            len(events),
+            time_window,
         )
+        with tqdm(total=total, desc="Processing...") as pbar:
+            for station in stations:
+                for event in events:
+                    result = cut_event_station(
+                        event,
+                        station,
+                        src_dir,
+                        dest_dir,
+                        archive_index=archive_index,
+                        waveform_reader=waveform_reader,
+                        max_error_samples=min(max_error_samples, 1),
+                    )
+                    tasks_done += result.tasks
+                    succeeded += result.succeeded
+                    failed += result.failed
+                    outputs += result.outputs
+                    read_failed += result.read_failed
+                    no_data += result.no_data
+                    samples.extend(
+                        result.samples[: max(0, max_error_samples - len(samples))]
+                    )
+                    run.checkpoint(
+                        completed=tasks_done,
+                        total=total,
+                        tasks_total=total,
+                        tasks_completed=tasks_done,
+                        tasks_succeeded=succeeded,
+                        tasks_failed=failed,
+                        outputs_written=outputs,
+                        input_read_failed=read_failed,
+                        no_data=no_data,
+                        error_samples=tuple(samples),
+                    )
+                    pbar.update(1)
+        summary = run.complete(
+            CutEventSummary(
+                run_id=run_id,
+                tasks_total=tasks_done,
+                tasks_succeeded=succeeded,
+                tasks_failed=failed,
+                outputs_written=outputs,
+                input_read_failed=read_failed,
+                no_data=no_data,
+                error_samples=tuple(samples),
+                duration_seconds=0,
+            )
+        )
+        for item in summary.error_samples:
+            run.error(
+                "run_id=%s status=%s event=%s station=%s source=%s error=%s",
+                run_id,
+                item.status,
+                item.event,
+                item.station,
+                item.source,
+                item.error,
+            )
+        issue_total = summary.tasks_failed + summary.input_read_failed
+        if issue_total > len(summary.error_samples):
+            run.warning(
+                "run_id=%s error_samples_truncated shown=%d total_issues=%d",
+                run_id,
+                len(summary.error_samples),
+                issue_total,
+            )
     print(
         f"Cut events complete [{run_id}]: {summary.tasks_succeeded} succeeded, "
         f"{summary.tasks_failed} failed, {summary.outputs_written} outputs written."

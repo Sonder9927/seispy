@@ -1,7 +1,6 @@
 import logging
 import os
 import subprocess
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import cache
@@ -11,6 +10,7 @@ from typing import Callable, Sequence
 import obspy
 import numpy as np
 from seispy._batch import (
+    BatchRun,
     BatchSummary,
     commit_output,
     new_run_id,
@@ -87,7 +87,8 @@ def decimate_files(
     output_dir: str | Path | None = None,
     remove_original: bool = False,
     max_error_samples: int = 20,
-    save_report: bool | None = None,
+    save_report: bool | None = True,
+    save_log: bool = True,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> DecimationSummary:
     """Decimate matching SAC files in balanced process batches.
@@ -110,7 +111,9 @@ def decimate_files(
         output_dir: Optional output root. A sibling directory is used by default.
         remove_original: Safely replace source files instead of writing a copy.
         max_error_samples: Maximum number of failures retained in the summary.
-        save_report: Force JSON report creation on or off.
+        save_report: Write a continuously updated JSON report. Defaults to
+            ``True``. ``None`` retains it only when issues occur.
+        save_log: Write a persistent run log. Defaults to ``True``.
         batch_size: Maximum files handled by one worker task. With the SAC
             adapter, each batch is handled by one SAC process.
 
@@ -131,7 +134,6 @@ def decimate_files(
         # => False
         ```
     """
-    started = time.monotonic()
     run_id = new_run_id()
     backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
@@ -148,22 +150,98 @@ def decimate_files(
     output_path = _resolve_output_dir(src_path, output_dir, remove_original)
     worker_sample_limit = min(max_error_samples, 1)
 
-    logger.info(
-        "run_id=%s started backend=%s src_dir=%s output_dir=%s "
-        "remove_original=%s factors=%s pattern=%s max_workers=%d batch_size=%d",
-        run_id,
-        backend,
-        src_path,
-        output_path,
-        remove_original,
-        values,
-        pattern,
-        max_workers,
-        batch_size,
-    )
     targets = _input_files(src_path, pattern)
     target_batches = tuple(_batched(targets, batch_size))
+    artifact_root = output_path or src_path
+    with BatchRun(
+        "decimate",
+        artifact_root,
+        run_id=run_id,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(
+            total=len(targets),
+            succeeded=0,
+            failed=0,
+            error_samples=(),
+            output_dir=output_path,
+            remove_original=remove_original,
+        )
+        run.info(
+            "run_id=%s backend=%s src_dir=%s output_dir=%s remove_original=%s "
+            "factors=%s pattern=%s max_workers=%d batch_size=%d",
+            run_id,
+            backend,
+            src_path,
+            output_path,
+            remove_original,
+            values,
+            pattern,
+            max_workers,
+            batch_size,
+        )
+        compact = _run_decimation_batches(
+            target_batches,
+            worker,
+            values,
+            src_path,
+            output_path,
+            remove_original,
+            worker_sample_limit,
+            max_workers,
+            max_error_samples,
+            run,
+        )
+        summary = run.complete(
+            DecimationSummary(
+                run_id=run_id,
+                total=compact.total,
+                succeeded=compact.succeeded,
+                failed=compact.failed,
+                error_samples=compact.error_samples,
+                output_dir=output_path,
+                remove_original=remove_original,
+                duration_seconds=0,
+            )
+        )
+        for error in summary.error_samples:
+            run.error(
+                "run_id=%s source=%s destination=%s error=%s",
+                run_id,
+                error.source,
+                error.destination,
+                error.error,
+            )
+        if summary.failed > len(summary.error_samples):
+            run.warning(
+                "run_id=%s error_samples_truncated shown=%d total_errors=%d",
+                run_id,
+                len(summary.error_samples),
+                summary.failed,
+            )
+    print(
+        f"Decimation complete [{run_id}]: {summary.succeeded} succeeded, "
+        f"{summary.failed} failed."
+    )
+    return summary
+
+
+def _run_decimation_batches(
+    target_batches,
+    worker,
+    values,
+    src_path,
+    output_path,
+    remove_original,
+    worker_sample_limit,
+    max_workers,
+    max_error_samples,
+    run,
+):
     results = []
+    total = sum(len(batch) for batch in target_batches)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
         for batch in target_batches:
@@ -192,50 +270,18 @@ def decimate_files(
                             worker_sample_limit,
                         )
                     )
+                compact = _combine_batches(results, max_error_samples)
+                run.checkpoint(
+                    completed=compact.total,
+                    total=total,
+                    succeeded=compact.succeeded,
+                    failed=compact.failed,
+                    error_samples=compact.error_samples,
+                    output_dir=output_path,
+                    remove_original=remove_original,
+                )
                 pbar.update(1)
-
-    compact = _combine_batches(results, max_error_samples)
-    summary = DecimationSummary(
-        run_id=run_id,
-        total=compact.total,
-        succeeded=compact.succeeded,
-        failed=compact.failed,
-        error_samples=compact.error_samples,
-        output_dir=output_path,
-        remove_original=remove_original,
-        duration_seconds=round(time.monotonic() - started, 3),
-    )
-    summary = summary.save_report("decimate", save_report)
-    if summary.report_path:
-        logger.info("run_id=%s report=%s", run_id, summary.report_path)
-    logger.info(
-        "run_id=%s completed total=%d succeeded=%d failed=%d duration_seconds=%.3f",
-        run_id,
-        summary.total,
-        summary.succeeded,
-        summary.failed,
-        summary.duration_seconds,
-    )
-    for error in summary.error_samples:
-        logger.error(
-            "run_id=%s source=%s destination=%s error=%s",
-            run_id,
-            error.source,
-            error.destination,
-            error.error,
-        )
-    if summary.failed > len(summary.error_samples):
-        logger.warning(
-            "run_id=%s error_samples_truncated shown=%d total_errors=%d",
-            run_id,
-            len(summary.error_samples),
-            summary.failed,
-        )
-    print(
-        f"Decimation complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed."
-    )
-    return summary
+    return _combine_batches(results, max_error_samples)
 
 
 def _normalize_factors(factors):
@@ -339,9 +385,7 @@ def _scipy_decimate_batch(
             failed += 1
             if len(samples) < max_error_samples:
                 samples.append(
-                    DecimationIssue(
-                        target, destination, f"{type(exc).__name__}: {exc}"
-                    )
+                    DecimationIssue(target, destination, f"{type(exc).__name__}: {exc}")
                 )
     return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))
 

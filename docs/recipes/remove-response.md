@@ -29,6 +29,9 @@ print(f"Processed: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
 ```
 
+Reports and logs are enabled by default, track every station, and flush progress
+periodically. See [Batch reports and logs](batch-reports.md).
+
 By default, response removal does not change the sampling rate. To decimate as
 part of this workflow, pass `decimate_factors=[5, 5, 4]`, for example, to change
 100 Hz data to 1 Hz. Each factor must be an integer from 2 through 7. SeisPy

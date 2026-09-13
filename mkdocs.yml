@@ -49,6 +49,7 @@ nav:
       - Choose a task: task-guide.md
   - Recipes:
       - Overview: recipes/index.md
+      - Batch reports and logs: recipes/batch-reports.md
       - Download:
           - GeoNet 100 Hz interactive notebook: recipes/geonet-100hz-notebook.md
           - GeoNet single-day workflow: recipes/geonet-one-day-workflow.md

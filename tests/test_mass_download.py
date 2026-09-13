@@ -71,6 +71,9 @@ def test_mass_download_builds_daily_flat_storage_and_restrictions(tmp_path):
         / "NZ.WEL.10.BHZ.2025.001.000000-2025002T000000.mseed",
     )
     assert len(result.stationxml_files) == 1
+    assert result.status == "completed"
+    assert result.report_path.is_file()
+    assert result.log_path.is_file()
 
 
 def test_mass_download_defaults_to_global_domain(tmp_path):

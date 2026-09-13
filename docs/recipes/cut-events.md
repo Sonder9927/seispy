@@ -34,6 +34,9 @@ SAC header once to build a time-overlap index, then reuses a bounded waveform
 cache while processing events chronologically. Selection is based on actual
 header coverage rather than filename dates.
 
+Reports and logs are enabled by default, track every event-station task, and
+flush progress periodically. See [Batch reports and logs](batch-reports.md).
+
 ## External cutter
 
 Use `event.cut_events_binary` only when the required `mktraceiodb` and

@@ -2,7 +2,6 @@ import logging
 import os
 import subprocess
 import tempfile
-import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,16 +9,19 @@ from typing import Any, Callable, Literal, Sequence
 
 import obspy
 import numpy as np
+from obspy.core.inventory import Inventory
 from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
 from seispy.decimate import _normalize_factors, _sac_compatible_decimate_trace
 from seispy._batch import (
+    BatchRun,
     BatchSummary,
     commit_output,
     new_run_id,
     temporary_output_path,
 )
+from seispy.inventory import analyze_inventory
 
 logger = logging.getLogger(__name__)
 IssueStatus = Literal["deconvolution_failed", "original_removal_failed"]
@@ -92,7 +94,7 @@ class DeconvolutionSummary(BatchSummary):
 
 def deconvolution_by_station(
     src_dir: str | Path,
-    resp: str | Path,
+    resp: str | Path | Inventory,
     backend: str = "obspy",
     pattern: str = "*.sac",
     max_workers: int = 5,
@@ -100,7 +102,8 @@ def deconvolution_by_station(
     output_dir: str | Path | None = None,
     remove_original: bool = False,
     max_error_samples: int = 20,
-    save_report: bool | None = None,
+    save_report: bool | None = True,
+    save_log: bool = True,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     sac_batch_size: int = DEFAULT_SAC_BATCH_SIZE,
     decimate_factors: int | Sequence[int] | None = None,
@@ -109,7 +112,7 @@ def deconvolution_by_station(
 
     Args:
         src_dir: Root directory containing one subdirectory per station.
-        resp: StationXML file containing the matching response metadata.
+        resp: StationXML path or ObsPy inventory containing matching responses.
         backend: Processing backend, ``"obspy"`` or ``"sac"``.
         pattern: Recursive file pattern within each station directory. Use a
             MiniSEED pattern only with ``backend="obspy"``.
@@ -117,7 +120,9 @@ def deconvolution_by_station(
         output_dir: Optional output root. A sibling directory is used by default.
         remove_original: Remove each source only after output commits safely.
         max_error_samples: Maximum number of issues retained in the summary.
-        save_report: Force JSON report creation on or off.
+        save_report: Write a continuously updated JSON report. Defaults to
+            ``True``. ``None`` retains it only when issues occur.
+        save_log: Write a persistent run log. Defaults to ``True``.
         pre_filt: Four corner frequencies in hertz. When the upper corners
             exceed Nyquist they are reduced per trace while preserving the
             requested low-frequency corners.
@@ -159,7 +164,6 @@ def deconvolution_by_station(
         # => False
         ```
     """
-    started = time.monotonic()
     run_id = new_run_id()
     backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
@@ -176,19 +180,6 @@ def deconvolution_by_station(
     worker = _deconvolution_backend(backend)
     output_path = _resolve_output_dir(src_path, output_dir, remove_original)
     worker_error_samples = min(max_error_samples, 1)
-    logger.info(
-        "run_id=%s started backend=%s src_dir=%s output_dir=%s "
-        "remove_original=%s pattern=%s max_workers=%d decimate_factors=%s",
-        run_id,
-        backend,
-        src_path,
-        output_path,
-        remove_original,
-        pattern,
-        max_workers,
-        factors,
-    )
-
     stations = sorted(path for path in src_path.iterdir() if path.is_dir())
     if backend == "sac":
         miniseed = _first_miniseed_input(stations, pattern)
@@ -197,21 +188,131 @@ def deconvolution_by_station(
                 f'backend="sac" does not support MiniSEED input: {miniseed}; '
                 'use backend="obspy"'
             )
-    inv = obspy.read_inventory(str(resp))
+    inv = resp if isinstance(resp, Inventory) else obspy.read_inventory(str(resp))
+    response_analysis = analyze_inventory(inv)
+    response_analysis.response_suitability.require_safe("response removal")
     response_conflicts = _preflight_response_conflicts(stations, pattern, inv)
-    if response_conflicts:
-        logger.warning(
-            "run_id=%s response_preflight_conflicts=%d; affected files will fail "
-            "without choosing a response arbitrarily",
-            run_id,
-            response_conflicts,
+    total = sum(len(_input_files(station, pattern)) for station in stations)
+    artifact_root = output_path or src_path
+    with BatchRun(
+        "deconvolution",
+        artifact_root,
+        run_id=run_id,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(
+            total=total,
+            succeeded=0,
+            failed=0,
+            removal_failed=0,
+            response_conflicts=response_conflicts,
+            issue_samples=(),
+            output_dir=output_path,
+            remove_original=remove_original,
         )
+        run.info(
+            "run_id=%s backend=%s src_dir=%s output_dir=%s remove_original=%s "
+            "pattern=%s max_workers=%d decimate_factors=%s",
+            run_id,
+            backend,
+            src_path,
+            output_path,
+            remove_original,
+            pattern,
+            max_workers,
+            factors,
+        )
+        if response_conflicts:
+            run.warning(
+                "run_id=%s response_preflight_conflicts=%d; affected files will "
+                "fail without choosing a response arbitrarily",
+                run_id,
+                response_conflicts,
+            )
+        compact = _run_deconvolution_batches(
+            stations,
+            pattern,
+            inv,
+            backend,
+            worker,
+            src_path,
+            output_path,
+            remove_original,
+            worker_error_samples,
+            pre_filt,
+            sac_batch_size,
+            factors,
+            max_workers,
+            max_error_samples,
+            response_conflicts,
+            total,
+            run,
+        )
+        summary = run.complete(
+            DeconvolutionSummary(
+                run_id=run_id,
+                total=compact.total,
+                succeeded=compact.succeeded,
+                failed=compact.failed,
+                removal_failed=compact.removal_failed,
+                response_conflicts=response_conflicts,
+                issue_samples=compact.issue_samples,
+                output_dir=output_path,
+                remove_original=remove_original,
+                duration_seconds=0,
+            )
+        )
+        for issue in summary.issue_samples:
+            run.error(
+                "run_id=%s status=%s source=%s destination=%s error=%s",
+                run_id,
+                issue.status,
+                issue.source,
+                issue.destination,
+                issue.error,
+            )
+        issue_total = summary.failed + summary.removal_failed
+        if issue_total > len(summary.issue_samples):
+            run.warning(
+                "run_id=%s issue_samples_truncated shown=%d total_issues=%d",
+                run_id,
+                len(summary.issue_samples),
+                issue_total,
+            )
+    print(
+        f"Deconvolution complete [{run_id}]: {summary.succeeded} succeeded, "
+        f"{summary.failed} failed, {summary.removal_failed} originals not removed."
+    )
+    return summary
+
+
+def _run_deconvolution_batches(
+    stations,
+    pattern,
+    inventory,
+    backend,
+    worker,
+    src_path,
+    output_path,
+    remove_original,
+    worker_error_samples,
+    pre_filt,
+    sac_batch_size,
+    factors,
+    max_workers,
+    max_error_samples,
+    response_conflicts,
+    total,
+    run,
+):
     batches: list[_WorkerSummary] = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
         for station in stations:
             try:
-                response = _get_response(backend, inv, station.name)
+                response = _get_response(backend, inventory, station.name)
             except Exception as exc:
                 batches.append(
                     _failed_batch(
@@ -238,8 +339,12 @@ def deconvolution_by_station(
                 worker_args += (sac_batch_size, factors)
             else:
                 worker_args += (factors,)
-            future = executor.submit(worker, *worker_args)
-            futures[future] = station
+            futures[executor.submit(worker, *worker_args)] = station
+        initial = _combine_batches(batches, max_error_samples)
+        if initial.total:
+            _checkpoint_deconvolution(
+                run, initial, total, response_conflicts, output_path, remove_original
+            )
         with tqdm(total=len(futures), desc="Processing stations") as pbar:
             for future in as_completed(futures):
                 station = futures[future]
@@ -256,12 +361,25 @@ def deconvolution_by_station(
                             worker_error_samples,
                         )
                     )
+                compact = _combine_batches(batches, max_error_samples)
+                _checkpoint_deconvolution(
+                    run,
+                    compact,
+                    total,
+                    response_conflicts,
+                    output_path,
+                    remove_original,
+                )
                 pbar.update(1)
+    return _combine_batches(batches, max_error_samples)
 
-    compact = _combine_batches(batches, max_error_samples)
-    summary = DeconvolutionSummary(
-        run_id=run_id,
-        total=compact.total,
+
+def _checkpoint_deconvolution(
+    run, compact, total, response_conflicts, output_path, remove_original
+):
+    run.checkpoint(
+        completed=compact.total,
+        total=total,
         succeeded=compact.succeeded,
         failed=compact.failed,
         removal_failed=compact.removal_failed,
@@ -269,43 +387,7 @@ def deconvolution_by_station(
         issue_samples=compact.issue_samples,
         output_dir=output_path,
         remove_original=remove_original,
-        duration_seconds=round(time.monotonic() - started, 3),
     )
-    summary = summary.save_report("deconvolution", save_report)
-    if summary.report_path:
-        logger.info("run_id=%s report=%s", run_id, summary.report_path)
-    logger.info(
-        "run_id=%s completed total=%d succeeded=%d failed=%d "
-        "removal_failed=%d duration_seconds=%.3f",
-        run_id,
-        summary.total,
-        summary.succeeded,
-        summary.failed,
-        summary.removal_failed,
-        summary.duration_seconds,
-    )
-    for issue in summary.issue_samples:
-        logger.error(
-            "run_id=%s status=%s source=%s destination=%s error=%s",
-            run_id,
-            issue.status,
-            issue.source,
-            issue.destination,
-            issue.error,
-        )
-    issue_total = summary.failed + summary.removal_failed
-    if issue_total > len(summary.issue_samples):
-        logger.warning(
-            "run_id=%s issue_samples_truncated shown=%d total_issues=%d",
-            run_id,
-            len(summary.issue_samples),
-            issue_total,
-        )
-    print(
-        f"Deconvolution complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed, {summary.removal_failed} originals not removed."
-    )
-    return summary
 
 
 def _combine_batches(batches, limit: int) -> _WorkerSummary:
@@ -766,6 +848,19 @@ def _response_epoch_for_trace(inv, trace):
             f"response changes within {trace.id}: trace ends at {stats.endtime}, "
             f"epoch ends at {channel.end_date}"
         )
+    metadata_rate = getattr(channel, "sample_rate", None)
+    trace_rate = getattr(stats, "sampling_rate", None)
+    if (
+        metadata_rate is not None
+        and trace_rate is not None
+        and not np.isclose(
+            float(metadata_rate), float(trace_rate), rtol=1e-7, atol=1e-9
+        )
+    ):
+        raise ValueError(
+            f"sample rate mismatch for {trace.id}: waveform={trace_rate}, "
+            f"inventory={metadata_rate}"
+        )
     selected.get_response(trace.id, stats.starttime)
     return selected, channel
 
@@ -888,7 +983,7 @@ def _validate_sample_values(data) -> None:
 
 def stream_removed_response(
     file: str | Path,
-    inv: Any,
+    inv: str | Path | Inventory,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     decimate_factors: int | Sequence[int] | None = None,
 ) -> obspy.Stream:
@@ -896,7 +991,7 @@ def stream_removed_response(
 
     Args:
         file: Waveform file readable by ObsPy.
-        inv: ObsPy inventory containing the matching response.
+        inv: StationXML path or ObsPy inventory containing the matching response.
         pre_filt: Four corner frequencies in hertz. Upper corners are reduced
             when necessary so that the taper finishes below Nyquist.
         decimate_factors: Optional factor or ordered factors from 2 through 7.
@@ -913,11 +1008,16 @@ def stream_removed_response(
         )
         ```
     """
+    inventory = obspy.read_inventory(str(inv)) if isinstance(inv, (str, Path)) else inv
+    if isinstance(inventory, Inventory):
+        analyze_inventory(inventory).response_suitability.require_safe(
+            "response removal"
+        )
     st = obspy.read(file)
     merge_short_gaps(st)
     factors = _normalize_decimate_factors(decimate_factors)
     for tr in st:
-        response_inventory, _ = _response_epoch_for_trace(inv, tr)
+        response_inventory, _ = _response_epoch_for_trace(inventory, tr)
         final_rate = _final_sampling_rate(tr.stats.sampling_rate, factors, pre_filt)
         tr.detrend("demean")
         tr.detrend("linear")

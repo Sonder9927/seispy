@@ -27,6 +27,9 @@ print(f"Decimated: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
 ```
 
+Reports and logs are enabled by default, track every file batch, and flush
+progress periodically. See [Batch reports and logs](batch-reports.md).
+
 The SciPy adapter reads the symmetric FIR coefficients from the local licensed
 SAC installation and applies them with delay-compensated polyphase filtering.
 It does not start SAC, nor does it add detrending or tapering; perform those

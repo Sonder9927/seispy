@@ -3,6 +3,7 @@ import logging
 import random
 import threading
 import time
+import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from obspy.clients.fdsn.header import (
     FDSNTooManyRequestsException,
 )
 from obspy.core.inventory import Inventory
+from obspy.io.mseed import InternalMSEEDWarning
 from seispy._archive import (
     WaveformIdentity,
     mseed_path,
@@ -25,6 +27,7 @@ from seispy._archive import (
     stream_day_identity,
 )
 from seispy._batch import (
+    BatchRun,
     BatchSummary,
     cleanup_outputs,
     commit_output,
@@ -35,6 +38,7 @@ from tqdm import tqdm
 
 from seispy._waveform import merge_short_gaps
 from seispy.download.inventory import EARTHSCOPE_URL, _client
+from seispy.inventory import analyze_inventory
 
 logger = logging.getLogger(__name__)
 _THREAD_STATE = threading.local()
@@ -46,6 +50,7 @@ _RETRYABLE_ERRORS = (
     FDSNServiceUnavailableException,
     FDSNTimeoutException,
     FDSNTooManyRequestsException,
+    InternalMSEEDWarning,
 )
 
 
@@ -107,6 +112,8 @@ class WaveformDownloadSummary(BatchSummary):
         output_dir: Root directory containing the downloaded files.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
+        log_path: Persistent text log path when logging was enabled.
+        status: Run state: running, completed, interrupted, or failed.
 
     Examples:
         ```python
@@ -148,7 +155,8 @@ def download_waveforms(
     max_error_samples: int = 20,
     max_retries: int = 2,
     retry_backoff: float = 1.0,
-    save_report: bool | None = None,
+    save_report: bool | None = True,
+    save_log: bool = True,
     output_format: Literal["mseed", "sac"] = "mseed",
     inventory: str | Path | Inventory | None = None,
 ) -> WaveformDownloadSummary:
@@ -171,8 +179,10 @@ def download_waveforms(
         max_retries: Number of retries after a transient waveform request failure.
         retry_backoff: Initial retry delay in seconds. Later delays increase
             exponentially and include a small random jitter.
-        save_report: Force JSON report creation on or off. ``None`` writes a
-            report only when issues occur.
+        save_report: Write a continuously updated JSON report. Defaults to
+            ``True``. ``None`` retains the report only when issues occur.
+        save_log: Write a persistent, human-readable run log. Defaults to
+            ``True``.
         output_format: Output format, either ``"mseed"`` or ``"sac"``.
         inventory: Optional StationXML path or ObsPy inventory used as an exact
             waveform manifest. Matching NSLC epochs are clipped to the request
@@ -195,7 +205,6 @@ def download_waveforms(
         # => 'waveforms'
         ```
     """
-    started = time.monotonic()
     run_id = new_run_id()
     if max_workers < 1 or max_error_samples < 0 or max_retries < 0 or retry_backoff < 0:
         raise ValueError(
@@ -222,24 +231,25 @@ def download_waveforms(
             if isinstance(inventory, Inventory)
             else read_inventory(str(inventory), format="STATIONXML")
         )
+        # ``read_inventory`` always returns Inventory in production.  The type
+        # guard also keeps custom inventory-like test adapters usable.
+        if isinstance(manifest, Inventory):
+            inventory_analysis = analyze_inventory(
+                manifest, starttime=start, endtime=end
+            )
+            inventory_analysis.download_suitability.require_safe("waveform download")
         task_items = _inventory_tasks(
             manifest, network, station, location, channel, start, end
         )
+        if not task_items:
+            raise ValueError(
+                "inventory and selectors produced no waveform request in the "
+                "requested time window"
+            )
         stations = sorted({task.station for task in task_items})
         inventory_guided = True
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
-    logger.info(
-        "run_id=%s started client=%s network=%s stations=%d days=%d channel=%s format=%s",
-        run_id,
-        client,
-        network,
-        len(stations),
-        len(days),
-        channel,
-        output_format,
-    )
-    tasks = iter(task_items)
     aggregate = {
         "total": 0,
         "downloaded": 0,
@@ -249,99 +259,136 @@ def download_waveforms(
         "files_written": 0,
     }
     error_samples = []
-    with (
-        ThreadPoolExecutor(max_workers=max_workers) as executor,
-        tqdm(total=len(task_items), desc="Downloading waveforms") as bar,
-    ):
-        pending = set()
-        exhausted = False
-        while pending or not exhausted:
-            while not exhausted and len(pending) < max_workers * 3:
-                try:
-                    task = next(tasks)
-                except StopIteration:
-                    exhausted = True
-                    break
-                if inventory_guided:
-                    future = executor.submit(
-                        _download_inventory_task,
-                        client,
-                        username,
-                        password,
-                        output,
-                        task,
-                        overwrite,
-                        min(max_error_samples, 1),
-                        output_format,
-                        max_retries,
-                        retry_backoff,
-                    )
-                else:
-                    code, day = task
-                    future = executor.submit(
-                        _download_day,
-                        client,
-                        username,
-                        password,
-                        output,
-                        network,
-                        code,
-                        location,
-                        channel,
-                        day,
-                        min(day + 86400, end),
-                        overwrite,
-                        min(max_error_samples, 1),
-                        output_format,
-                        max_retries,
-                        retry_backoff,
-                    )
-                pending.add(future)
-            if pending:
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for future in done:
-                    result = future.result()
-                    for name in aggregate:
-                        aggregate[name] += getattr(result, name)
-                    error_samples.extend(
-                        result.samples[: max(0, max_error_samples - len(error_samples))]
-                    )
-                    bar.update(1)
-    combined = _Counts(**aggregate, samples=tuple(error_samples))
-    summary = WaveformDownloadSummary(
+    with BatchRun(
+        "waveform-download",
+        output,
         run_id=run_id,
-        total=combined.total,
-        downloaded=combined.downloaded,
-        skipped=combined.skipped,
-        no_data=combined.no_data,
-        failed=combined.failed,
-        files_written=combined.files_written,
-        error_samples=combined.samples,
-        output_dir=output,
-        duration_seconds=round(time.monotonic() - started, 3),
-    )
-    summary = summary.save_report("waveform-download", save_report)
-    logger.info(
-        "run_id=%s completed total=%d downloaded=%d skipped=%d no_data=%d "
-        "failed=%d files_written=%d duration=%.3f report=%s",
-        run_id,
-        summary.total,
-        summary.downloaded,
-        summary.skipped,
-        summary.no_data,
-        summary.failed,
-        summary.files_written,
-        summary.duration_seconds,
-        summary.report_path,
-    )
-    for item in summary.error_samples:
-        logger.error(
-            "run_id=%s station=%s day=%s error=%s",
-            run_id,
-            item.station,
-            item.day,
-            item.error,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(
+            total=len(task_items),
+            downloaded=0,
+            skipped=0,
+            no_data=0,
+            failed=0,
+            files_written=0,
+            error_samples=(),
+            output_dir=output,
         )
+        run.info(
+            "run_id=%s request client=%s network=%s stations=%d days=%d "
+            "channel=%s format=%s",
+            run_id,
+            client,
+            network,
+            len(stations),
+            len(days),
+            channel,
+            output_format,
+        )
+        tasks = iter(task_items)
+        with (
+            warnings.catch_warnings(),
+            ThreadPoolExecutor(max_workers=max_workers) as executor,
+            tqdm(total=len(task_items), desc="Downloading waveforms") as bar,
+        ):
+            # Keep one filter active for the lifetime of the worker pool. Warning
+            # filter contexts are process-wide on Python 3.12, so entering one in
+            # every worker would race when concurrent requests finish.
+            warnings.simplefilter("error", InternalMSEEDWarning)
+            pending = set()
+            exhausted = False
+            while pending or not exhausted:
+                while not exhausted and len(pending) < max_workers * 3:
+                    try:
+                        task = next(tasks)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    if inventory_guided:
+                        future = executor.submit(
+                            _download_inventory_task,
+                            client,
+                            username,
+                            password,
+                            output,
+                            task,
+                            overwrite,
+                            min(max_error_samples, 1),
+                            output_format,
+                            max_retries,
+                            retry_backoff,
+                            run,
+                        )
+                    else:
+                        code, day = task
+                        future = executor.submit(
+                            _download_day,
+                            client,
+                            username,
+                            password,
+                            output,
+                            network,
+                            code,
+                            location,
+                            channel,
+                            day,
+                            min(day + 86400, end),
+                            overwrite,
+                            min(max_error_samples, 1),
+                            output_format,
+                            max_retries,
+                            retry_backoff,
+                            run,
+                        )
+                    pending.add(future)
+                if pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        result = future.result()
+                        for name in aggregate:
+                            aggregate[name] += getattr(result, name)
+                        error_samples.extend(
+                            result.samples[
+                                : max(0, max_error_samples - len(error_samples))
+                            ]
+                        )
+                        bar.update(1)
+                        run.checkpoint(
+                            completed=aggregate["total"],
+                            total=len(task_items),
+                            downloaded=aggregate["downloaded"],
+                            skipped=aggregate["skipped"],
+                            no_data=aggregate["no_data"],
+                            failed=aggregate["failed"],
+                            files_written=aggregate["files_written"],
+                            error_samples=tuple(error_samples),
+                            output_dir=output,
+                        )
+        summary = run.complete(
+            WaveformDownloadSummary(
+                run_id=run_id,
+                total=aggregate["total"],
+                downloaded=aggregate["downloaded"],
+                skipped=aggregate["skipped"],
+                no_data=aggregate["no_data"],
+                failed=aggregate["failed"],
+                files_written=aggregate["files_written"],
+                error_samples=tuple(error_samples),
+                output_dir=output,
+                duration_seconds=0,
+            )
+        )
+        for item in summary.error_samples:
+            run.error(
+                "run_id=%s station=%s day=%s error=%s",
+                run_id,
+                item.station,
+                item.day,
+                item.error,
+            )
     return summary
 
 
@@ -456,29 +503,31 @@ def _download_station(
 ):
     # Compatibility wrapper used by callers of the former station-level worker.
     _THREAD_STATE.key = None
-    return _combine(
-        [
-            _download_day(
-                base_url,
-                username,
-                password,
-                output,
-                network,
-                station,
-                location,
-                channel,
-                day,
-                min(day + 86400, end),
-                overwrite,
-                sample_limit,
-                output_format,
-                max_retries,
-                retry_backoff,
-            )
-            for day in days
-        ],
-        sample_limit,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", InternalMSEEDWarning)
+        return _combine(
+            [
+                _download_day(
+                    base_url,
+                    username,
+                    password,
+                    output,
+                    network,
+                    station,
+                    location,
+                    channel,
+                    day,
+                    min(day + 86400, end),
+                    overwrite,
+                    sample_limit,
+                    output_format,
+                    max_retries,
+                    retry_backoff,
+                )
+                for day in days
+            ],
+            sample_limit,
+        )
 
 
 def _download_inventory_task(
@@ -492,6 +541,7 @@ def _download_inventory_task(
     output_format,
     max_retries,
     retry_backoff,
+    journal=None,
 ):
     if not overwrite and _inventory_task_is_complete(output, task, output_format):
         return _Counts(total=1, skipped=1)
@@ -508,6 +558,7 @@ def _download_inventory_task(
             task.endtime,
             max_retries,
             retry_backoff,
+            journal,
         )
         _validate_inventory_stream(stream, task)
         if output_format == "mseed":
@@ -636,6 +687,7 @@ def _download_day(
     output_format,
     max_retries,
     retry_backoff,
+    journal=None,
 ):
     if not overwrite and _day_is_complete(
         output, network, station, day, output_format, location, channel
@@ -654,6 +706,7 @@ def _download_day(
             request_end,
             max_retries,
             retry_backoff,
+            journal,
         )
         written, was_skipped = _write_waveforms(
             stream,
@@ -697,6 +750,7 @@ def _fetch_waveforms(
     end,
     max_retries,
     retry_backoff,
+    journal=None,
 ):
     client = _thread_client(base_url, username, password)
     for attempt in range(max_retries + 1):
@@ -714,10 +768,40 @@ def _fetch_waveforms(
             return stream
         except FDSNNoDataException:
             raise
-        except _RETRYABLE_ERRORS:
+        except _RETRYABLE_ERRORS as exc:
             if attempt == max_retries:
+                if journal is not None:
+                    journal.error(
+                        "request failed after %d attempts nslc=%s.%s.%s.%s "
+                        "start=%s end=%s error=%s: %s",
+                        attempt + 1,
+                        network,
+                        station,
+                        location,
+                        channel,
+                        start,
+                        end,
+                        type(exc).__name__,
+                        exc,
+                    )
                 raise
             delay = retry_backoff * (2**attempt)
+            if journal is not None:
+                journal.warning(
+                    "retrying request attempt=%d/%d delay=%.3fs "
+                    "nslc=%s.%s.%s.%s start=%s end=%s error=%s: %s",
+                    attempt + 2,
+                    max_retries + 1,
+                    delay,
+                    network,
+                    station,
+                    location,
+                    channel,
+                    start,
+                    end,
+                    type(exc).__name__,
+                    exc,
+                )
             time.sleep(delay + random.uniform(0, delay * 0.1))
 
 

@@ -36,4 +36,7 @@ print(f"Failed files: {summary.failed}")
 
 Output is written separately and the source event tree is preserved.
 
+Reports and logs are enabled by default, track every event, and flush progress
+periodically. See [Batch reports and logs](batch-reports.md).
+
 [See all parameters →](../api/collate.md#format-sac-headers)

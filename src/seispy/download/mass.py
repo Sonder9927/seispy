@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -13,16 +14,23 @@ from obspy.clients.fdsn.mass_downloader import (
     Restrictions,
 )
 from obspy.core.inventory import Inventory
+from seispy._batch import BatchRun, BatchSummary, new_run_id
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class MassDownloadResult:
+class MassDownloadResult(BatchSummary):
     """Files present after an experimental mass-download run."""
 
     output_dir: Path
     stationxml_dir: Path
     mseed_files: tuple[Path, ...]
     stationxml_files: tuple[Path, ...]
+
+    @property
+    def has_issues(self) -> bool:
+        return False
 
 
 def download_waveforms_mass(
@@ -46,6 +54,8 @@ def download_waveforms_mass(
     download_chunk_size_in_mb: float = 20,
     threads_per_client: int = 3,
     print_report: bool = True,
+    save_report: bool | None = True,
+    save_log: bool = True,
 ) -> MassDownloadResult:
     """Download continuous MiniSEED with ObsPy's ``MassDownloader``.
 
@@ -75,6 +85,9 @@ def download_waveforms_mass(
         download_chunk_size_in_mb: Approximate bulk request size per thread.
         threads_per_client: Download threads used for each provider.
         print_report: Ask ObsPy to print its final acquisition report.
+        save_report: Write a lifecycle JSON report. Defaults to ``True``.
+            ``None`` retains it only when issues occur.
+        save_log: Write a persistent run log. Defaults to ``True``.
 
     Returns:
         Output roots and all MiniSEED and StationXML files present afterward.
@@ -133,22 +146,66 @@ def download_waveforms_mass(
         sanitize=sanitize,
         minimum_interstation_distance_in_m=minimum_interstation_distance_in_m,
     )
-    downloader = MassDownloader(providers=_normalize_providers(providers))
-    downloader.download(
-        domain if domain is not None else GlobalDomain(),
-        restrictions,
-        mseed_storage=_mseed_storage(output),
-        stationxml_storage=str(stationxml / "{network}.{station}.xml"),
-        download_chunk_size_in_mb=download_chunk_size_in_mb,
-        threads_per_client=threads_per_client,
-        print_report=print_report,
-    )
-    return MassDownloadResult(
+    run_id = new_run_id()
+    with BatchRun(
+        "mass-download",
         output,
-        stationxml,
-        tuple(sorted(output.rglob("*.mseed"))),
-        tuple(sorted(stationxml.rglob("*.xml"))),
-    )
+        run_id=run_id,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(
+            total=1,
+            completed_calls=0,
+            output_dir=output,
+            stationxml_dir=stationxml,
+            mseed_files=(),
+            stationxml_files=(),
+        )
+        run.info(
+            "run_id=%s start=%s end=%s network=%s station=%s location=%s "
+            "channel=%s threads_per_client=%d",
+            run_id,
+            start,
+            end,
+            network,
+            station,
+            location,
+            channel,
+            threads_per_client,
+        )
+        downloader = MassDownloader(providers=_normalize_providers(providers))
+        downloader.download(
+            domain if domain is not None else GlobalDomain(),
+            restrictions,
+            mseed_storage=_mseed_storage(output),
+            stationxml_storage=str(stationxml / "{network}.{station}.xml"),
+            download_chunk_size_in_mb=download_chunk_size_in_mb,
+            threads_per_client=threads_per_client,
+            print_report=print_report,
+        )
+        mseed_files = tuple(sorted(output.rglob("*.mseed")))
+        stationxml_files = tuple(sorted(stationxml.rglob("*.xml")))
+        run.checkpoint(
+            completed=1,
+            total=1,
+            completed_calls=1,
+            output_dir=output,
+            stationxml_dir=stationxml,
+            mseed_files=mseed_files,
+            stationxml_files=stationxml_files,
+        )
+        return run.complete(
+            MassDownloadResult(
+                output,
+                stationxml,
+                mseed_files,
+                stationxml_files,
+                run_id=run_id,
+                duration_seconds=0,
+            )
+        )
 
 
 def _normalize_providers(providers):

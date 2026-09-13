@@ -30,6 +30,8 @@ summary = download.download_waveforms(
 
 print(f"Downloaded: {summary.downloaded}/{summary.total}")
 print(f"No data: {summary.no_data}; failed: {summary.failed}")
+print(f"Report: {summary.report_path}")
+print(f"Log: {summary.log_path}")
 ```
 
 ## Result
@@ -37,6 +39,28 @@ print(f"No data: {summary.no_data}; failed: {summary.failed}")
 Files are written below `data/waveforms/<network>/<station>/<year>/`.
 The returned summary distinguishes downloaded, existing, no-data, and failed
 requests.
+
+## Reports, logs, and interrupted runs
+
+Reports and persistent logs are enabled by default. They are written below the
+waveform output directory:
+
+```text
+waveforms/logs/waveform-download-<run_id>.log
+waveforms/logs/reports/waveform-download-<run_id>.json
+```
+
+The JSON report is created with `status: "running"` before waveform workers
+start and tracks completed tasks with periodic atomic flushes. A normal run finishes with
+`status: "completed"`; a caught keyboard or system interruption records
+`status: "interrupted"`. If the process is forcibly terminated and cannot run
+cleanup code, the last atomic report remains marked `running`, showing how far
+the run progressed. The text log provides a human-readable start, progress,
+error, and completion history using the same `run_id`.
+
+Set `save_report=False` or `save_log=False` to disable either artifact. Passing
+`save_report=None` preserves the former issue-only behavior: a checkpoint is
+maintained while the command runs but removed after a clean completion.
 
 When `inventory` is a StationXML path or an ObsPy `Inventory`, it is an exact
 download manifest. Matching channel epochs are read locally and converted into

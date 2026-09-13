@@ -37,8 +37,8 @@ Prefer the stable `download_waveforms` function when:
 - SAC output is required directly;
 - a local StationXML file should serve as the task manifest without broad
   provider discovery;
-- you need SeisPy's station-day counters, bounded error samples, retry policy,
-  and JSON report;
+- you need SeisPy's station-day counters, bounded error samples, and retry
+  policy;
 - exact control over each station-day request is more important than automatic
   provider discovery.
 
@@ -61,7 +61,7 @@ number of days.
 | Availability discovery | Station lookup or local inventory | Managed by ObsPy |
 | Output | Daily MiniSEED or per-trace SAC | Channel/time-chunk MiniSEED |
 | Concurrency | `max_workers` station-day threads | `threads_per_client` per provider |
-| Retry/reporting | SeisPy summary and sampled errors | ObsPy downloader report |
+| Retry/reporting | SeisPy lifecycle report, log, summary, and sampled errors | SeisPy lifecycle report and log plus ObsPy acquisition report |
 | Spatial selection | FDSN selectors | Global, rectangular, circular, or custom domain |
 | Metadata | Optional input inventory | Downloads matching StationXML |
 | Existing data | Header-validated station-day skip | ObsPy validates each storage path |
@@ -89,7 +89,14 @@ result = download.download_waveforms_mass(
 
 print(f"MiniSEED: {len(result.mseed_files)}")
 print(f"StationXML: {len(result.stationxml_files)}")
+print(f"Lifecycle report: {result.report_path}")
+print(f"Run log: {result.log_path}")
 ```
+
+SeisPy's lifecycle report and persistent log are enabled by default. They show
+whether the blocking MassDownloader call completed or was interrupted; detailed
+provider acquisition statistics still come from ObsPy's `print_report=True`.
+See [Batch reports and logs](batch-reports.md).
 
 `MassDownloader` uses threads, not Python worker processes.
 `threads_per_client=3` means up to three download threads for each provider.
