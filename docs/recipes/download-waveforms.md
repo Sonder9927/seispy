@@ -34,6 +34,86 @@ print(f"Report: {summary.report_path}")
 print(f"Log: {summary.log_path}")
 ```
 
+## Download restricted data
+
+Pass the same FDSN web-service credentials when downloading response metadata
+and waveforms. The following EarthScope example downloads restricted MiniSEED,
+checks daily availability, and removes the instrument response with ObsPy:
+
+```python
+from seispy import download, response
+
+
+NET = "1U"
+OUTDIR = "data"
+
+inventory = download.download_inventory(
+    "data/1U_inventory.xml",
+    client="https://service.earthscope.org",
+    username="username",
+    password="password",
+    network=NET,
+    starttime="2023-08-01",
+    endtime="2025-05-01",
+    level="response",
+)
+
+download_summary = download.download_waveforms(
+    OUTDIR,
+    client="https://service.earthscope.org",
+    network=NET,
+    starttime="2023-08-01",
+    endtime="2025-05-01",
+    output_format="mseed",
+    max_workers=10,
+    username="username",
+    password="password",
+    inventory=inventory,
+)
+
+availability = download.download_status(
+    f"{OUTDIR}/{NET}",
+    start_date="2023-08-01",
+    end_date="2025-04-30",
+)
+
+response_summary = response.remove_instrument_response(
+    f"{OUTDIR}/{NET}",
+    resp=inventory,
+    backend="obspy",
+    pattern="*.mseed",
+    max_workers=18,
+    decimate_factors=4,
+)
+
+print(
+    f"Downloaded: {download_summary.succeeded}/{download_summary.total}; "
+    f"failed: {download_summary.failed}"
+)
+print(
+    f"Response removed: {response_summary.succeeded}/{response_summary.total}; "
+    f"failed: {response_summary.failed}"
+)
+```
+
+The placeholder values `username="username"` and `password="password"` must
+be replaced with credentials issued by the provider. For EarthScope, sign in
+to the [EarthScope user profile](https://www.earthscope.org/user), open the
+**Credentials** tab, and click **REVEAL MY CREDENTIALS**. If credentials have
+not yet been issued, click **CREATE FDSNWS CREDENTIALS** first. Access to the
+requested restricted network must already have been granted.
+
+!!! warning "Keep credentials private"
+
+    Never commit real credentials to source control or include them in shared
+    notebooks, documentation, screenshots, or logs. For reusable scripts,
+    load them from environment variables or a secret manager instead of
+    writing them directly in Python.
+
+`download_waveforms` treats `endtime` as exclusive, whereas `download_status`
+treats `end_date` as inclusive. Consequently, the example downloads through
+2025-04-30 and uses that date as the final availability day.
+
 ## Result
 
 Files are written below `data/waveforms/<network>/<station>/<year>/`.
