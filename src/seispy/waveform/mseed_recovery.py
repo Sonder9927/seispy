@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import fnmatch
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,7 @@ def filter_valid_mseed_records(
     with source_path.open("rb") as reader, destination_path.open("wb") as writer:
         while offset < filesize:
             try:
+                reader.seek(0)
                 info = get_record_information(reader, offset=offset)
                 record_length = int(info["record_length"])
             except Exception as exc:
@@ -99,11 +101,14 @@ def _record_is_valid(
     for trace in stream:
         stats = trace.stats
         actual_location = getattr(stats, "location", "") or ""
-        if (
-            stats.network != network
-            or stats.station != station
-            or actual_location != location
-            or stats.channel != channel
+        if not all(
+            fnmatch.fnmatchcase(actual, expected)
+            for actual, expected in (
+                (stats.network, network),
+                (stats.station, station),
+                (actual_location, location),
+                (stats.channel, channel),
+            )
         ):
             return False
         if sample_rate is not None and not np.isclose(

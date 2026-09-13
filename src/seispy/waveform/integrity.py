@@ -3,6 +3,11 @@
 DEFAULT_MAX_GAP_SECONDS = 1.0
 
 
+def merge_contiguous_segments(stream):
+    """Merge only directly contiguous compatible traces, preserving every gap."""
+    return stream.merge(method=-1)
+
+
 def merge_short_gaps(stream, max_gap_seconds=DEFAULT_MAX_GAP_SECONDS):
     """Merge a stream while refusing to fabricate data across long gaps."""
     if max_gap_seconds < 0:

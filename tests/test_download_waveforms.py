@@ -265,7 +265,9 @@ def test_waveform_request_retries_mseed_integrity_warning():
     assert result is valid_stream
     assert client.get_waveforms.call_count == 2
     sleep.assert_called_once_with(0.5)
-    assert "retrying request" in journal.warning.call_args.args[0]
+    assert (
+        "retrying miniSEED integrity failure once" in journal.warning.call_args.args[0]
+    )
 
 
 def test_persistent_mseed_integrity_warning_fails_without_output(tmp_path):
@@ -307,13 +309,68 @@ def test_persistent_mseed_integrity_warning_fails_without_output(tmp_path):
             "mseed",
             2,
             0,
+            discard_corrupt_records=False,
         )
 
-    assert client.get_waveforms.call_count == 3
+    assert client.get_waveforms.call_count == 2
     assert result.failed == 1
     assert result.files_written == 0
     assert "InternalMSEEDWarning" in result.samples[0].error
     assert not list(tmp_path.rglob("*.mseed"))
+
+
+def test_persistent_integrity_warning_recovers_valid_records(tmp_path):
+    task = waveforms._InventoryTask(
+        "NZ",
+        "ABAZ",
+        "11",
+        "HHE",
+        100.0,
+        UTCDateTime("2026-01-01"),
+        UTCDateTime("2026-01-02"),
+    )
+    journal = Mock()
+
+    def write_raw(*args, **kwargs):
+        destination = args[9]
+        Path(destination).write_bytes(b"raw records")
+
+    def filter_records(source, destination, **kwargs):
+        trace = _SacTrace("HHE", location="11", sampling_rate=100.0)
+        trace.stats.station = "ABAZ"
+        _Stream([trace]).write(destination, "MSEED")
+        return SimpleNamespace(discarded_records=1)
+
+    with (
+        patch.object(
+            waveforms,
+            "_fetch_waveforms",
+            side_effect=InternalMSEEDWarning("persistent corruption"),
+        ),
+        patch.object(waveforms, "_fetch_waveform_file", side_effect=write_raw),
+        patch.object(
+            waveforms, "filter_valid_mseed_records", side_effect=filter_records
+        ),
+    ):
+        result = waveforms._download_inventory_task(
+            stations.EARTHSCOPE_URL,
+            None,
+            None,
+            tmp_path,
+            task,
+            False,
+            1,
+            "mseed",
+            2,
+            0,
+            journal,
+        )
+
+    assert result.succeeded == 1
+    assert result.files_written == 1
+    assert list(tmp_path.rglob("*.mseed"))
+    assert "discarded_corrupt_records=%d" in journal.warning.call_args.args[0]
+    assert journal.warning.call_args.args[-1] == 1
 
 
 def test_waveform_request_does_not_retry_permanent_fdsn_failure():

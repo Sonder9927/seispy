@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from obspy import Stream, Trace, UTCDateTime
 
-from seispy.waveform.integrity import merge_short_gaps
+from seispy.waveform.integrity import merge_contiguous_segments, merge_short_gaps
 
 
 def _segments(gap_samples):
@@ -24,3 +24,10 @@ def test_short_gap_is_interpolated():
 def test_gap_longer_than_one_second_is_rejected():
     with pytest.raises(ValueError, match="longer than 1 s"):
         merge_short_gaps(_segments(101))
+
+
+def test_contiguous_only_merge_preserves_short_and_long_gaps():
+    for gap_samples in (1, 50, 101):
+        stream = merge_contiguous_segments(_segments(gap_samples))
+        assert len(stream) == 2
+        assert len(stream.get_gaps()) == 1

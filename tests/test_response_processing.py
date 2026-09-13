@@ -6,9 +6,37 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
-from obspy import Trace, UTCDateTime
+from obspy import Stream, Trace, UTCDateTime
 
 remove_response = import_module("seispy.response.removal")
+
+
+def test_response_removal_preserves_gap_and_processes_each_segment():
+    first = Trace(np.arange(100, dtype=np.float32))
+    first.stats.network = "NZ"
+    first.stats.station = "ABAZ"
+    first.stats.location = "11"
+    first.stats.channel = "HHE"
+    first.stats.sampling_rate = 100.0
+    first.stats.starttime = UTCDateTime("2023-08-01")
+    second = first.copy()
+    second.stats.starttime = first.stats.endtime + 10.01
+    stream = Stream([first, second])
+
+    with (
+        patch.object(remove_response.obspy, "read", return_value=stream),
+        patch.object(
+            remove_response,
+            "_response_epoch_for_trace",
+            return_value=(object(), object()),
+        ),
+        patch.object(Trace, "remove_response") as deconvolve,
+    ):
+        result = remove_response.remove_response_from_file("trace.mseed", object())
+
+    assert len(result) == 2
+    assert len(result.get_gaps()) == 1
+    assert deconvolve.call_count == 2
 
 
 def test_obspy_preprocesses_then_decimates_before_removing_response():

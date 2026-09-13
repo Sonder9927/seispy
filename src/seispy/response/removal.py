@@ -14,7 +14,7 @@ import numpy as np
 from obspy.core.inventory import Inventory
 from tqdm import tqdm
 
-from seispy.waveform.integrity import merge_short_gaps
+from seispy.waveform.integrity import merge_contiguous_segments
 from seispy.waveform.decimation import (
     _normalize_factors,
     _sac_compatible_decimate_trace,
@@ -1021,7 +1021,7 @@ def remove_response_from_file(
             "response removal"
         )
     st = obspy.read(file)
-    merge_short_gaps(st)
+    merge_contiguous_segments(st)
     factors = _normalize_decimate_factors(decimate_factors)
     for tr in st:
         response_inventory, _ = _response_epoch_for_trace(inventory, tr)

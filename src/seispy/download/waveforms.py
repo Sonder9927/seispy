@@ -39,6 +39,7 @@ from seispy.workflow import (
 from tqdm import tqdm
 
 from seispy.waveform.integrity import merge_short_gaps
+from seispy.waveform.mseed_recovery import filter_valid_mseed_records
 from seispy.download.stations import EARTHSCOPE_URL, _client
 from seispy.inventory import analyze_inventory
 
@@ -161,6 +162,7 @@ def download_waveforms(
     save_log: bool = True,
     output_format: Literal["mseed", "sac"] = "mseed",
     inventory: str | Path | Inventory | None = None,
+    discard_corrupt_records: bool = True,
 ) -> WaveformDownloadSummary:
     """Download daily waveform files for one network.
 
@@ -190,6 +192,9 @@ def download_waveforms(
             waveform manifest. Matching NSLC epochs are clipped to the request
             interval and split at UTC-day boundaries. Remote station discovery
             is not performed.
+        discard_corrupt_records: For XML-guided miniSEED downloads, preserve
+            independently valid raw records and discard corrupt records after a
+            persistent miniSEED integrity warning. No interpolation is applied.
 
     Returns:
         Counts, sampled failures, output location, and run duration.
@@ -323,6 +328,7 @@ def download_waveforms(
                             max_retries,
                             retry_backoff,
                             run,
+                            discard_corrupt_records,
                         )
                     else:
                         code, day = task
@@ -544,24 +550,53 @@ def _download_inventory_task(
     max_retries,
     retry_backoff,
     journal=None,
+    discard_corrupt_records=True,
 ):
     if not overwrite and _inventory_task_is_complete(output, task, output_format):
         return _Counts(total=1, skipped=1)
     try:
-        stream = _fetch_waveforms(
-            base_url,
-            username,
-            password,
-            task.network,
-            task.station,
-            task.location or "--",
-            task.channel,
-            task.starttime,
-            task.endtime,
-            max_retries,
-            retry_backoff,
-            journal,
-        )
+        try:
+            stream = _fetch_waveforms(
+                base_url,
+                username,
+                password,
+                task.network,
+                task.station,
+                task.location or "--",
+                task.channel,
+                task.starttime,
+                task.endtime,
+                max_retries,
+                retry_backoff,
+                journal,
+            )
+        except InternalMSEEDWarning:
+            if output_format != "mseed" or not discard_corrupt_records:
+                raise
+            discarded = _recover_inventory_mseed(
+                base_url,
+                username,
+                password,
+                output,
+                task,
+                overwrite,
+                max_retries,
+                retry_backoff,
+                journal,
+            )
+            if journal is not None:
+                journal.warning(
+                    "recovered nslc=%s.%s.%s.%s start=%s end=%s; "
+                    "discarded_corrupt_records=%d; gaps were preserved",
+                    task.network,
+                    task.station,
+                    task.location,
+                    task.channel,
+                    task.starttime,
+                    task.endtime,
+                    discarded,
+                )
+            return _Counts(total=1, succeeded=1, files_written=1)
         _validate_inventory_stream(stream, task)
         if output_format == "mseed":
             destination = _inventory_mseed_path(output, task)
@@ -621,6 +656,62 @@ def _inventory_mseed_path(output, task):
         task.starttime,
         task.endtime,
     )
+
+
+def _recover_inventory_mseed(
+    base_url,
+    username,
+    password,
+    output,
+    task,
+    overwrite,
+    max_retries,
+    retry_backoff,
+    journal,
+):
+    destination = _inventory_mseed_path(output, task)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and not overwrite:
+        raise FileExistsError(
+            f"existing MiniSEED is invalid for its XML task: {destination}; "
+            "use overwrite=True to replace it"
+        )
+    raw = temporary_output_path(destination.with_suffix(".raw.mseed"))
+    filtered = temporary_output_path(destination)
+    try:
+        _fetch_waveform_file(
+            base_url,
+            username,
+            password,
+            task.network,
+            task.station,
+            task.location or "--",
+            task.channel,
+            task.starttime,
+            task.endtime,
+            raw,
+            max_retries,
+            retry_backoff,
+            journal,
+        )
+        recovery = filter_valid_mseed_records(
+            raw,
+            filtered,
+            network=task.network,
+            station=task.station,
+            location=task.location,
+            channel=task.channel,
+            sample_rate=task.sample_rate,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", InternalMSEEDWarning)
+            recovered_stream = read(filtered, format="MSEED")
+        _validate_inventory_stream(recovered_stream, task)
+        commit_output(filtered, destination, overwrite=overwrite)
+        return recovery.discarded_records
+    finally:
+        raw.unlink(missing_ok=True)
+        filtered.unlink(missing_ok=True)
 
 
 def _validate_inventory_stream(stream, task):
@@ -771,6 +862,39 @@ def _fetch_waveforms(
             return stream
         except FDSNNoDataException:
             raise
+        except InternalMSEEDWarning as exc:
+            # Retry this integrity failure at most once. If it persists, the
+            # caller can recover records locally from one untouched download.
+            if attempt >= min(max_retries, 1):
+                if journal is not None:
+                    journal.error(
+                        "persistent miniSEED integrity failure after %d attempts "
+                        "nslc=%s.%s.%s.%s start=%s end=%s error=%s: %s",
+                        attempt + 1,
+                        network,
+                        station,
+                        location,
+                        channel,
+                        start,
+                        end,
+                        type(exc).__name__,
+                        exc,
+                    )
+                raise
+            delay = retry_backoff
+            if journal is not None:
+                journal.warning(
+                    "retrying miniSEED integrity failure once delay=%.3fs "
+                    "nslc=%s.%s.%s.%s start=%s end=%s",
+                    delay,
+                    network,
+                    station,
+                    location,
+                    channel,
+                    start,
+                    end,
+                )
+            time.sleep(delay + random.uniform(0, delay * 0.1))
         except _RETRYABLE_ERRORS as exc:
             if attempt == max_retries:
                 if journal is not None:
@@ -802,6 +926,64 @@ def _fetch_waveforms(
                     channel,
                     start,
                     end,
+                    type(exc).__name__,
+                    exc,
+                )
+            time.sleep(delay + random.uniform(0, delay * 0.1))
+
+
+def _fetch_waveform_file(
+    base_url,
+    username,
+    password,
+    network,
+    station,
+    location,
+    channel,
+    start,
+    end,
+    destination,
+    max_retries,
+    retry_backoff,
+    journal=None,
+):
+    """Download untouched miniSEED bytes for record-level recovery."""
+    client = _thread_client(base_url, username, password)
+    retryable = tuple(
+        error for error in _RETRYABLE_ERRORS if error is not InternalMSEEDWarning
+    )
+    for attempt in range(max_retries + 1):
+        Path(destination).unlink(missing_ok=True)
+        try:
+            client.get_waveforms(
+                network=network,
+                station=station,
+                location=location,
+                channel=channel,
+                starttime=start,
+                endtime=end,
+                filename=str(destination),
+            )
+            if not Path(destination).is_file() or Path(destination).stat().st_size == 0:
+                raise FDSNNoDataException("empty raw miniSEED response")
+            return
+        except FDSNNoDataException:
+            raise
+        except retryable as exc:
+            if attempt == max_retries:
+                raise
+            delay = retry_backoff * (2**attempt)
+            if journal is not None:
+                journal.warning(
+                    "retrying raw miniSEED recovery attempt=%d/%d delay=%.3fs "
+                    "nslc=%s.%s.%s.%s error=%s: %s",
+                    attempt + 2,
+                    max_retries + 1,
+                    delay,
+                    network,
+                    station,
+                    location,
+                    channel,
                     type(exc).__name__,
                     exc,
                 )
