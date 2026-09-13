@@ -35,7 +35,10 @@ def combine_inventories(
 
     Examples:
         ```python
-        combined = combine_inventories(["broadband.xml", "short-period.xml"])
+        combined = combine_inventories([
+            "data/metadata/broadband.xml",
+            "data/metadata/short-period.xml",
+        ])
         len(combined.networks) >= 0
         # => True
         ```
@@ -82,7 +85,7 @@ def select_inventory(
     Examples:
         ```python
         selected = select_inventory(
-            "stations.xml", stations=["WEL"], channels=["BHZ"]
+            "data/metadata/stations.xml", stations=["WEL"], channels=["BHZ"]
         )
         ```
     """
@@ -128,7 +131,9 @@ def shift_channel_starttime(source: InventorySource, starttime: Any) -> Inventor
 
     Examples:
         ```python
-        shifted = shift_channel_starttime("stations.xml", "2020-01-01")
+        shifted = shift_channel_starttime(
+            "data/metadata/stations.xml", "2020-01-01"
+        )
         ```
     """
     inventory = _read_inventory(source).copy()
@@ -160,7 +165,9 @@ def write_inventory(
 
     Examples:
         ```python
-        path = write_inventory(inventory, "stations.xml", overwrite=True)
+        path = write_inventory(
+            inventory, "data/metadata/stations.xml", overwrite=True
+        )
         ```
     """
     destination = Path(output_file)

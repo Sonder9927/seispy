@@ -16,7 +16,7 @@ from seispy.waveform.decimation import (
     _sac_filter_file,
     _scipy_decimate_batch,
 )
-from seispy.response.removal import (
+from seispy.deconvolution.removal import (
     obspy_deconv,
     sac_deconv,
     remove_response_from_file,

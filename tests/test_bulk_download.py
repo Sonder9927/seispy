@@ -45,7 +45,7 @@ def test_mass_download_builds_daily_flat_storage_and_restrictions(tmp_path):
     domain = object()
     with patch.object(bulk, "MassDownloader", return_value=downloader) as factory:
         result = bulk.mass_download_waveforms(
-            tmp_path / "waveforms",
+            tmp_path / "mseed",
             "2025-01-01",
             "2025-01-03",
             domain=domain,
@@ -69,6 +69,7 @@ def test_mass_download_builds_daily_flat_storage_and_restrictions(tmp_path):
         result.output_dir / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.2025.001.mseed",
     )
     assert len(result.stationxml_files) == 1
+    assert result.stationxml_dir == tmp_path / "metadata"
     assert result.status == "completed"
     assert result.report_path.is_file()
     assert result.log_path.is_file()

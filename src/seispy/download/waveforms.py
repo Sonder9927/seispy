@@ -205,11 +205,11 @@ def download_waveforms(
     Examples:
         ```python
         summary = download_waveforms(
-            "waveforms", "NZ", "2025-01-01", "2025-01-03",
+            "data/mseed", "NZ", "2025-01-01", "2025-01-03",
             station=["WEL"], channel="BH?", max_workers=1,
         )
         summary.output_dir.name
-        # => 'waveforms'
+        # => 'mseed'
         ```
     """
     run_id = new_run_id()

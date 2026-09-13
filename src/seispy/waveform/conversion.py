@@ -124,7 +124,7 @@ def convert_mseed_to_sac(
     Examples:
         ```python
         summary = convert_mseed_to_sac(
-            "data/miniseed", "data/sac", remove_original=False
+            "data/mseed", "data/sac", remove_original=False
         )
         summary.output_dir.name
         # => 'sac'

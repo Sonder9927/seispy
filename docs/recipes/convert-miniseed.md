@@ -14,7 +14,7 @@ description: Convert one file or a directory tree and inspect the batch summary.
 from seispy import waveform
 
 summary = waveform.convert_mseed_to_sac(
-    "data/miniseed",
+    "data/mseed",
     "data/sac",
     pattern="*.mseed",
     max_workers=2,

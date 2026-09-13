@@ -16,7 +16,7 @@ uv sync
 from seispy import waveform
 
 conversion = waveform.convert_mseed_to_sac(
-    "data/miniseed",
+    "data/mseed",
     "data/sac",
     remove_original=False,
 )
@@ -34,18 +34,18 @@ print(decimation.succeeded, decimation.failed)
 ## Remove an instrument response
 
 ```python
-from seispy import download, response
+from seispy import deconvolution, download
 
 inventory = download.download_inventory(
-    "data/stations.xml",
+    "data/metadata/stations.xml",
     network="NZ",
     station="WEL",
     channel="BH?",
 )
 
-summary = response.remove_instrument_response(
+summary = deconvolution.remove_instrument_response(
     "data/sac",
-    "data/stations.xml",
+    "data/metadata/stations.xml",
     output_dir="data/deconvolved",
     remove_original=False,
 )
@@ -77,10 +77,10 @@ print(summary.succeeded, summary.failed)
 ## Inspect an interface interactively
 
 ```python
-from seispy import response
+from seispy import deconvolution
 
-help(response.remove_instrument_response)
-print(response.__all__)
+help(deconvolution.remove_instrument_response)
+print(deconvolution.__all__)
 ```
 
 The public objects exported by each package are stable discovery points. Names

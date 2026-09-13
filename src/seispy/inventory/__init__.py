@@ -1,4 +1,4 @@
-"""Lazy StationXML analysis and manipulation interfaces."""
+"""Lazy station-inventory analysis and manipulation interfaces."""
 
 from importlib import import_module
 

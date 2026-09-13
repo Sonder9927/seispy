@@ -14,7 +14,7 @@ station, and year, with Julian day retained in each filename.
 from seispy import download
 
 summary = download.download_waveforms(
-    "data/waveforms",
+    "data/mseed",
     network="NZ",
     starttime="2025-01-01",
     endtime="2025-01-03",
@@ -34,6 +34,21 @@ print(f"Report: {summary.report_path}")
 print(f"Log: {summary.log_path}")
 ```
 
+To download SAC directly, keep the same selectors but use the SAC archive root
+and format together:
+
+```python
+summary = download.download_waveforms(
+    "data/sac",
+    network="NZ",
+    starttime="2025-01-01",
+    endtime="2025-01-03",
+    station="WEL",
+    channel="BH?",
+    output_format="sac",
+)
+```
+
 ## Download restricted data
 
 Pass the same FDSN web-service credentials when downloading response metadata
@@ -41,14 +56,15 @@ and waveforms. The following EarthScope example downloads restricted MiniSEED,
 checks daily availability, and removes the instrument response with ObsPy:
 
 ```python
-from seispy import download, response
+from seispy import deconvolution, download
 
 
 NET = "1U"
-OUTDIR = "data"
+MSEED_DIR = "data/mseed"
+SAC_DIR = "data/sac"
 
 inventory = download.download_inventory(
-    "data/1U_inventory.xml",
+    "data/metadata/1U_inventory.xml",
     client="https://service.earthscope.org",
     username="username",
     password="password",
@@ -59,7 +75,7 @@ inventory = download.download_inventory(
 )
 
 download_summary = download.download_waveforms(
-    OUTDIR,
+    MSEED_DIR,
     client="https://service.earthscope.org",
     network=NET,
     starttime="2023-08-01",
@@ -72,16 +88,17 @@ download_summary = download.download_waveforms(
 )
 
 availability = download.download_status(
-    f"{OUTDIR}/{NET}",
+    f"{MSEED_DIR}/{NET}",
     start_date="2023-08-01",
     end_date="2025-04-30",
 )
 
-response_summary = response.remove_instrument_response(
-    f"{OUTDIR}/{NET}",
+response_summary = deconvolution.remove_instrument_response(
+    f"{MSEED_DIR}/{NET}",
     resp=inventory,
     backend="obspy",
     pattern="*.mseed",
+    output_dir=f"{SAC_DIR}/{NET}",
     max_workers=18,
     decimate_factors=4,
 )
@@ -116,7 +133,7 @@ treats `end_date` as inclusive. Consequently, the example downloads through
 
 ## Result
 
-Files are written below `data/waveforms/<network>/<station>/<year>/`.
+MiniSEED files are written below `data/mseed/<network>/<station>/<year>/`.
 The returned summary distinguishes succeeded, existing, no-data, and failed
 requests.
 
@@ -126,8 +143,8 @@ Reports and persistent logs are enabled by default. They are written below the
 waveform output directory:
 
 ```text
-waveforms/logs/waveform-download-<run_id>.log
-waveforms/logs/reports/waveform-download-<run_id>.json
+data/mseed/logs/waveform-download-<run_id>.log
+data/mseed/logs/reports/waveform-download-<run_id>.json
 ```
 
 The JSON report is created with `status: "running"` before waveform workers

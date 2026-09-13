@@ -1,6 +1,6 @@
 import inspect
 
-from seispy import correct, download, event, response, waveform
+from seispy import correct, deconvolution, download, event, waveform
 from seispy.workflow import BatchSummary
 
 
@@ -11,7 +11,7 @@ def test_public_batch_functions_persist_reports_and_logs_by_default():
         waveform.convert_mseed_to_sac,
         waveform.format_sac_headers,
         waveform.decimate_waveforms,
-        response.remove_instrument_response,
+        deconvolution.remove_instrument_response,
         event.cut_event_waveforms,
         correct.correct_clock_drift,
         correct.correct_orientation,
@@ -30,7 +30,7 @@ def test_batch_summaries_share_one_counter_and_issue_contract():
         waveform.WaveformConversionSummary,
         waveform.SacHeaderSummary,
         waveform.DecimationSummary,
-        response.ResponseRemovalSummary,
+        deconvolution.DeconvolutionSummary,
         event.CutEventSummary,
         correct.CorrectionSummary,
     )

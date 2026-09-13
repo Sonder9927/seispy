@@ -86,7 +86,8 @@ def mass_download_waveforms(
         minimum_length: Required fraction of the requested chunk, from 0 to 1.
         sanitize: Require matching StationXML for downloaded waveform channels.
         minimum_interstation_distance_in_m: Minimum station separation.
-        stationxml_dir: StationXML root; defaults to ``output_dir/stationxml``.
+        stationxml_dir: StationXML root. By default, metadata is stored in a
+            ``metadata`` directory alongside ``output_dir``.
         download_chunk_size_in_mb: Approximate bulk request size per thread.
         threads_per_client: Download threads used for each provider.
         print_report: Ask ObsPy to print its final acquisition report.
@@ -103,7 +104,7 @@ def mass_download_waveforms(
     Examples:
         ```python
         result = mass_download_waveforms(
-            "waveforms", "2025-01-01", "2025-01-03",
+            "data/mseed", "2025-01-01", "2025-01-03",
             providers="GEONET", network="NZ", station="WEL", channel="BH?",
         )
         print(len(result.mseed_files))
@@ -132,7 +133,7 @@ def mass_download_waveforms(
     stationxml = (
         Path(stationxml_dir).expanduser().resolve()
         if stationxml_dir is not None
-        else output / "stationxml"
+        else output.parent / "metadata"
     )
     output.mkdir(parents=True, exist_ok=True)
     stationxml.mkdir(parents=True, exist_ok=True)

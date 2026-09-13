@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.removal")
+remove_response = import_module("seispy.deconvolution.removal")
 
 
 class _WritableTrace:

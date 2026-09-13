@@ -37,7 +37,7 @@ from pathlib import Path
 
 from obspy import read
 
-from seispy import download, response, waveform
+from seispy import deconvolution, download, waveform
 
 
 FDSN_BASE_URL = "https://service.geonet.org.nz"
@@ -135,7 +135,7 @@ converted = waveform.convert_mseed_to_sac(
 require_ok("MiniSEED-to-SAC conversion", converted)
 
 # 2. Remove the response without changing the 100 Hz sampling rate.
-deconvolved = response.remove_instrument_response(
+deconvolved = deconvolution.remove_instrument_response(
     SAC_COUNTS_100HZ / NETWORK,
     STATIONXML,
     backend="obspy",
@@ -192,7 +192,7 @@ Append this code to the shared download script instead of Part 1:
 ```python
 SAC_DISP_25HZ = ROOT / "02_sac_displacement_nm_25hz"
 
-deconvolved = response.remove_instrument_response(
+deconvolved = deconvolution.remove_instrument_response(
     MSEED / NETWORK,
     STATIONXML,
     backend="obspy",

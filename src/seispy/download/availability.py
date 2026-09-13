@@ -104,7 +104,7 @@ def download_status(
     Examples:
         ```python
         report = download_status(
-            "data/waveforms/NZ",
+            "data/mseed/NZ",
             start_date="2024-01-01",
             end_date="2024-12-31",
             output_figure="availability.pdf",
@@ -189,7 +189,7 @@ def scan_download_availability(
 
     Examples:
         ```python
-        availability = scan_download_availability("data/waveforms/NZ")
+        availability = scan_download_availability("data/mseed/NZ")
         list(availability.columns)
         # => ['station', 'date', 'file_count', 'size_bytes']
         ```

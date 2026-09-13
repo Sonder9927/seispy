@@ -13,9 +13,9 @@ seispy/
 ├── archive.py     # waveform identity, naming, and archive invariants
 ├── workflow.py    # safe outputs, reports, logs, and run lifecycle
 ├── download/      # remote acquisition and availability analysis
-├── inventory/     # StationXML analysis and manipulation
+├── inventory/     # station metadata analysis and manipulation
 ├── waveform/      # conversion, layout, merge, headers, integrity, decimation
-├── response/      # instrument-response removal
+├── deconvolution/ # instrument-response removal
 ├── event/         # event catalogs and waveform cutting
 ├── correct/       # station timing and orientation corrections
 └── mcmc/          # inversion input and result workflows
@@ -26,17 +26,16 @@ seispy/
 `archive` and `workflow` are deep foundation modules and do not depend on a
 workflow domain. Domain packages may use them, while higher-level workflows may
 compose other domains where the scientific operation requires it. In
-particular, response removal uses inventory safety checks and waveform
-decimation.
+particular, deconvolution uses StationXML safety checks and waveform decimation.
 
 StationXML ownership is intentionally split by action rather than caller:
 
 - `download` acquires metadata;
 - `inventory` analyzes, selects, combines, adjusts, and writes metadata;
-- `response` consumes metadata while removing an instrument response.
+- `deconvolution` consumes metadata while removing an instrument response.
 
-This keeps each rule in one canonical module and prevents download and response
-workflows from accumulating duplicate StationXML utilities.
+This keeps each rule in one canonical module and prevents download and
+deconvolution workflows from accumulating duplicate StationXML utilities.
 
 ## Public interfaces
 

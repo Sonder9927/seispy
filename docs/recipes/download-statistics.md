@@ -13,7 +13,7 @@ waveforms and export a figure for a report or paper.
 Pass the network directory containing the station folders:
 
 ```text
-data/waveforms/NZ/
+data/mseed/NZ/
 ├── AAA/2024/NZ.AAA..BHZ.2024.001.000000.sac
 ├── AAA/2024/NZ.AAA..BHZ.2024.002.000000.sac
 └── BBB/2024/NZ.BBB.2024.001.mseed
@@ -28,7 +28,7 @@ noncanonical files are reported and ignored.
 from seispy import download
 
 report = download.download_status(
-    "data/waveforms/NZ",
+    "data/mseed/NZ",
     start_date="2024-01-01",
     end_date="2024-12-31",
     output_figure="figures/download-status.pdf",

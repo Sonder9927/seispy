@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from obspy import Stream, Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.removal")
+remove_response = import_module("seispy.deconvolution.removal")
 
 
 def test_response_removal_preserves_gap_and_processes_each_segment():

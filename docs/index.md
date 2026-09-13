@@ -81,7 +81,7 @@ signatures, return models, and source links. You can also inspect any function
 without opening this site:
 
 ```python
-from seispy import response
+from seispy import deconvolution
 
-help(response.remove_instrument_response)
+help(deconvolution.remove_instrument_response)
 ```

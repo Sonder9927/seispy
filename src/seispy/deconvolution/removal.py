@@ -1,4 +1,4 @@
-"""Instrument-response removal workflows."""
+"""Instrument-response deconvolution workflows."""
 
 import logging
 import os
@@ -37,7 +37,7 @@ TAPER_MAX_SECONDS = 150.0
 
 
 @dataclass(frozen=True)
-class ResponseRemovalIssue:
+class DeconvolutionIssue:
     """A sampled issue; successful file details are not retained."""
 
     source: Path
@@ -52,11 +52,11 @@ class _WorkerSummary:
     succeeded: int = 0
     failed: int = 0
     removal_failed: int = 0
-    issue_samples: tuple[ResponseRemovalIssue, ...] = ()
+    issue_samples: tuple[DeconvolutionIssue, ...] = ()
 
 
 @dataclass(frozen=True)
-class ResponseRemovalSummary(BatchSummary):
+class DeconvolutionSummary(BatchSummary):
     """Summarize a batch instrument-response removal run.
 
     This class is returned by :func:`remove_instrument_response`; applications
@@ -88,7 +88,7 @@ class ResponseRemovalSummary(BatchSummary):
     failed: int
     removal_failed: int
     response_conflicts: int
-    issue_samples: tuple[ResponseRemovalIssue, ...]
+    issue_samples: tuple[DeconvolutionIssue, ...]
     output_dir: Path | None
     remove_original: bool
 
@@ -112,7 +112,7 @@ def remove_instrument_response(
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     sac_batch_size: int = DEFAULT_SAC_BATCH_SIZE,
     decimate_factors: int | Sequence[int] | None = None,
-) -> ResponseRemovalSummary:
+) -> DeconvolutionSummary:
     """Remove responses from station-grouped SAC or MiniSEED waveform files.
 
     Args:
@@ -162,7 +162,8 @@ def remove_instrument_response(
     Examples:
         ```python
         summary = remove_instrument_response(
-            "data/sac", "stations.xml", output_dir="data/deconvolved",
+            "data/sac", "data/metadata/stations.xml",
+            output_dir="data/deconvolved",
             remove_original=False,
         )
         summary.remove_original
@@ -256,7 +257,7 @@ def remove_instrument_response(
             run,
         )
         summary = run.complete(
-            ResponseRemovalSummary(
+            DeconvolutionSummary(
                 run_id=run_id,
                 total=compact.total,
                 succeeded=compact.succeeded,
@@ -411,7 +412,7 @@ def _combine_batches(batches, limit: int) -> _WorkerSummary:
 def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
     error = f"{type(exc).__name__}: {exc}"
     samples = tuple(
-        ResponseRemovalIssue(
+        DeconvolutionIssue(
             target,
             _destination_for(target, src_root, output_dir, remove_original),
             "deconvolution_failed",
@@ -565,7 +566,7 @@ def _process_obspy_targets(
             failed += 1
             if len(samples) < limit:
                 samples.append(
-                    ResponseRemovalIssue(
+                    DeconvolutionIssue(
                         target,
                         base_destination,
                         "deconvolution_failed",
@@ -581,7 +582,7 @@ def _process_obspy_targets(
                 removal_failed += 1
                 if len(samples) < limit:
                     samples.append(
-                        ResponseRemovalIssue(
+                        DeconvolutionIssue(
                             target,
                             base_destination,
                             "original_removal_failed",
@@ -684,7 +685,7 @@ def _process_sac_batch(
     def record(target, destination, status: IssueStatus, exc):
         if len(samples) < limit:
             samples.append(
-                ResponseRemovalIssue(
+                DeconvolutionIssue(
                     target,
                     destination,
                     status,

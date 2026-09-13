@@ -52,7 +52,8 @@ def download_inventory(
     Examples:
         ```python
         inventory = download_inventory(
-            "stations.xml", network="NZ", station="WEL", channel="BH?"
+            "data/metadata/stations.xml",
+            network="NZ", station="WEL", channel="BH?",
         )
         len(inventory.networks) >= 0
         # => True

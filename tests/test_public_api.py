@@ -14,7 +14,9 @@ def test_top_level_import_is_lazy():
             "-c",
             "import sys, seispy; "
             "assert 'seispy.mcmc' not in sys.modules; "
-            "assert 'seispy.waveform.decimation' not in sys.modules",
+            "assert 'seispy.waveform.decimation' not in sys.modules; "
+            "assert not hasattr(seispy, 'stationxml'); "
+            "assert not hasattr(seispy, 'response')",
         ],
         check=True,
         env=environment,
@@ -30,10 +32,11 @@ def test_domain_packages_do_not_import_their_implementations_eagerly():
             sys.executable,
             "-c",
             "import sys, seispy.download, seispy.waveform, seispy.inventory, "
-            "seispy.correct, seispy.mcmc; "
+            "seispy.deconvolution, seispy.correct, seispy.mcmc; "
             "assert 'seispy.download.availability' not in sys.modules; "
             "assert 'seispy.waveform.decimation' not in sys.modules; "
             "assert 'seispy.inventory.analysis' not in sys.modules; "
+            "assert 'seispy.deconvolution.removal' not in sys.modules; "
             "assert 'seispy.correct.orientation' not in sys.modules; "
             "assert 'seispy.mcmc.preparation' not in sys.modules",
         ],

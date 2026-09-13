@@ -1,23 +1,23 @@
-"""Instrument-response removal workflows."""
+"""Instrument-response deconvolution workflows."""
 
 from importlib import import_module
 
 _EXPORTS = {
     "remove_instrument_response": (
-        "seispy.response.removal",
+        "seispy.deconvolution.removal",
         "remove_instrument_response",
     ),
     "remove_response_from_file": (
-        "seispy.response.removal",
+        "seispy.deconvolution.removal",
         "remove_response_from_file",
     ),
-    "ResponseRemovalIssue": (
-        "seispy.response.removal",
-        "ResponseRemovalIssue",
+    "DeconvolutionIssue": (
+        "seispy.deconvolution.removal",
+        "DeconvolutionIssue",
     ),
-    "ResponseRemovalSummary": (
-        "seispy.response.removal",
-        "ResponseRemovalSummary",
+    "DeconvolutionSummary": (
+        "seispy.deconvolution.removal",
+        "DeconvolutionSummary",
     ),
 }
 

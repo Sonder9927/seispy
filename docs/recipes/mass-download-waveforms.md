@@ -72,7 +72,7 @@ number of days.
 from seispy import download
 
 result = download.mass_download_waveforms(
-    "data/waveforms",
+    "data/mseed",
     "2025-01-01",
     "2025-01-08",
     providers="GEONET",
@@ -112,7 +112,7 @@ Supplying an XML inventory is useful when you already know the allowed stations:
 
 ```python
 result = download.mass_download_waveforms(
-    "data/waveforms",
+    "data/mseed",
     "2025-01-01",
     "2025-02-01",
     providers="GEONET",
@@ -126,8 +126,10 @@ result = download.mass_download_waveforms(
 The inventory is passed to ObsPy as `limit_stations_to_inventory`. It narrows
 the eligible stations but does not completely replace MassDownloader's remote
 availability and metadata workflow. MassDownloader still downloads the
-StationXML required for the selected waveform channels into
-`<output_dir>/stationxml` unless `stationxml_dir` is supplied.
+StationXML required for the selected waveform channels. By default it uses a
+`metadata` directory alongside the waveform output directory, so
+`output_dir="data/mseed"` stores XML files in `data/metadata`. Pass
+`stationxml_dir` to choose another location.
 
 The other selectors still apply. A station must match both the inventory and
 the `network`, `station`, `location`, and `channel` restrictions.
@@ -150,7 +152,7 @@ domain = RectangularDomain(
 )
 
 result = download.mass_download_waveforms(
-    "data/waveforms",
+    "data/mseed",
     "2025-01-01",
     "2025-01-03",
     domain=domain,
@@ -165,9 +167,9 @@ result = download.mass_download_waveforms(
 Waveforms use the flattened annual archive:
 
 ```text
-data/waveforms/
-├── NZ/WEL/2025/NZ.WEL.10.BHZ.2025.001.mseed
-└── stationxml/NZ.WEL.xml
+data/
+├── metadata/NZ.WEL.xml
+└── mseed/NZ/WEL/2025/NZ.WEL.10.BHZ.2025.001.mseed
 ```
 
 Unlike the stable downloader, MassDownloader writes a separate file for every

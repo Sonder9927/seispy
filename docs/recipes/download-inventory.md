@@ -67,7 +67,7 @@ metadata:
 
 ```python
 summary = download.download_waveforms(
-    "data/waveforms",
+    "data/mseed",
     network="NZ",
     starttime="2025-01-01",
     endtime="2025-02-01",

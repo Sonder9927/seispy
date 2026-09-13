@@ -1,8 +1,7 @@
-# Response API
+# Deconvolution API
 
-Remove instrument responses from waveform data. StationXML preparation now
-belongs to the [Inventory API](inventory.md); the old response-package exports
-remain available for compatibility.
+Remove instrument responses from waveform data. StationXML preparation belongs
+to the separate [Inventory API](inventory.md).
 
 ## Functions
 
@@ -20,11 +19,11 @@ remain available for compatibility.
     lowering guarantees a valid taper, but does not guarantee that the adjusted
     band still covers the user's scientific target.
 
-::: seispy.response.removal.remove_instrument_response
+::: seispy.deconvolution.removal.remove_instrument_response
 
 ### Process one stream
 
-::: seispy.response.removal.remove_response_from_file
+::: seispy.deconvolution.removal.remove_response_from_file
 
 ## Result models
 
@@ -33,4 +32,4 @@ normally do not instantiate it directly.
 
 ### Deconvolution summary
 
-::: seispy.response.removal.ResponseRemovalSummary
+::: seispy.deconvolution.removal.DeconvolutionSummary

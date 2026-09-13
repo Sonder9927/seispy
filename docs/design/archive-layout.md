@@ -9,8 +9,16 @@ SeisPy stores waveforms below `network/station/year` without a separate Julian
 day directory:
 
 ```text
-archive/NZ/WEL/2025/NZ.WEL.10.BHZ.2025.001.000000.sac
+data/
+├── metadata/stations.xml
+├── mseed/NZ/WEL/2025/NZ.WEL.10.BHZ.2025.001.mseed
+└── sac/NZ/WEL/2025/NZ.WEL.10.BHZ.2025.001.000000.sac
 ```
+
+Use `data/metadata` for StationXML and related station tables, `data/mseed` for
+downloaded MiniSEED, and `data/sac` for downloaded or converted SAC. These are
+the paths used consistently by the examples; callers may still choose other
+roots when a project requires a different layout.
 
 The waveform header is authoritative. Directory names and filenames are
 derived indexes; files that disagree with their headers are rejected instead

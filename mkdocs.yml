@@ -74,7 +74,7 @@ nav:
       - Download: api/download.md
       - Inventory: api/inventory.md
       - Waveforms: api/waveform.md
-      - Response: api/response.md
+      - Deconvolution: api/deconvolution.md
       - Decimate: api/decimate.md
       - Events: api/event.md
       - Corrections: api/correct.md

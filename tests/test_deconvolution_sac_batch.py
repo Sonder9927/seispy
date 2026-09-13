@@ -8,11 +8,11 @@ import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.removal")
+remove_response = import_module("seispy.deconvolution.removal")
 
 
 def test_deconvolution_summary_status_includes_removal_failures():
-    summary = remove_response.ResponseRemovalSummary(
+    summary = remove_response.DeconvolutionSummary(
         run_id="run",
         total=1,
         succeeded=1,

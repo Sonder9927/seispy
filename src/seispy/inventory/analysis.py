@@ -1,4 +1,4 @@
-"""Read-only, network-agnostic analysis of ObsPy inventories."""
+"""Read-only analysis of StationXML metadata represented by ObsPy inventories."""
 
 from __future__ import annotations
 

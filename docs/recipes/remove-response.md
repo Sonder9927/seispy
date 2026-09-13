@@ -13,9 +13,9 @@ and recording interval. See [Station metadata](download-inventory.md).
 ## Example
 
 ```python
-from seispy import response
+from seispy import deconvolution
 
-summary = response.remove_instrument_response(
+summary = deconvolution.remove_instrument_response(
     "data/sac",
     "data/metadata/stations.xml",
     backend="obspy",
@@ -116,4 +116,4 @@ for issue in summary.issue_samples:
     its batch is split recursively until the individual bad file is isolated;
     valid neighbors are retained without slowing down successful batches.
 
-[See all parameters →](../api/response.md#remove-instrument-responses)
+[See all parameters →](../api/deconvolution.md#remove-instrument-responses)

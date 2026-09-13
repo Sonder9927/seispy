@@ -8,11 +8,11 @@ _MODULES = {
     for name in (
         "archive",
         "correct",
+        "deconvolution",
         "download",
         "event",
-        "inventory",
         "mcmc",
-        "response",
+        "inventory",
         "waveform",
         "workflow",
     )
@@ -22,11 +22,11 @@ if TYPE_CHECKING:
     from seispy import (
         archive,
         correct,
+        deconvolution,
         download,
         event,
-        inventory,
         mcmc,
-        response,
+        inventory,
         waveform,
         workflow,
     )

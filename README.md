@@ -68,7 +68,7 @@ source files:
 from seispy import waveform
 
 summary = waveform.convert_mseed_to_sac(
-    "data/miniseed",
+    "data/mseed",
     "data/sac",
     pattern="*.mseed",
     remove_original=False,
