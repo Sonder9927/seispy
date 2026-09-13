@@ -24,6 +24,7 @@ from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
 from seispy.archive import (
     WaveformIdentity,
+    channel_mseed_path,
     mseed_path,
     preserve_sac_quality,
     stream_day_identity,
@@ -612,14 +613,15 @@ def _download_inventory_task(
 
 
 def _inventory_mseed_path(output, task):
-    location = task.location or "--"
-    start = task.starttime.strftime("%H%M%S")
-    end = task.endtime.strftime("%Y%jT%H%M%S")
-    filename = (
-        f"{task.network}.{task.station}.{location}.{task.channel}."
-        f"{task.starttime.year}.{task.starttime.julday:03d}.{start}-{end}.mseed"
+    return channel_mseed_path(
+        output,
+        task.network,
+        task.station,
+        task.location,
+        task.channel,
+        task.starttime,
+        task.endtime,
     )
-    return output / task.network / task.station / str(task.starttime.year) / filename
 
 
 def _validate_inventory_stream(stream, task):
@@ -659,7 +661,7 @@ def _inventory_task_is_complete(output, task, output_format):
             logger.warning(
                 "ignoring invalid XML-guided MiniSEED file %s: %s", path, exc
             )
-            return False
+        return False
     directory = output / task.network / task.station / str(task.starttime.year)
     location = task.location or "--"
     pattern = f"{task.network}.{task.station}.{location}.{task.channel}.*.sac"

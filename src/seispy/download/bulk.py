@@ -15,6 +15,7 @@ from obspy.clients.fdsn.mass_downloader import (
 )
 from obspy.core.inventory import Inventory
 from seispy.workflow import BatchRun, BatchSummary, new_run_id
+from seispy.archive import channel_mseed_path
 
 logger = logging.getLogger(__name__)
 
@@ -232,14 +233,10 @@ def _load_inventory(source):
 
 def _mseed_storage(root: Path):
     def storage(network, station, location, channel, starttime, endtime):
-        year = int(starttime.year)
-        julday = int(starttime.julday)
-        start = starttime.strftime("%H%M%S")
-        end = endtime.strftime("%Y%jT%H%M%S")
-        filename = (
-            f"{network}.{station}.{location}.{channel}.{year}.{julday:03d}."
-            f"{start}-{end}.mseed"
+        return str(
+            channel_mseed_path(
+                root, network, station, location, channel, starttime, endtime
+            )
         )
-        return str(root / network / station / str(year) / filename)
 
     return storage

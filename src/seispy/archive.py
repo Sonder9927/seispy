@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+import re
 from typing import Any, Iterable
 
 _QUALITY_HEADER_PREFIX = "SQ:"
@@ -140,10 +141,65 @@ def mseed_path(root: str | Path, stream: Iterable[Any]) -> Path:
     return Path(root) / network / station / str(year) / filename
 
 
+def channel_mseed_path(
+    root: str | Path,
+    network: str,
+    station: str,
+    location: str,
+    channel: str,
+    starttime: Any,
+    endtime: Any,
+) -> Path:
+    """Build a compact path for one exact NSLC time window.
+
+    Network, station, and year are represented by parent directories. Complete
+    UTC-day chunks therefore need only location, channel, and Julian day in the
+    filename. Partial-day chunks retain their time window to prevent collisions.
+    """
+    location = location or "--"
+    julday = int(starttime.julday)
+    if _is_full_utc_day(starttime, endtime):
+        filename = f"{location}.{channel}.{julday:03d}.mseed"
+    else:
+        start = _time_token(starttime)
+        end = _time_token(endtime, include_date=True)
+        filename = f"{location}.{channel}.{julday:03d}.{start}-{end}.mseed"
+    return Path(root) / network / station / str(starttime.year) / filename
+
+
+def _is_full_utc_day(starttime: Any, endtime: Any) -> bool:
+    start_day = date(int(starttime.year), 1, 1) + timedelta(
+        days=int(starttime.julday) - 1
+    )
+    end_day = date(int(endtime.year), 1, 1) + timedelta(days=int(endtime.julday) - 1)
+    return (
+        starttime.strftime("%H%M%S") == "000000"
+        and endtime.strftime("%H%M%S") == "000000"
+        and _fractional_nanoseconds(starttime) == 0
+        and _fractional_nanoseconds(endtime) == 0
+        and end_day == start_day + timedelta(days=1)
+    )
+
+
+def _time_token(value: Any, *, include_date: bool = False) -> str:
+    pattern = "%Y%jT%H%M%S" if include_date else "%H%M%S"
+    token = value.strftime(pattern)
+    nanoseconds = _fractional_nanoseconds(value)
+    if nanoseconds:
+        token += f".{nanoseconds:09d}".rstrip("0")
+    return token
+
+
+def _fractional_nanoseconds(value: Any) -> int:
+    if hasattr(value, "ns"):
+        return int(value.ns) % 1_000_000_000
+    return int(getattr(value, "microsecond", 0)) * 1_000
+
+
 def matches_mseed_path(
     path: str | Path, root: str | Path, stream: Iterable[Any]
 ) -> bool:
-    """Validate standard daily or MassDownloader channel-chunk paths."""
+    """Validate standard daily or exact-channel MiniSEED paths."""
     traces = list(stream)
     network, station, year, julday = stream_day_identity(traces)
     candidate = Path(path)
@@ -157,9 +213,16 @@ def matches_mseed_path(
         return False
     _, _, location, channel = stream_keys.pop()
     directory = Path(root) / network / station / str(year)
-    prefix = f"{network}.{station}.{location}.{channel}.{year}.{julday:03d}."
+    compact_prefix = f"{location or '--'}.{channel}.{julday:03d}"
+    partial_pattern = (
+        rf"{re.escape(compact_prefix)}\.\d{{6}}(?:\.\d{{1,9}})?-"
+        rf"\d{{7}}T\d{{6}}(?:\.\d{{1,9}})?\.mseed"
+    )
     return (
         candidate.parent == directory
-        and candidate.name.startswith(prefix)
         and candidate.suffix.lower() == ".mseed"
+        and (
+            candidate.name == f"{compact_prefix}.mseed"
+            or re.fullmatch(partial_pattern, candidate.name) is not None
+        )
     )

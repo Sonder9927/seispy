@@ -166,7 +166,7 @@ Waveforms use the flattened annual archive:
 
 ```text
 data/waveforms/
-├── NZ/WEL/2025/NZ.WEL.10.BHZ.2025.001.000000-2025002T000000.mseed
+├── NZ/WEL/2025/10.BHZ.001.mseed
 └── stationxml/NZ.WEL.xml
 ```
 

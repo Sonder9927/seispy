@@ -13,6 +13,12 @@ from seispy.workflow import (
 
 
 @dataclass(frozen=True)
+class _Issue:
+    source: Path
+    error: str
+
+
+@dataclass(frozen=True)
 class _Summary(BatchSummary):
     value: Path
     has_issues: bool = False
@@ -85,6 +91,24 @@ def test_batch_run_persists_progress_and_completes_summary(tmp_path):
     assert summary.log_path.is_file()
     assert json.loads(summary.report_path.read_text())["status"] == "completed"
     assert "progress=1/3" in summary.log_path.read_text()
+
+
+def test_checkpoint_serializes_nested_dataclass_issues(tmp_path):
+    issue = _Issue(Path("bad.mseed"), "InternalMSEEDWarning: invalid Steim1")
+
+    with BatchRun("task", tmp_path, run_id="run", checkpoint_interval=0) as run:
+        run.start(total=2, issue_samples=())
+        run.checkpoint(
+            completed=1,
+            total=2,
+            failed=1,
+            issue_samples=(issue,),
+        )
+        report = json.loads(run.report_path.read_text())
+
+    assert report["issue_samples"] == [
+        {"source": "bad.mseed", "error": "InternalMSEEDWarning: invalid Steim1"}
+    ]
 
 
 def test_batch_run_marks_keyboard_interrupt(tmp_path):

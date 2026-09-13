@@ -72,7 +72,7 @@ the manifest before tasks are created.
 XML-guided MiniSEED uses one collision-free file per exact channel request:
 
 ```text
-NZ.WEL.10.HHZ.2025.001.000000-2025002T000000.mseed
+10.HHZ.001.mseed
 ```
 
 The filename records network, station, location, channel, start day/time, and
