@@ -42,23 +42,15 @@ def test_domain_packages_do_not_import_their_implementations_eagerly():
     )
 
 
-def test_event_public_api_uses_descriptive_names():
+def test_domain_public_apis_use_canonical_names():
     from seispy import event
+    from seispy import download
+    from seispy import waveform
 
     assert callable(event.cut_event_waveforms)
     assert callable(event.cut_events_binary)
     assert callable(event.write_event_catalog)
-
-
-def test_download_public_api_exposes_experimental_mass_downloader():
-    from seispy import download
-
     assert callable(download.mass_download_waveforms)
     assert download.BulkDownloadSummary.__name__ == "BulkDownloadSummary"
-
-
-def test_decimation_public_interface_uses_workflow_name():
-    from seispy import waveform
-
     assert callable(waveform.decimate_waveforms)
     assert not hasattr(waveform, "decimate_by_station")

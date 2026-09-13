@@ -125,21 +125,17 @@ def test_mass_download_reads_stationxml_inventory(tmp_path):
     assert restrictions.limit_stations_to_inventory == {("NZ", "WEL")}
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
+def test_mass_download_validates_options_before_creating_downloader(tmp_path):
+    cases = [
         ({"minimum_length": 1.1}, "minimum_length"),
         ({"chunklength_in_sec": 0}, "chunklength_in_sec"),
         ({"threads_per_client": 0}, "threads_per_client"),
         ({}, "unrestricted global download"),
-    ],
-)
-def test_mass_download_validates_options_before_creating_downloader(
-    tmp_path, kwargs, message
-):
-    with (
-        patch.object(bulk, "MassDownloader") as downloader,
-        pytest.raises(ValueError, match=message),
-    ):
-        bulk.mass_download_waveforms(tmp_path, "2025-01-01", "2025-01-02", **kwargs)
-    downloader.assert_not_called()
+    ]
+    for kwargs, message in cases:
+        with (
+            patch.object(bulk, "MassDownloader") as downloader,
+            pytest.raises(ValueError, match=message),
+        ):
+            bulk.mass_download_waveforms(tmp_path, "2025-01-01", "2025-01-02", **kwargs)
+        downloader.assert_not_called()

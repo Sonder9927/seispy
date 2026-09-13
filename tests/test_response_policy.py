@@ -31,17 +31,14 @@ def test_pre_filter_upper_corners_are_reduced_below_nyquist():
     assert result == pytest.approx((0.004, 0.006, 20.0, 23.75))
 
 
-@pytest.mark.parametrize(
-    "pre_filt",
-    [
+def test_invalid_pre_filters_are_rejected():
+    for pre_filt in (
         (0.004, 0.006, 30.0),
         (0.004, 0.006, 35.0, 30.0),
         (0.0, 0.006, 30.0, 35.0),
-    ],
-)
-def test_invalid_pre_filter_is_rejected(pre_filt):
-    with pytest.raises(ValueError, match="pre_filt"):
-        remove_response._validate_pre_filt(pre_filt)
+    ):
+        with pytest.raises(ValueError, match="pre_filt"):
+            remove_response._validate_pre_filt(pre_filt)
 
 
 def test_pre_filter_low_corner_must_be_below_nyquist():
@@ -63,18 +60,17 @@ def test_adjusted_pre_filter_remains_strictly_increasing():
     assert result[-1] < 1.0
 
 
-@pytest.mark.parametrize("factors", [0, 1, 8, [5, 1], [2, 8], [2.0]])
-def test_deconvolution_rejects_non_sac_decimation_factors(tmp_path, factors):
+def test_deconvolution_rejects_non_sac_decimation_factors(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
-
-    with pytest.raises(ValueError, match="integers from 2 through 7"):
-        remove_response.remove_instrument_response(
-            source,
-            tmp_path / "stations.xml",
-            output_dir=tmp_path / "output",
-            decimate_factors=factors,
-        )
+    for factors in (0, 1, 8, [5, 1], [2, 8], [2.0]):
+        with pytest.raises(ValueError, match="integers from 2 through 7"):
+            remove_response.remove_instrument_response(
+                source,
+                tmp_path / "stations.xml",
+                output_dir=tmp_path / "output",
+                decimate_factors=factors,
+            )
 
 
 def test_decimation_must_leave_passband_below_nyquist():
@@ -84,15 +80,10 @@ def test_decimation_must_leave_passband_below_nyquist():
         )
 
 
-def test_deconvolution_decimation_is_optional():
+def test_deconvolution_public_signature():
     signature = inspect.signature(remove_response.remove_instrument_response)
 
     assert signature.parameters["decimate_factors"].default is None
-
-
-def test_deconvolution_public_interface_uses_backend_term():
-    signature = inspect.signature(remove_response.remove_instrument_response)
-
     assert signature.parameters["backend"].default == "obspy"
     assert "method" not in signature.parameters
 

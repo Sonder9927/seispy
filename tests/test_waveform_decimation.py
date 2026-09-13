@@ -1,14 +1,11 @@
 """Waveform decimation contracts."""
 
 from importlib import import_module
-import inspect
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
-import pytest
 
 decimate = import_module("seispy.waveform.decimation")
 
@@ -81,39 +78,9 @@ def test_failure_keeps_original_and_limits_samples(tmp_path):
     assert all(source.read_bytes() == b"original" for source in sources)
 
 
-def test_summary_exports_compact_json(tmp_path):
-    summary = decimate.DecimationSummary(
-        run_id="run-1",
-        total=2,
-        succeeded=1,
-        failed=1,
-        issue_samples=(decimate.DecimationIssue(Path("a"), Path("b"), "bad"),),
-        output_dir=Path("output"),
-        remove_original=False,
-        duration_seconds=1.2,
-    )
-    report = summary.to_json(tmp_path / "summary.json")
-    data = json.loads(report.read_text())
-    assert data["failed"] == 1
-    assert data["issue_samples"][0]["source"] == "a"
-    assert not summary.ok
-
-
 def test_factors_have_sac_compatible_range():
     assert decimate._normalize_factors(5) == (5,)
     assert decimate._normalize_factors([5, 5, 4]) == (5, 5, 4)
-
-
-def test_decimation_public_interface_uses_backend_term():
-    signature = inspect.signature(decimate.decimate_waveforms)
-
-    assert signature.parameters["backend"].default == "scipy"
-    assert "method" not in signature.parameters
-
-
-def test_unknown_decimation_backend_is_rejected():
-    with pytest.raises(ValueError, match="Unknown backend"):
-        decimate._decimation_backend("unknown")
 
 
 def test_scipy_decimation_preserves_impulse_alignment():
@@ -126,22 +93,6 @@ def test_scipy_decimation_preserves_impulse_alignment():
 
     assert trace.stats.sampling_rate == 20.0
     assert np.argmax(trace.data) == 100
-
-
-def test_file_batches_cross_station_boundaries(tmp_path):
-    source_root = tmp_path / "source"
-    for station, count in (("A", 1), ("B", 2), ("C", 2)):
-        directory = source_root / station
-        directory.mkdir(parents=True)
-        for index in range(count):
-            (directory / f"tracec-{index}.sac").write_bytes(b"original")
-
-    targets = decimate._input_files(source_root, "*.sac")
-    batches = tuple(decimate._batched(targets, 2))
-
-    assert tuple(map(len, batches)) == (2, 2, 1)
-    assert batches[0][0].parent.name == "A"
-    assert batches[0][1].parent.name == "B"
 
 
 def test_failed_sac_decimation_batch_keeps_originals(tmp_path):

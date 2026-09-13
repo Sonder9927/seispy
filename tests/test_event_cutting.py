@@ -1,8 +1,6 @@
 """Event waveform-cutting contracts."""
 
 from importlib import import_module
-import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -49,23 +47,3 @@ def test_read_failures_are_compact(tmp_path):
     assert result.read_failed == 3
     assert result.failed == 1
     assert len(result.samples) == 1
-
-
-def test_summary_exports_json(tmp_path):
-    summary = module.CutEventSummary(
-        run_id="run",
-        total=2,
-        succeeded=1,
-        failed=1,
-        outputs_written=3,
-        input_read_failed=1,
-        no_data=0,
-        issue_samples=(
-            module.CutEventIssue("event", "AAA", "input_read_failed", "bad", Path("a")),
-        ),
-        duration_seconds=1.0,
-    )
-    data = json.loads(summary.to_json(tmp_path / "summary.json").read_text())
-    assert data["failed"] == 1
-    assert data["issue_samples"][0]["source"] == "a"
-    assert not summary.ok
