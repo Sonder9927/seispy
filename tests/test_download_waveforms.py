@@ -37,7 +37,6 @@ class _SacTrace:
             channel=channel,
             starttime=UTCDateTime("2026-01-01"),
             sampling_rate=sampling_rate,
-            mseed=SimpleNamespace(dataquality="D"),
         )
 
     def write(self, filename, format):
@@ -134,7 +133,7 @@ def test_waveform_worker_can_write_one_sac_per_channel(tmp_path):
     assert result.succeeded == 1
     assert result.files_written == 2
     assert (
-        tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.10.BHZ.D.2026.001.000000.sac"
+        tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.10.BHZ.2026.001.000000.sac"
     ).is_file()
 
 

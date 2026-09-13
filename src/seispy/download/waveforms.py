@@ -26,7 +26,6 @@ from seispy.archive import (
     WaveformIdentity,
     channel_mseed_path,
     mseed_path,
-    preserve_sac_quality,
     stream_day_identity,
 )
 from seispy.workflow import (
@@ -843,7 +842,6 @@ def _write_waveforms(
     merge_short_gaps(stream)
     destinations = []
     for trace in stream:
-        preserve_sac_quality(trace)
         identity = WaveformIdentity.from_trace(trace)
         expected = (network, station, int(day.year), int(day.julday))
         actual = (identity.network, identity.station, identity.year, identity.julday)

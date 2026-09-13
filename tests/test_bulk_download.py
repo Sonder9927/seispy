@@ -66,7 +66,7 @@ def test_mass_download_builds_daily_flat_storage_and_restrictions(tmp_path):
     assert restrictions.chunklength == 86_400
     assert kwargs["threads_per_client"] == 2
     assert result.mseed_files == (
-        result.output_dir / "NZ" / "WEL" / "2025" / "10.BHZ.001.mseed",
+        result.output_dir / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.2025.001.mseed",
     )
     assert len(result.stationxml_files) == 1
     assert result.status == "completed"

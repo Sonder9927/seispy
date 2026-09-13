@@ -152,13 +152,14 @@ the manifest before tasks are created.
 XML-guided MiniSEED uses one collision-free file per exact channel request:
 
 ```text
-10.HHZ.001.mseed
+NZ.WEL.10.HHZ.2025.001.mseed
 ```
 
-The filename records network, station, location, channel, start day/time, and
-end time. A channel epoch beginning or ending during a UTC day produces a
-partial-day filename with its exact boundary. Downloaded trace identity and
-sample rate are validated against StationXML before the file is committed.
+The filename records network, station, location, channel, UTC day, and—for a
+partial-day chunk—its requested start time. It does not claim an end time;
+actual sample coverage is read from the MiniSEED headers. Downloaded trace
+identity and sample rate are validated against StationXML before the file is
+committed.
 
 Without `inventory`, the original station-day behavior and daily MiniSEED name
 are retained for compatibility. Existing outputs are checked before a network

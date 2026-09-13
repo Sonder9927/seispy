@@ -33,7 +33,7 @@ def _waveform(root, station, year, julday, name="trace.sac", content=b"data"):
         path = network_root / station / str(year) / filename
         output_format = "MSEED"
     elif suffix == ".sac":
-        filename = f"NZ.{station}..BHZ.D.{year}.{julday:03d}.000000.sac"
+        filename = f"NZ.{station}..BHZ.{year}.{julday:03d}.000000.sac"
         path = network_root / station / str(year) / filename
         output_format = "SAC"
     else:

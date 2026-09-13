@@ -22,7 +22,6 @@ class _Trace:
         station="AAA",
         location="",
         channel="BHZ",
-        mseed=SimpleNamespace(dataquality="D"),
         starttime=_Time(),
     )
 
@@ -48,12 +47,7 @@ def test_conversion_writes_sac_and_can_remove_source(tmp_path):
     assert result.traces_written == 1
     assert not source.exists()
     destination = (
-        tmp_path
-        / "output"
-        / "NZ"
-        / "AAA"
-        / "2026"
-        / "NZ.AAA..BHZ.D.2026.008.010203.sac"
+        tmp_path / "output" / "NZ" / "AAA" / "2026" / "NZ.AAA..BHZ.2026.008.010203.sac"
     )
     assert destination.read_bytes() == b"sac"
 

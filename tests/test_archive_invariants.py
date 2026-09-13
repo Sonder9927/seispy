@@ -21,7 +21,6 @@ from seispy.event.archive_index import intervals_overlap
 _CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _CODE = st.text(alphabet=_CODE_ALPHABET, min_size=1, max_size=5)
 _LOCATION = st.one_of(st.just(""), _CODE)
-_QUALITY = st.sampled_from(("D", "M", "Q", "R"))
 _DATE = st.one_of(
     st.sampled_from(
         (
@@ -43,7 +42,6 @@ def _trace(identity: WaveformIdentity):
             location=identity.location,
             channel=identity.channel,
             starttime=identity.starttime,
-            mseed=SimpleNamespace(dataquality=identity.quality),
         )
     )
 
@@ -60,7 +58,6 @@ def _identities(draw):
         station=draw(_CODE),
         location=draw(_LOCATION),
         channel=draw(_CODE),
-        quality=draw(_QUALITY),
         starttime=starttime,
     )
 
@@ -72,7 +69,7 @@ def test_sac_archive_path_round_trips_header_identity(identity, merged):
     suffix = "merged" if merged else identity.starttime.strftime("%H%M%S")
     expected_name = (
         f"{identity.network}.{identity.station}.{identity.location}."
-        f"{identity.channel}.{identity.quality}.{identity.year}."
+        f"{identity.channel}.{identity.year}."
         f"{identity.julday:03d}.{suffix}.sac"
     )
 
@@ -86,9 +83,7 @@ def test_sac_archive_path_round_trips_header_identity(identity, merged):
 
 @given(
     identity=_identities(),
-    field=st.sampled_from(
-        ("network", "station", "location", "channel", "quality", "starttime")
-    ),
+    field=st.sampled_from(("network", "station", "location", "channel", "starttime")),
 )
 def test_sac_archive_path_rejects_any_changed_identity_field(identity, field):
     root = Path("archive")
@@ -116,7 +111,6 @@ def test_miniseed_identity_accepts_same_station_day_in_any_channel(identity, cha
                 identity.station,
                 identity.location,
                 channel,
-                identity.quality,
                 identity.starttime,
             )
         )
@@ -148,7 +142,6 @@ def test_miniseed_identity_rejects_mixed_station_or_day(identity, change_station
         f"{identity.station}X" if change_station else identity.station,
         identity.location,
         identity.channel,
-        identity.quality,
         identity.starttime if change_station else identity.starttime + 86_400,
     )
 

@@ -299,7 +299,6 @@ def cut_event_station(
                 identity.station,
                 identity.location,
                 identity.channel,
-                identity.quality,
             )
             if key in waveform_data:
                 waveform_data[key] += st
@@ -377,11 +376,11 @@ def cut_event_station(
 
 
 def _event_output_name(event_name, identity_key, same_channel_count):
-    network, station, location, channel, quality = identity_key
+    network, station, location, channel = identity_key
     if same_channel_count == 1:
         return f"{event_name}.{station}.{channel}.sac"
     location = location or "--"
-    return f"{event_name}.{network}.{station}.{location}.{channel}.{quality}.sac"
+    return f"{event_name}.{network}.{station}.{location}.{channel}.sac"
 
 
 def _combine_cut_counts(items, limit):

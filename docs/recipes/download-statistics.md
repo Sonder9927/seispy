@@ -14,8 +14,8 @@ Pass the network directory containing the station folders:
 
 ```text
 data/waveforms/NZ/
-├── AAA/2024/NZ.AAA..BHZ.D.2024.001.000000.sac
-├── AAA/2024/NZ.AAA..BHZ.D.2024.002.000000.sac
+├── AAA/2024/NZ.AAA..BHZ.2024.001.000000.sac
+├── AAA/2024/NZ.AAA..BHZ.2024.002.000000.sac
 └── BBB/2024/NZ.BBB.2024.001.mseed
 ```
 

@@ -31,9 +31,9 @@ waveform.merge_waveforms_by_day(
 ```
 
 SeisPy reads the headers and groups traces by network, station, location,
-channel, quality code, year, and Julian day. ObsPy then sorts and merges each
-group. Gaps of one second or less are interpolated; longer gaps fail explicitly
-instead of being filled with synthetic data.
+channel, year, and Julian day. ObsPy then sorts and merges each group. Gaps of
+one second or less are interpolated; longer gaps fail explicitly instead of
+being filled with synthetic data.
 
 !!! warning "Source removal"
 

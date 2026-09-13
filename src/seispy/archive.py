@@ -12,41 +12,6 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
-_QUALITY_HEADER_PREFIX = "SQ:"
-
-
-def _trace_quality(trace: Any) -> str:
-    stats = trace.stats
-    try:
-        return str(stats.mseed.dataquality)
-    except (AttributeError, KeyError):
-        pass
-    for key in ("kuser0", "kuser1", "kuser2"):
-        try:
-            stored = str(stats.sac[key]).strip()
-        except (AttributeError, KeyError):
-            continue
-        if stored.startswith(_QUALITY_HEADER_PREFIX):
-            return stored.removeprefix(_QUALITY_HEADER_PREFIX)
-    return "D"
-
-
-def preserve_sac_quality(trace: Any) -> None:
-    """Persist MiniSEED quality in a SAC character header before writing."""
-    quality = _trace_quality(trace)
-    try:
-        sac = trace.stats.sac
-    except (AttributeError, KeyError):
-        trace.stats.sac = {}
-        sac = trace.stats.sac
-    value = f"{_QUALITY_HEADER_PREFIX}{quality}"
-    for key in ("kuser0", "kuser1", "kuser2"):
-        stored = str(sac.get(key, "")).strip()
-        if not stored or stored.startswith(_QUALITY_HEADER_PREFIX):
-            sac[key] = value
-            return
-    raise ValueError("no free SAC kuser header is available for data quality")
-
 
 @dataclass(frozen=True)
 class WaveformIdentity:
@@ -56,7 +21,6 @@ class WaveformIdentity:
     station: str
     location: str
     channel: str
-    quality: str
     starttime: Any
 
     @classmethod
@@ -68,7 +32,6 @@ class WaveformIdentity:
             str(stats.station),
             str(stats.location),
             str(stats.channel),
-            _trace_quality(trace),
             stats.starttime,
         )
 
@@ -85,13 +48,12 @@ class WaveformIdentity:
         return date(self.year, 1, 1) + timedelta(days=self.julday - 1)
 
     @property
-    def day_key(self) -> tuple[str, str, str, str, str, int, int]:
+    def day_key(self) -> tuple[str, str, str, str, int, int]:
         return (
             self.network,
             self.station,
             self.location,
             self.channel,
-            self.quality,
             self.year,
             self.julday,
         )
@@ -100,7 +62,7 @@ class WaveformIdentity:
         final = "merged" if merged else self.starttime.strftime("%H%M%S")
         return (
             f"{self.network}.{self.station}.{self.location}.{self.channel}."
-            f"{self.quality}.{self.year}.{self.julday:03d}.{final}.sac"
+            f"{self.year}.{self.julday:03d}.{final}.sac"
         )
 
     def sac_path(self, root: str | Path, *, merged: bool = False) -> Path:
@@ -150,20 +112,21 @@ def channel_mseed_path(
     starttime: Any,
     endtime: Any,
 ) -> Path:
-    """Build a compact path for one exact NSLC time window.
+    """Build a self-describing path for one NSLC download chunk.
 
-    Network, station, and year are represented by parent directories. Complete
-    UTC-day chunks therefore need only location, channel, and Julian day in the
-    filename. Partial-day chunks retain their time window to prevent collisions.
+    The filename retains the complete NSLC and UTC day so it remains meaningful
+    outside its archive directory. A partial-day chunk adds its requested start
+    as a stable slot identifier. Actual data coverage remains authoritative in
+    the MiniSEED headers and is never claimed by the filename.
     """
     location = location or "--"
     julday = int(starttime.julday)
+    prefix = f"{network}.{station}.{location}.{channel}.{starttime.year}.{julday:03d}"
     if _is_full_utc_day(starttime, endtime):
-        filename = f"{location}.{channel}.{julday:03d}.mseed"
+        filename = f"{prefix}.mseed"
     else:
         start = _time_token(starttime)
-        end = _time_token(endtime, include_date=True)
-        filename = f"{location}.{channel}.{julday:03d}.{start}-{end}.mseed"
+        filename = f"{prefix}.{start}.mseed"
     return Path(root) / network / station / str(starttime.year) / filename
 
 
@@ -181,9 +144,8 @@ def _is_full_utc_day(starttime: Any, endtime: Any) -> bool:
     )
 
 
-def _time_token(value: Any, *, include_date: bool = False) -> str:
-    pattern = "%Y%jT%H%M%S" if include_date else "%H%M%S"
-    token = value.strftime(pattern)
+def _time_token(value: Any) -> str:
+    token = value.strftime("%H%M%S")
     nanoseconds = _fractional_nanoseconds(value)
     if nanoseconds:
         token += f".{nanoseconds:09d}".rstrip("0")
@@ -213,16 +175,15 @@ def matches_mseed_path(
         return False
     _, _, location, channel = stream_keys.pop()
     directory = Path(root) / network / station / str(year)
-    compact_prefix = f"{location or '--'}.{channel}.{julday:03d}"
-    partial_pattern = (
-        rf"{re.escape(compact_prefix)}\.\d{{6}}(?:\.\d{{1,9}})?-"
-        rf"\d{{7}}T\d{{6}}(?:\.\d{{1,9}})?\.mseed"
+    chunk_prefix = (
+        f"{network}.{station}.{location or '--'}.{channel}.{year}.{julday:03d}"
     )
+    partial_pattern = rf"{re.escape(chunk_prefix)}\.\d{{6}}(?:\.\d{{1,9}})?\.mseed"
     return (
         candidate.parent == directory
         and candidate.suffix.lower() == ".mseed"
         and (
-            candidate.name == f"{compact_prefix}.mseed"
+            candidate.name == f"{chunk_prefix}.mseed"
             or re.fullmatch(partial_pattern, candidate.name) is not None
         )
     )

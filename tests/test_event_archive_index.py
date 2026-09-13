@@ -117,8 +117,8 @@ def test_cut_keeps_same_channel_different_locations_separate(tmp_path):
     outputs = sorted((tmp_path / "events").rglob("*.sac"))
     assert result.succeeded == 1
     assert result.outputs == 2
-    assert any(".10.BHZ.D.sac" in path.name for path in outputs)
-    assert any(".20.BHZ.D.sac" in path.name for path in outputs)
+    assert any(".10.BHZ.sac" in path.name for path in outputs)
+    assert any(".20.BHZ.sac" in path.name for path in outputs)
 
 
 def test_existing_event_output_is_not_overwritten(tmp_path):

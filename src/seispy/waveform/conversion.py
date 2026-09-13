@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import obspy
-from seispy.archive import WaveformIdentity, preserve_sac_quality
+from seispy.archive import WaveformIdentity
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
@@ -272,7 +272,6 @@ def _convert_file(source, output, remove_original, limit):
         if not len(stream):
             raise ValueError("MiniSEED contains no traces")
         for trace in stream:
-            preserve_sac_quality(trace)
             destination = _trace_destination(trace, output)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
@@ -332,7 +331,6 @@ def build_sac_path(
     station: str,
     location: str,
     channel: str,
-    quality: str,
     starttime: Any,
 ) -> Path:
     """Build the canonical SeisPy path for one SAC trace.
@@ -343,7 +341,6 @@ def build_sac_path(
         station: Station code.
         location: Location code.
         channel: Channel code.
-        quality: MiniSEED data-quality code.
         starttime: Trace start time with ``year``, ``julday``, and ``strftime``.
 
     Returns:
@@ -353,14 +350,14 @@ def build_sac_path(
         ```python
         from obspy import UTCDateTime
         path = build_sac_path(
-            "out", "NZ", "WEL", "10", "BHZ", "D",
+            "out", "NZ", "WEL", "10", "BHZ",
             UTCDateTime("2025-01-01"),
         )
-        path.name.startswith("NZ.WEL.10.BHZ.D.2025.001")
+        path.name.startswith("NZ.WEL.10.BHZ.2025.001")
         # => True
         ```
     """
-    identity = WaveformIdentity(network, station, location, channel, quality, starttime)
+    identity = WaveformIdentity(network, station, location, channel, starttime)
     return identity.sac_path(output)
 
 

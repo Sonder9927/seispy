@@ -14,7 +14,7 @@ Full waveform reads use a bounded LRU cache. Returned streams are copied so
 processing one event cannot mutate cached data used by another event.
 
 Output grouping keeps the complete network, station, location, channel, and
-quality identity. Existing outputs are not overwritten. Invalid archive files
+channel identity. Existing outputs are not overwritten. Invalid archive files
 are reported as index issues rather than inferred from misleading filenames.
 
 For best performance, build one index for a batch of events and avoid calling
