@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.remove_response")
+remove_response = import_module("seispy.response.removal")
 
 
 def test_pre_filter_is_unchanged_when_below_nyquist():
@@ -69,7 +69,7 @@ def test_deconvolution_rejects_non_sac_decimation_factors(tmp_path, factors):
     source.mkdir()
 
     with pytest.raises(ValueError, match="integers from 2 through 7"):
-        remove_response.deconvolution_by_station(
+        remove_response.remove_instrument_response(
             source,
             tmp_path / "stations.xml",
             output_dir=tmp_path / "output",
@@ -85,13 +85,13 @@ def test_decimation_must_leave_passband_below_nyquist():
 
 
 def test_deconvolution_decimation_is_optional():
-    signature = inspect.signature(remove_response.deconvolution_by_station)
+    signature = inspect.signature(remove_response.remove_instrument_response)
 
     assert signature.parameters["decimate_factors"].default is None
 
 
 def test_deconvolution_public_interface_uses_backend_term():
-    signature = inspect.signature(remove_response.deconvolution_by_station)
+    signature = inspect.signature(remove_response.remove_instrument_response)
 
     assert signature.parameters["backend"].default == "obspy"
     assert "method" not in signature.parameters

@@ -5,7 +5,7 @@ description: How continuous SAC files are selected and cut into event windows.
 
 # Event cutting design
 
-`cut_events` builds one header index for the selected archive, then reuses it
+`cut_event_waveforms` builds one header index for the selected archive, then reuses it
 for every event. Records are indexed by station and every UTC day they cover.
 A record is selected only when its actual time interval overlaps the requested
 event window.

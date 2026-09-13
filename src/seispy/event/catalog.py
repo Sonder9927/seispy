@@ -94,7 +94,9 @@ def filter_events(
     if time_window > 0:
         previous = frame["time"].diff().dt.total_seconds()
         following = frame["time"].diff(-1).abs().dt.total_seconds()
-        frame = frame.loc[~((previous < time_window) | (following < time_window))].copy()
+        frame = frame.loc[
+            ~((previous < time_window) | (following < time_window))
+        ].copy()
     frame = frame.reset_index(drop=True)
     frame["time"] = frame["time"].dt.strftime("%Y-%m-%dT%H:%M:%S.%f").str[:23] + "Z"
     if output_file is not None:
@@ -115,4 +117,6 @@ def write_event_catalog(frame: pd.DataFrame, output_file: str | Path) -> None:
         ```
     """
     times = pd.to_datetime(frame["time"], utc=True).dt.strftime("%Y/%m/%d,%H:%M:%S")
-    Path(output_file).write_text("".join(f"{value}\n" for value in times), encoding="utf-8")
+    Path(output_file).write_text(
+        "".join(f"{value}\n" for value in times), encoding="utf-8"
+    )

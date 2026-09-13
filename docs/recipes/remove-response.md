@@ -15,7 +15,7 @@ and recording interval. See [Station metadata](download-inventory.md).
 ```python
 from seispy import response
 
-summary = response.deconvolution_by_station(
+summary = response.remove_instrument_response(
     "data/sac",
     "data/metadata/stations.xml",
     backend="obspy",

@@ -28,7 +28,7 @@ summary = download.download_waveforms(
     inventory="data/metadata/stations.xml",
 )
 
-print(f"Downloaded: {summary.downloaded}/{summary.total}")
+print(f"Downloaded: {summary.succeeded}/{summary.total}")
 print(f"No data: {summary.no_data}; failed: {summary.failed}")
 print(f"Report: {summary.report_path}")
 print(f"Log: {summary.log_path}")
@@ -37,7 +37,7 @@ print(f"Log: {summary.log_path}")
 ## Result
 
 Files are written below `data/waveforms/<network>/<station>/<year>/`.
-The returned summary distinguishes downloaded, existing, no-data, and failed
+The returned summary distinguishes succeeded, existing, no-data, and failed
 requests.
 
 ## Reports, logs, and interrupted runs

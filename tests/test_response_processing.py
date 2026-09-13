@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.remove_response")
+remove_response = import_module("seispy.response.removal")
 
 
 def test_obspy_preprocesses_then_decimates_before_removing_response():
@@ -42,7 +42,7 @@ def test_obspy_preprocesses_then_decimates_before_removing_response():
             remove_response, "_sac_compatible_decimate_trace", side_effect=decimate
         ),
     ):
-        remove_response.stream_removed_response(
+        remove_response.remove_response_from_file(
             "trace.sac", object(), decimate_factors=[5, 5, 4]
         )
 

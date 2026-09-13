@@ -4,7 +4,7 @@
 
 ### Decimate files
 
-::: seispy.decimate.decimate_files
+::: seispy.waveform.decimation.decimate_waveforms
 
 ## Result models
 
@@ -13,4 +13,4 @@ instantiate it directly.
 
 ### Decimation summary
 
-::: seispy.decimate.DecimationSummary
+::: seispy.waveform.decimation.DecimationSummary

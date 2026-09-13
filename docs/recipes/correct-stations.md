@@ -13,12 +13,14 @@ times expected by the correction workflow.
 ```python
 from seispy import correct
 
-correct.clock_drift(
+summary = correct.correct_clock_drift(
     "data/sac",
     "data/drift-corrected",
     "data/metadata/clock-drift.csv",
     max_workers=2,
 )
+
+print(summary.succeeded, summary.failed, summary.skipped)
 ```
 
 ## Correct sensor orientation
@@ -27,13 +29,19 @@ The orientation table uses `station`, `orientation`, and `tilt` columns. Angular
 values are in degrees.
 
 ```python
-correct.orientation(
+summary = correct.correct_orientation(
     "data/drift-corrected",
     "data/orientation-corrected",
     "data/metadata/orientation.csv",
     max_workers=2,
 )
+
+print(summary.succeeded, summary.failed)
 ```
+
+Both workflows write a JSON report and text log by default. Their common
+`CorrectionSummary` records completed, failed, and skipped inputs; an
+interrupted run leaves its latest checkpoint in the report.
 
 !!! tip "Validate three components"
 

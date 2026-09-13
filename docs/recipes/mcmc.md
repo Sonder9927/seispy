@@ -7,7 +7,7 @@ description: Generate per-grid inputs and collect completed inversion outputs.
 
 ## Generate grid inputs
 
-Prepare a JSON configuration matching `seispy.mcmc.gen.Config`, including input
+Prepare a JSON configuration matching `seispy.mcmc.configuration.Config`, including input
 paths, region, grid spacing, physical constraints, and output directory.
 
 ```python

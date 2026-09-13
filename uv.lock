@@ -2149,29 +2149,51 @@ name = "seispy"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "marimo" },
-    { name = "matplotlib" },
-    { name = "netcdf4" },
     { name = "numpy" },
     { name = "obspy" },
     { name = "pandas" },
-    { name = "pygmt" },
     { name = "scipy" },
     { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "marimo" },
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "pygmt" },
+    { name = "xarray" },
+]
+mcmc = [
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "pygmt" },
+    { name = "xarray" },
+]
+notebook = [
+    { name = "marimo" },
+]
+plot = [
+    { name = "matplotlib" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "matplotlib" },
     { name = "pylint" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
 docs = [
+    { name = "matplotlib" },
     { name = "mkdocs" },
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
+    { name = "netcdf4" },
+    { name = "pygmt" },
+    { name = "xarray" },
 ]
 pdf = [
     { name = "mkdocs-print-site-plugin" },
@@ -2179,29 +2201,42 @@ pdf = [
 
 [package.metadata]
 requires-dist = [
-    { name = "marimo", specifier = ">=0.24.0" },
-    { name = "matplotlib", specifier = ">=3.10" },
-    { name = "netcdf4", specifier = ">=1.7.4" },
+    { name = "marimo", marker = "extra == 'all'", specifier = ">=0.24.0" },
+    { name = "marimo", marker = "extra == 'notebook'", specifier = ">=0.24.0" },
+    { name = "matplotlib", marker = "extra == 'all'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'mcmc'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.10" },
+    { name = "netcdf4", marker = "extra == 'all'", specifier = ">=1.7.4" },
+    { name = "netcdf4", marker = "extra == 'mcmc'", specifier = ">=1.7.4" },
     { name = "numpy", specifier = ">=2.0,<2.5" },
     { name = "obspy", specifier = ">=1.5.1,<1.6" },
     { name = "pandas", specifier = ">=3.0.5" },
-    { name = "pygmt", specifier = ">=0.19.0" },
+    { name = "pygmt", marker = "extra == 'all'", specifier = ">=0.19.0" },
+    { name = "pygmt", marker = "extra == 'mcmc'", specifier = ">=0.19.0" },
     { name = "scipy", specifier = ">=1.14,<1.19" },
     { name = "tqdm", specifier = ">=4.70.0" },
+    { name = "xarray", marker = "extra == 'all'", specifier = ">=2025.1" },
+    { name = "xarray", marker = "extra == 'mcmc'", specifier = ">=2025.1" },
 ]
+provides-extras = ["plot", "mcmc", "notebook", "all"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = ">=6.168.0" },
+    { name = "matplotlib", specifier = ">=3.10" },
     { name = "pylint", specifier = ">=4.0.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.16.6" },
 ]
 docs = [
+    { name = "matplotlib", specifier = ">=3.10" },
     { name = "mkdocs", specifier = ">=1.6.1" },
     { name = "mkdocs-material", specifier = ">=9.7.7" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6" },
+    { name = "netcdf4", specifier = ">=1.7.4" },
+    { name = "pygmt", specifier = ">=0.19.0" },
+    { name = "xarray", specifier = ">=2025.1" },
 ]
 pdf = [{ name = "mkdocs-print-site-plugin", specifier = ">=2.8" }]
 

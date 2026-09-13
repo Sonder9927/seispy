@@ -72,13 +72,15 @@ nav:
   - API reference:
       - Overview: api/index.md
       - Download: api/download.md
-      - Collate: api/collate.md
+      - Inventory: api/inventory.md
+      - Waveforms: api/waveform.md
       - Response: api/response.md
       - Decimate: api/decimate.md
       - Events: api/event.md
       - Corrections: api/correct.md
       - MCMC: api/mcmc.md
   - Design and development:
+      - Project structure: design/project-structure.md
       - Archive layout: design/archive-layout.md
       - Event cutting: design/event-cutting.md
       - Testing strategy: development/testing.md

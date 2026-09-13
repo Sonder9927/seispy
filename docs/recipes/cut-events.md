@@ -16,7 +16,7 @@ description: Extract event-centered windows from continuous SAC archives.
 ```python
 from seispy import event
 
-summary = event.cut_events(
+summary = event.cut_event_waveforms(
     "data/continuous/NZ",
     "data/events",
     "data/catalog/events.csv",
@@ -24,7 +24,7 @@ summary = event.cut_events(
     time_window=10_800,
 )
 
-print(f"Tasks: {summary.tasks_total}")
+print(f"Tasks: {summary.total}")
 print(f"Outputs: {summary.outputs_written}")
 print(f"No data: {summary.no_data}")
 ```
@@ -39,7 +39,7 @@ flush progress periodically. See [Batch reports and logs](batch-reports.md).
 
 ## External cutter
 
-Use `event.cut_events_binary` only when the required `mktraceiodb` and
+Use `event.cut_event_waveforms_binary` only when the required `mktraceiodb` and
 `cutevent` executables are installed.
 
 [ObsPy cutting API →](../api/event.md#cut-events-with-obspy)

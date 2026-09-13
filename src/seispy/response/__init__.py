@@ -1,34 +1,23 @@
-"""Instrument metadata and response-removal public API."""
+"""Instrument-response removal workflows."""
 
 from importlib import import_module
 
 _EXPORTS = {
-    "analyze_inventory": ("seispy.inventory", "analyze_inventory"),
-    "InventoryAnalysis": ("seispy.inventory", "InventoryAnalysis"),
-    "InventoryIssue": ("seispy.inventory", "InventoryIssue"),
-    "InventorySuitability": ("seispy.inventory", "InventorySuitability"),
-    "combine_inventories": ("seispy.response.inventory", "combine_inventories"),
-    "select_inventory": ("seispy.response.inventory", "select_inventory"),
-    "shift_channel_starttime": (
-        "seispy.response.inventory",
-        "shift_channel_starttime",
+    "remove_instrument_response": (
+        "seispy.response.removal",
+        "remove_instrument_response",
     ),
-    "write_inventory": ("seispy.response.inventory", "write_inventory"),
-    "deconvolution_by_station": (
-        "seispy.response.remove_response",
-        "deconvolution_by_station",
+    "remove_response_from_file": (
+        "seispy.response.removal",
+        "remove_response_from_file",
     ),
-    "stream_removed_response": (
-        "seispy.response.remove_response",
-        "stream_removed_response",
+    "ResponseRemovalIssue": (
+        "seispy.response.removal",
+        "ResponseRemovalIssue",
     ),
-    "DeconvolutionIssue": (
-        "seispy.response.remove_response",
-        "DeconvolutionIssue",
-    ),
-    "DeconvolutionSummary": (
-        "seispy.response.remove_response",
-        "DeconvolutionSummary",
+    "ResponseRemovalSummary": (
+        "seispy.response.removal",
+        "ResponseRemovalSummary",
     ),
 }
 

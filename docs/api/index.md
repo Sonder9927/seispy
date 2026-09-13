@@ -4,7 +4,8 @@ The API is grouped by processing domain. Each page documents only the names
 exported as part of the supported public interface.
 
 - [Download](download.md): FDSN inventories, events, and waveforms
-- [Collate](collate.md): conversion, sorting, merging, and SAC headers
+- [Inventory](inventory.md): StationXML analysis and manipulation
+- [Waveforms](waveform.md): conversion, sorting, merging, and SAC headers
 - [Response](response.md): inventory selection and response removal
 - [Decimate](decimate.md): phase-preserving file-batch decimation
 - [Events](event.md): catalog preparation and event cutting

@@ -4,9 +4,9 @@ from unittest.mock import patch
 import numpy as np
 from obspy import Trace, UTCDateTime
 
-from seispy._archive import WaveformIdentity
-from seispy.event._archive_index import WaveformArchiveIndex, WaveformReader
-from seispy.event.cut import cut_event_station
+from seispy.archive import WaveformIdentity
+from seispy.event.archive_index import WaveformArchiveIndex, WaveformReader
+from seispy.event.cutting import cut_event_station
 
 
 def _archived_sac(
@@ -69,7 +69,7 @@ def test_index_returns_cross_day_file_only_once(tmp_path):
 def test_repeated_queries_do_not_reread_headers(tmp_path):
     archive_root = tmp_path / "archive"
     _archived_sac(archive_root)
-    from seispy.event import _archive_index as index_module
+    from seispy.event import archive_index as index_module
 
     with patch.object(
         index_module.obspy, "read", wraps=index_module.obspy.read
@@ -87,7 +87,7 @@ def test_waveform_reader_reuses_full_file_without_sharing_mutations(tmp_path):
     index = WaveformArchiveIndex.build(archive_root / "NZ")
     record = index.overlapping("WEL", _event()["start"], _event()["end"])[0]
     reader = WaveformReader(max_files=1)
-    from seispy.event import _archive_index as index_module
+    from seispy.event import archive_index as index_module
 
     with patch.object(
         index_module.obspy, "read", wraps=index_module.obspy.read

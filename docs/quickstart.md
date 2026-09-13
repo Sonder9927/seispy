@@ -13,16 +13,16 @@ uv sync
 ## Convert and decimate waveforms
 
 ```python
-from seispy import collate, decimate_files
+from seispy import waveform
 
-conversion = collate.mseed2sac(
+conversion = waveform.convert_mseed_to_sac(
     "data/miniseed",
     "data/sac",
     remove_original=False,
 )
-print(conversion.input_succeeded, conversion.input_failed)
+print(conversion.succeeded, conversion.failed)
 
-decimation = decimate_files(
+decimation = waveform.decimate_waveforms(
     "data/sac",
     factors=[5, 5, 4],
     output_dir="data/decimated",
@@ -43,7 +43,7 @@ inventory = download.download_inventory(
     channel="BH?",
 )
 
-summary = response.deconvolution_by_station(
+summary = response.remove_instrument_response(
     "data/sac",
     "data/stations.xml",
     output_dir="data/deconvolved",
@@ -64,14 +64,14 @@ download.download_earthquake_events(
     minmagnitude=5.5,
 )
 
-summary = event.cut_events(
+summary = event.cut_event_waveforms(
     "data/continuous",
     "data/events",
     "data/events.csv",
     station_csv="data/stations.csv",
     time_window=10_800,
 )
-print(summary.tasks_succeeded, summary.tasks_failed)
+print(summary.succeeded, summary.failed)
 ```
 
 ## Inspect an interface interactively
@@ -79,7 +79,7 @@ print(summary.tasks_succeeded, summary.tasks_failed)
 ```python
 from seispy import response
 
-help(response.deconvolution_by_station)
+help(response.remove_instrument_response)
 print(response.__all__)
 ```
 

@@ -17,9 +17,9 @@ columns are used when present.
 ## Example
 
 ```python
-from seispy import collate
+from seispy import waveform
 
-summary = collate.format_head(
+summary = waveform.format_sac_headers(
     "data/events/raw",
     "data/events/formatted",
     "data/catalog/events.csv",
@@ -39,4 +39,4 @@ Output is written separately and the source event tree is preserved.
 Reports and logs are enabled by default, track every event, and flush progress
 periodically. See [Batch reports and logs](batch-reports.md).
 
-[See all parameters →](../api/collate.md#format-sac-headers)
+[See all parameters →](../api/waveform.md#format-sac-headers)

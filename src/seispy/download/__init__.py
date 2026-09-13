@@ -1,33 +1,51 @@
-"""FDSN downloads for metadata, earthquake catalogs and waveforms."""
+"""Lazy FDSN download and availability interfaces."""
 
-from seispy.download.events import download_earthquake_events
-from seispy.download.inventory import (
-    ResponseConflictError,
-    ResponseConflictWarning,
-    download_inventory,
-)
-from seispy.download.mass import MassDownloadResult, download_waveforms_mass
-from seispy.download.stats import (
-    DownloadAnalysis,
-    download_status,
-    plot_download_availability,
-    scan_download_availability,
-    summarize_download_availability,
-)
-from seispy.download.waveform import WaveformDownloadSummary, download_waveforms
+from importlib import import_module
 
-__all__ = [
-    "download_inventory",
-    "ResponseConflictError",
-    "ResponseConflictWarning",
-    "download_earthquake_events",
-    "download_waveforms",
-    "download_waveforms_mass",
-    "download_status",
-    "scan_download_availability",
-    "summarize_download_availability",
-    "plot_download_availability",
-    "DownloadAnalysis",
-    "WaveformDownloadSummary",
-    "MassDownloadResult",
-]
+_EXPORTS = {
+    "download_earthquake_events": (
+        "seispy.download.catalog",
+        "download_earthquake_events",
+    ),
+    "download_inventory": ("seispy.download.stations", "download_inventory"),
+    "ResponseConflictError": ("seispy.download.stations", "ResponseConflictError"),
+    "ResponseConflictWarning": ("seispy.download.stations", "ResponseConflictWarning"),
+    "mass_download_waveforms": ("seispy.download.bulk", "mass_download_waveforms"),
+    "BulkDownloadSummary": ("seispy.download.bulk", "BulkDownloadSummary"),
+    "download_waveforms": ("seispy.download.waveforms", "download_waveforms"),
+    "WaveformDownloadSummary": ("seispy.download.waveforms", "WaveformDownloadSummary"),
+    "download_status": ("seispy.download.availability", "download_status"),
+    "scan_download_availability": (
+        "seispy.download.availability",
+        "scan_download_availability",
+    ),
+    "summarize_download_availability": (
+        "seispy.download.availability",
+        "summarize_download_availability",
+    ),
+    "plot_download_availability": (
+        "seispy.download.availability",
+        "plot_download_availability",
+    ),
+    "DownloadAvailabilityReport": (
+        "seispy.download.availability",
+        "DownloadAvailabilityReport",
+    ),
+}
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
+
+__all__ = list(_EXPORTS)

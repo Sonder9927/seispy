@@ -10,16 +10,16 @@ from obspy import Trace, UTCDateTime, read
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
 from obspy.core.inventory.response import Response
 
-from seispy.decimate import (
+from seispy.waveform.decimation import (
     _sac_compatible_decimate_trace,
     _sac_decimate_batch,
     _sac_filter_file,
     _scipy_decimate_batch,
 )
-from seispy.response.remove_response import (
+from seispy.response.removal import (
     obspy_deconv,
     sac_deconv,
-    stream_removed_response,
+    remove_response_from_file,
 )
 
 PRE_FILTER = (0.004, 0.006, 4.0, 5.0)
@@ -120,12 +120,12 @@ def test_response_removal_branches_remain_numerically_equivalent(comparison_path
     _trace().write(str(source), format="SAC")
 
     # ObsPy: integrated pre-decimation versus independent post-decimation.
-    obspy_pre_memory = stream_removed_response(
+    obspy_pre_memory = remove_response_from_file(
         source, inventory, pre_filt=PRE_FILTER, decimate_factors=4
     )[0]
-    obspy_post_memory = stream_removed_response(source, inventory, pre_filt=PRE_FILTER)[
-        0
-    ]
+    obspy_post_memory = remove_response_from_file(
+        source, inventory, pre_filt=PRE_FILTER
+    )[0]
     _sac_compatible_decimate_trace(obspy_post_memory, (4,))
     correlation, nrmse = _metrics(obspy_pre_memory, obspy_post_memory)
     assert correlation > 0.999999

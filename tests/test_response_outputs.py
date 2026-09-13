@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.remove_response")
+remove_response = import_module("seispy.response.removal")
 
 
 class _WritableTrace:
@@ -35,7 +35,7 @@ def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
 
     with (
         patch.object(
-            remove_response, "stream_removed_response", return_value=_WritableStream()
+            remove_response, "remove_response_from_file", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
@@ -67,7 +67,7 @@ def test_obspy_deconv_accepts_miniseed_and_writes_sac_extension(tmp_path):
 
     with (
         patch.object(
-            remove_response, "stream_removed_response", return_value=_WritableStream()
+            remove_response, "remove_response_from_file", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
@@ -97,7 +97,7 @@ def test_sac_backend_rejects_miniseed_before_reading_inventory(tmp_path):
         patch.object(remove_response.obspy, "read_inventory") as read_inventory,
         pytest.raises(ValueError, match='backend="sac" does not support MiniSEED'),
     ):
-        remove_response.deconvolution_by_station(
+        remove_response.remove_instrument_response(
             source_root,
             tmp_path / "stations.xml",
             backend="sac",
@@ -149,7 +149,7 @@ def test_remove_original_failure_preserves_source_and_is_reported(tmp_path):
     def fail(*args, **kwargs):
         raise RuntimeError("response unavailable")
 
-    with patch.object(remove_response, "stream_removed_response", side_effect=fail):
+    with patch.object(remove_response, "remove_response_from_file", side_effect=fail):
         results = remove_response.obspy_deconv(
             station, "*.sac", object(), source_root, None, True, 20
         )
@@ -170,7 +170,7 @@ def test_remove_original_success_creates_deconv_and_removes_source(tmp_path):
     source.write_bytes(b"original")
     with (
         patch.object(
-            remove_response, "stream_removed_response", return_value=_WritableStream()
+            remove_response, "remove_response_from_file", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
@@ -208,7 +208,7 @@ def test_previous_deconv_result_is_not_processed_again(tmp_path):
 
     with (
         patch.object(
-            remove_response, "stream_removed_response", return_value=_WritableStream()
+            remove_response, "remove_response_from_file", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):

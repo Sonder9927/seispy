@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import numpy as np
 from obspy import Trace, UTCDateTime, read
 
-from seispy._archive import WaveformIdentity, matches_mseed_path, preserve_sac_quality
+from seispy.archive import (
+    WaveformIdentity,
+    matches_mseed_path,
+    preserve_sac_quality,
+)
 
 
 def _trace(

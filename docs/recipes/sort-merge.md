@@ -8,9 +8,9 @@ description: Organize SAC files and merge continuous traces by day.
 ## 1. Copy files into a standard tree
 
 ```python
-from seispy import collate
+from seispy import waveform
 
-collate.sort_to(
+waveform.sort_waveforms(
     "data/sac-unsorted",
     "data/sac-sorted",
     pattern="*.sac",
@@ -23,7 +23,7 @@ SAC headers, rather than source filenames, determine the canonical
 ## 2. Merge each channel-day
 
 ```python
-collate.merge_by_day(
+waveform.merge_waveforms_by_day(
     "data/sac-sorted",
     pattern="*.sac",
     remove_src=False,
@@ -37,8 +37,8 @@ instead of being filled with synthetic data.
 
 !!! warning "Source removal"
 
-    `merge_by_day` defaults to `remove_src=True`. Always pass
+    `merge_waveforms_by_day` defaults to `remove_src=True`. Always pass
     `remove_src=False` while testing a new archive layout.
 
-[Sort API →](../api/collate.md#sort-sac-files) ·
-[Merge API →](../api/collate.md#merge-daily-waveforms)
+[Sort API →](../api/waveform.md#sort-sac-files) ·
+[Merge API →](../api/waveform.md#merge-daily-waveforms)

@@ -83,5 +83,5 @@ without opening this site:
 ```python
 from seispy import response
 
-help(response.deconvolution_by_station)
+help(response.remove_instrument_response)
 ```

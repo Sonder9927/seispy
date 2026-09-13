@@ -8,11 +8,11 @@ import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
 
-remove_response = import_module("seispy.response.remove_response")
+remove_response = import_module("seispy.response.removal")
 
 
 def test_deconvolution_summary_status_includes_removal_failures():
-    summary = remove_response.DeconvolutionSummary(
+    summary = remove_response.ResponseRemovalSummary(
         run_id="run",
         total=1,
         succeeded=1,
@@ -285,7 +285,7 @@ def test_obspy_uses_epoch_covering_the_complete_trace():
             return self
 
     with patch.object(remove_response.obspy, "read", return_value=Stream([trace])):
-        remove_response.stream_removed_response("trace.sac", inventory)
+        remove_response.remove_response_from_file("trace.sac", inventory)
 
     assert trace.remove_response.call_args.kwargs["inventory"] is selected
 

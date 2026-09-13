@@ -3,10 +3,10 @@
 from importlib import import_module
 
 _EXPORTS = {
-    "cut_events": ("seispy.event.cut", "cut_events"),
-    "CutEventIssue": ("seispy.event.cut", "CutEventIssue"),
-    "CutEventSummary": ("seispy.event.cut", "CutEventSummary"),
-    "cut_events_binary": ("seispy.event.cut_binary", "cut_events_binary"),
+    "cut_event_waveforms": ("seispy.event.cutting", "cut_event_waveforms"),
+    "CutEventIssue": ("seispy.event.cutting", "CutEventIssue"),
+    "CutEventSummary": ("seispy.event.cutting", "CutEventSummary"),
+    "cut_events_binary": ("seispy.event.external", "cut_events_binary"),
     "filter_events": ("seispy.event.catalog", "filter_events"),
     "write_event_catalog": ("seispy.event.catalog", "write_event_catalog"),
 }

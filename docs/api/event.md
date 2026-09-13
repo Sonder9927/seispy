@@ -14,11 +14,11 @@ Prepare event catalogs and cut event windows from continuous waveform data.
 
 ### Cut events with ObsPy
 
-::: seispy.event.cut.cut_events
+::: seispy.event.cutting.cut_event_waveforms
 
 ### Cut events with external tools
 
-::: seispy.event.cut_binary.cut_events_binary
+::: seispy.event.external.cut_events_binary
 
 ## Result models
 
@@ -27,4 +27,4 @@ do not instantiate it directly.
 
 ### Event cutting summary
 
-::: seispy.event.cut.CutEventSummary
+::: seispy.event.cutting.CutEventSummary

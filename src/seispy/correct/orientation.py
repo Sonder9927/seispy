@@ -5,12 +5,24 @@ from pathlib import Path
 import obspy
 import pandas as pd
 from obspy.signal.rotate import rotate2zne
+from seispy.workflow import BatchRun, new_run_id
 from tqdm import tqdm
+
+from seispy.correct.summary import CorrectionCounts, CorrectionIssue, CorrectionSummary
 
 logger = logging.getLogger(__name__)
 
 
-def orientation(src_dir: str, dest_dir: str, cor_csv: str, max_workers: int = 4):
+def correct_orientation(
+    src_dir: str | Path,
+    dest_dir: str | Path,
+    cor_csv: str | Path,
+    max_workers: int = 4,
+    *,
+    max_error_samples: int = 20,
+    save_report: bool | None = True,
+    save_log: bool = True,
+) -> CorrectionSummary:
     """Rotate three-component SAC data to correct sensor orientation.
 
     Args:
@@ -18,53 +30,112 @@ def orientation(src_dir: str, dest_dir: str, cor_csv: str, max_workers: int = 4)
         dest_dir: Destination root preserving the input directory structure.
         cor_csv: CSV containing station orientation and tilt values in degrees.
         max_workers: Maximum number of station worker processes.
+        max_error_samples: Maximum number of representative failures in the summary.
+        save_report: Write a durable JSON run report. Enabled by default.
+        save_log: Write a run log beside the report. Enabled by default.
+
+    Returns:
+        A common batch summary, including partial progress when failures occur.
 
     Examples:
         ```python
-        orientation(
+        correct_orientation(
             "data/sac", "data/orientation-corrected", "orientation.csv",
             max_workers=1,
         )
         ```
     """
 
-    logger.info(f"\nCorrect orientation for {src_dir} with {cor_csv}")
-
-    # 加载钟漂数据
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+    if max_error_samples < 0:
+        raise ValueError("max_error_samples cannot be negative")
+    src_path = Path(src_dir).expanduser().resolve()
+    output_path = Path(dest_dir).expanduser().resolve()
+    if not src_path.is_dir():
+        raise NotADirectoryError(f"Source directory does not exist: {src_path}")
     cor_data = _load_cor_data(cor_csv)
-    logger.info(f"Loaded cor data for {len(cor_data)} stations")
-    # 筛选出存在于数据目录中的台站
-    valid_stations = _get_valid_stations(src_dir, cor_data.keys())
-    logger.info(
-        f"Found {len(valid_stations)} valid stations in corret info and given dir."
-    )
-
-    # 并行处理每个台站
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
-        future_to_station = {
-            executor.submit(
-                _process_station_orientation,
-                station,
-                cor_data[station],
-                src_dir,
-                dest_dir,
-            ): station
-            for station in valid_stations
-        }
-
-        with tqdm(total=len(valid_stations), desc="Processing stations") as pbar:
-            for future in as_completed(future_to_station):
-                station = future_to_station[future]
-                try:
-                    future.result()
-                    pbar.update(1)
-                    pbar.set_postfix_str(f"Completed: {station}")
-                except Exception as e:
-                    logger.error(f"Failed to process station {station}: {str(e)}")
-                    pbar.update(1)
-
-    logger.info("Orientation correction complete!\n")
+    valid_stations = _get_valid_stations(src_path, cor_data.keys())
+    pattern = "*.BHZ.*sac"
+    station_totals = {
+        station: sum(1 for _ in (src_path / station).rglob(pattern))
+        for station in valid_stations
+    }
+    total = sum(station_totals.values())
+    run_id = new_run_id()
+    with BatchRun(
+        "correct-orientation",
+        output_path,
+        run_id=run_id,
+        save_report=save_report,
+        save_log=save_log,
+        logger=logger,
+    ) as run:
+        run.start(total=total, succeeded=0, failed=0, skipped=0, issue_samples=())
+        results = []
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    _process_station_orientation,
+                    station,
+                    cor_data[station],
+                    src_path,
+                    output_path,
+                    max_error_samples,
+                ): station
+                for station in valid_stations
+            }
+            with tqdm(total=len(futures), desc="Correcting orientation") as bar:
+                for future in as_completed(futures):
+                    station = futures[future]
+                    try:
+                        results.append(future.result())
+                    except Exception as exc:
+                        run.error("station=%s error=%s", station, exc)
+                        station_total = station_totals[station]
+                        results.append(
+                            CorrectionCounts(
+                                total=station_total,
+                                failed=station_total,
+                                issue_samples=(
+                                    CorrectionIssue(
+                                        station,
+                                        src_path / station,
+                                        f"{type(exc).__name__}: {exc}",
+                                    ),
+                                ),
+                            )
+                        )
+                    succeeded = sum(item.succeeded for item in results)
+                    failed = sum(item.failed for item in results)
+                    issues = tuple(
+                        issue for item in results for issue in item.issue_samples
+                    )[:max_error_samples]
+                    run.checkpoint(
+                        total=total,
+                        completed=succeeded + failed,
+                        succeeded=succeeded,
+                        failed=failed,
+                        skipped=0,
+                        issue_samples=issues,
+                    )
+                    bar.update(1)
+        succeeded = sum(item.succeeded for item in results)
+        failed = sum(item.failed for item in results)
+        issues = tuple(issue for item in results for issue in item.issue_samples)[
+            :max_error_samples
+        ]
+        return run.complete(
+            CorrectionSummary(
+                run_id=run_id,
+                duration_seconds=0,
+                total=total,
+                succeeded=succeeded,
+                failed=failed,
+                issue_samples=issues,
+                output_dir=output_path,
+            )
+        )
 
 
 def _load_cor_data(cor_csv):
@@ -84,16 +155,20 @@ def _get_valid_stations(src_dir, cor_stations):
     return [sta for sta in cor_stations if (src_path / sta).exists()]
 
 
-def _process_station_orientation(station_name, station_cor, src_dir, dest_dir):
+def _process_station_orientation(
+    station_name, station_cor, src_dir, dest_dir, max_error_samples=20
+):
     """处理单个台站的钟漂修正"""
 
     # 获取该台站的所有SAC文件
     station_path = Path(src_dir) / station_name
 
-    processed_count = 0
+    processed_count = failed = total = 0
+    issues = []
     pattern = "*.BHZ.*sac"
     # 处理每个SAC文件
     for zsac in station_path.rglob(pattern):
+        total += 1
         nsac = zsac.with_name(zsac.name.replace(".BHZ.", ".BHN."))
         esac = zsac.with_name(zsac.name.replace(".BHZ.", ".BHE."))
         try:
@@ -108,6 +183,11 @@ def _process_station_orientation(station_name, station_cor, src_dir, dest_dir):
 
         except Exception as e:
             logger.error(f"Error processing {nsac}: {str(e)}")
+            failed += 1
+            if len(issues) < max_error_samples:
+                issues.append(
+                    CorrectionIssue(station_name, nsac, f"{type(e).__name__}: {e}")
+                )
 
     if processed_count == 0:
         logger.warning(
@@ -117,6 +197,7 @@ def _process_station_orientation(station_name, station_cor, src_dir, dest_dir):
         logger.info(
             f"{station_name} complete, total {processed_count}X2 files processed."
         )
+    return CorrectionCounts(total, processed_count, failed, 0, tuple(issues))
 
 
 def _apply_rotate2zne(zsac, nsac, esac, theta, dip=0):
@@ -157,6 +238,6 @@ if __name__ == "__main__":
     dest_directory = "/path/to/corrected/data"
     cor_csv = "/path/to/cor.csv"
 
-    orientation(
+    correct_orientation(
         src_dir=src_directory, dest_dir=dest_directory, cor_csv=cor_csv, max_workers=4
     )

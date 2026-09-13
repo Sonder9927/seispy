@@ -15,15 +15,15 @@ copyable example, expected output, safety notes, and a link to the exact API.
 | Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
 | Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
-| Bulk-download from providers | [Experimental MassDownloader](recipes/mass-download-waveforms.md) | `download_waveforms_mass` |
+| Bulk-download from providers | [Experimental MassDownloader](recipes/mass-download-waveforms.md) | `mass_download_waveforms` |
 | Check waveform download gaps | [Download completeness](recipes/download-statistics.md) | `download_status` |
-| Convert MiniSEED files | [MiniSEED to SAC](recipes/convert-miniseed.md) | `mseed2sac` |
-| Organize daily files | [Sort and merge SAC](recipes/sort-merge.md) | `sort_to`, `merge_by_day` |
-| Populate SAC headers | [Format SAC headers](recipes/format-headers.md) | `format_head` |
-| Remove instrument response | [Remove response](recipes/remove-response.md) | `deconvolution_by_station` |
-| Reduce sampling rate | [Decimate](recipes/decimate.md) | `decimate_files` |
-| Extract event windows | [Cut event windows](recipes/cut-events.md) | `cut_events` |
-| Correct station timing | [Correct stations](recipes/correct-stations.md) | `clock_drift` |
+| Convert MiniSEED files | [MiniSEED to SAC](recipes/convert-miniseed.md) | `convert_mseed_to_sac` |
+| Organize daily files | [Sort and merge SAC](recipes/sort-merge.md) | `sort_waveforms`, `merge_waveforms_by_day` |
+| Populate SAC headers | [Format SAC headers](recipes/format-headers.md) | `format_sac_headers` |
+| Remove instrument response | [Remove response](recipes/remove-response.md) | `remove_instrument_response` |
+| Reduce sampling rate | [Decimate](recipes/decimate.md) | `decimate_waveforms` |
+| Extract event windows | [Cut event windows](recipes/cut-events.md) | `cut_event_waveforms` |
+| Correct station timing | [Correct stations](recipes/correct-stations.md) | `correct_clock_drift` |
 | Correct sensor orientation | [Correct stations](recipes/correct-stations.md) | `orientation` |
 | Prepare an inversion | [MCMC workflow](recipes/mcmc.md) | `init_grids` |
 | Collect inversion outputs | [MCMC workflow](recipes/mcmc.md) | `collect_results` |

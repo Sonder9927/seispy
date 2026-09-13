@@ -7,14 +7,14 @@ description: Bulk-download continuous MiniSEED with ObsPy MassDownloader.
 
 !!! warning "Experimental interface"
 
-    `download_waveforms_mass` may change before SeisPy reaches a stable release.
+    `mass_download_waveforms` may change before SeisPy reaches a stable release.
     Test it on a short interval before starting a large acquisition. The stable
     `download_waveforms` function remains available and unchanged.
 
 ## When to use it
 
 **Default recommendation:** use `download_waveforms` for a known network and a
-small or explicit station list. Choose `download_waveforms_mass` when discovery
+small or explicit station list. Choose `mass_download_waveforms` when discovery
 and acquisition across many stations or providers would otherwise require you
 to build substantial selection and bookkeeping logic yourself.
 
@@ -52,9 +52,9 @@ number of days.
 
     If you can describe the job as “download these known stations,” start with
     `download_waveforms`. If you describe it as “find and download suitable
-    stations in this region,” try `download_waveforms_mass`.
+    stations in this region,” try `mass_download_waveforms`.
 
-| Capability | `download_waveforms` | `download_waveforms_mass` |
+| Capability | `download_waveforms` | `mass_download_waveforms` |
 | --- | --- | --- |
 | Status | Stable SeisPy path | Experimental |
 | Providers | One FDSN provider per call | One or multiple providers |
@@ -71,7 +71,7 @@ number of days.
 ```python
 from seispy import download
 
-result = download.download_waveforms_mass(
+result = download.mass_download_waveforms(
     "data/waveforms",
     "2025-01-01",
     "2025-01-08",
@@ -111,7 +111,7 @@ larger value reduces request count but increases memory use and retry cost.
 Supplying an XML inventory is useful when you already know the allowed stations:
 
 ```python
-result = download.download_waveforms_mass(
+result = download.mass_download_waveforms(
     "data/waveforms",
     "2025-01-01",
     "2025-02-01",
@@ -149,7 +149,7 @@ domain = RectangularDomain(
     maxlongitude=179,
 )
 
-result = download.download_waveforms_mass(
+result = download.mass_download_waveforms(
     "data/waveforms",
     "2025-01-01",
     "2025-01-03",

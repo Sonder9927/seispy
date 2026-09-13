@@ -6,12 +6,12 @@ from obspy import UTCDateTime
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
 from obspy.core.inventory.response import InstrumentSensitivity, Response
 
-from seispy.download import events, inventory
+from seispy.download import catalog, stations
 
 
 def test_earthscope_client_receives_restricted_credentials():
-    with patch.object(inventory, "Client") as client:
-        inventory._client(inventory.EARTHSCOPE_URL, "user", "password")
+    with patch.object(stations, "Client") as client:
+        stations._client(stations.EARTHSCOPE_URL, "user", "password")
     client.assert_called_once_with(
         "https://service.earthscope.org", user="user", password="password"
     )
@@ -22,59 +22,59 @@ def test_inventory_download_has_no_logging_and_writes_stationxml(tmp_path):
     client = Mock()
     client.get_stations.return_value = inv
     with (
-        patch.object(inventory, "_client", return_value=client),
-        patch.object(inventory, "_normalize_response_epochs", return_value=inv),
-        patch.object(inventory, "_write_station_csv") as write_csv,
+        patch.object(stations, "_client", return_value=client),
+        patch.object(stations, "_normalize_response_epochs", return_value=inv),
+        patch.object(stations, "_write_station_csv") as write_csv,
     ):
-        result = inventory.download_inventory(
-            tmp_path / "inventory.xml", network="NZ", station="AAA"
+        result = stations.download_inventory(
+            tmp_path / "stations.xml", network="NZ", station="AAA"
         )
     assert result is inv
     inv.write.assert_called_once_with(
-        str(tmp_path / "inventory.xml"), format="STATIONXML"
+        str(tmp_path / "stations.xml"), format="STATIONXML"
     )
-    write_csv.assert_called_once_with(inv, tmp_path / "inventory.csv")
+    write_csv.assert_called_once_with(inv, tmp_path / "stations.csv")
 
 
 def test_inventory_conflict_preserves_raw_stationxml_by_default(tmp_path):
     raw = Mock()
     client = Mock()
     client.get_stations.return_value = raw
-    conflict = inventory.ResponseConflictError("conflicting responses")
+    conflict = stations.ResponseConflictError("conflicting responses")
     with (
-        patch.object(inventory, "_client", return_value=client),
-        patch.object(inventory, "_normalize_response_epochs", side_effect=conflict),
-        patch.object(inventory, "_write_station_csv") as write_csv,
-        pytest.warns(inventory.ResponseConflictWarning, match="raw StationXML"),
+        patch.object(stations, "_client", return_value=client),
+        patch.object(stations, "_normalize_response_epochs", side_effect=conflict),
+        patch.object(stations, "_write_station_csv") as write_csv,
+        pytest.warns(stations.ResponseConflictWarning, match="raw StationXML"),
     ):
-        result = inventory.download_inventory(tmp_path / "inventory.xml")
+        result = stations.download_inventory(tmp_path / "stations.xml")
 
     assert result is raw
     raw.write.assert_called_once_with(
-        str(tmp_path / "inventory.xml"), format="STATIONXML"
+        str(tmp_path / "stations.xml"), format="STATIONXML"
     )
-    write_csv.assert_called_once_with(raw, tmp_path / "inventory.csv")
+    write_csv.assert_called_once_with(raw, tmp_path / "stations.csv")
 
 
 def test_strict_inventory_conflict_raises_after_raw_stationxml_is_saved(tmp_path):
     raw = Mock()
     client = Mock()
     client.get_stations.return_value = raw
-    conflict = inventory.ResponseConflictError("conflicting responses")
+    conflict = stations.ResponseConflictError("conflicting responses")
     with (
-        patch.object(inventory, "_client", return_value=client),
-        patch.object(inventory, "_normalize_response_epochs", side_effect=conflict),
-        patch.object(inventory, "_write_station_csv") as write_csv,
-        pytest.raises(inventory.ResponseConflictError, match="conflicting responses"),
+        patch.object(stations, "_client", return_value=client),
+        patch.object(stations, "_normalize_response_epochs", side_effect=conflict),
+        patch.object(stations, "_write_station_csv") as write_csv,
+        pytest.raises(stations.ResponseConflictError, match="conflicting responses"),
     ):
-        inventory.download_inventory(
-            tmp_path / "inventory.xml", strict_response_conflicts=True
+        stations.download_inventory(
+            tmp_path / "stations.xml", strict_response_conflicts=True
         )
 
     raw.write.assert_called_once_with(
-        str(tmp_path / "inventory.xml"), format="STATIONXML"
+        str(tmp_path / "stations.xml"), format="STATIONXML"
     )
-    write_csv.assert_called_once_with(raw, tmp_path / "inventory.csv")
+    write_csv.assert_called_once_with(raw, tmp_path / "stations.csv")
 
 
 def test_non_response_inventory_level_still_writes_only_stationxml(tmp_path):
@@ -82,10 +82,10 @@ def test_non_response_inventory_level_still_writes_only_stationxml(tmp_path):
     client = Mock()
     client.get_stations.return_value = inv
     with (
-        patch.object(inventory, "_client", return_value=client),
-        patch.object(inventory, "_write_station_csv"),
+        patch.object(stations, "_client", return_value=client),
+        patch.object(stations, "_write_station_csv"),
     ):
-        inventory.download_inventory(tmp_path / "stations.xml", level="station")
+        stations.download_inventory(tmp_path / "stations.xml", level="station")
 
     inv.write.assert_called_once_with(
         str(tmp_path / "stations.xml"), format="STATIONXML"
@@ -109,7 +109,7 @@ def test_station_csv_contains_coordinates_and_channel_summary(tmp_path):
     )
     network = Container([station])
     network.code = "NZ"
-    inventory._write_station_csv([network], tmp_path / "station.csv")
+    stations._write_station_csv([network], tmp_path / "station.csv")
 
     contents = (tmp_path / "station.csv").read_text()
     assert "network,station,station_name,latitude,longitude,elevation_m" in contents
@@ -166,7 +166,7 @@ def test_inventory_normalization_merges_equivalent_overlapping_epochs():
         ]
     )
 
-    normalized = inventory._normalize_response_epochs(original)
+    normalized = stations._normalize_response_epochs(original)
 
     assert len(original[0][0].channels) == 2
     assert len(normalized[0][0].channels) == 1
@@ -174,7 +174,7 @@ def test_inventory_normalization_merges_equivalent_overlapping_epochs():
 
 
 def test_inventory_normalization_clips_old_conflicting_epoch():
-    normalized = inventory._normalize_response_epochs(
+    normalized = stations._normalize_response_epochs(
         _inventory_with_channels(
             [
                 _channel("2024-01-01", None, _response(1.0)),
@@ -195,8 +195,8 @@ def test_inventory_normalization_rejects_ambiguous_same_start():
         ]
     )
 
-    with pytest.raises(inventory.ResponseConflictError, match="conflicting responses"):
-        inventory._normalize_response_epochs(source)
+    with pytest.raises(stations.ResponseConflictError, match="conflicting responses"):
+        stations._normalize_response_epochs(source)
 
 
 def test_inventory_normalization_collapses_duplicate_network_and_station_nodes():
@@ -204,7 +204,7 @@ def test_inventory_normalization_collapses_duplicate_network_and_station_nodes()
     first = _inventory_with_channels([_channel("2024-01-01", None, response)])
     duplicated = first + first.copy()
 
-    normalized = inventory._normalize_response_epochs(duplicated)
+    normalized = stations._normalize_response_epochs(duplicated)
 
     assert len(normalized.networks) == 1
     assert len(normalized[0].stations) == 1
@@ -227,10 +227,10 @@ def test_earthquake_events_are_returned_as_dataframe(tmp_path):
     )
     client = Mock()
     client.get_events.return_value = [event]
-    with patch.object(events, "Client", return_value=client):
-        frame = events.download_earthquake_events(
-            "2026-01-01", "2026-01-02", tmp_path / "events.csv"
+    with patch.object(catalog, "Client", return_value=client):
+        frame = catalog.download_earthquake_events(
+            "2026-01-01", "2026-01-02", tmp_path / "catalog.csv"
         )
     assert len(frame) == 1
     assert frame.loc[0, "depth"] == 3
-    assert (tmp_path / "events.csv").exists()
+    assert (tmp_path / "catalog.csv").exists()

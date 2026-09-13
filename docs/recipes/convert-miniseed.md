@@ -11,9 +11,9 @@ description: Convert one file or a directory tree and inspect the batch summary.
 ## Example
 
 ```python
-from seispy import collate
+from seispy import waveform
 
-summary = collate.mseed2sac(
+summary = waveform.convert_mseed_to_sac(
     "data/miniseed",
     "data/sac",
     pattern="*.mseed",
@@ -21,10 +21,10 @@ summary = collate.mseed2sac(
     remove_original=False,
 )
 
-print(f"Inputs: {summary.input_total}")
-print(f"Converted: {summary.input_succeeded}")
+print(f"Inputs: {summary.total}")
+print(f"Converted: {summary.succeeded}")
 print(f"SAC traces: {summary.traces_written}")
-print(f"Failed: {summary.input_failed}")
+print(f"Failed: {summary.failed}")
 ```
 
 !!! warning "Keep the input while learning"
@@ -35,7 +35,7 @@ print(f"Failed: {summary.input_failed}")
 ## Handle failures
 
 ```python
-for issue in summary.error_samples:
+for issue in summary.issue_samples:
     print(issue.source, issue.status, issue.error)
 
 if summary.report_path:
@@ -46,4 +46,4 @@ print(f"Run log: {summary.log_path}")
 Reports and logs are enabled by default, track every conversion batch, and
 flush progress periodically. See [Batch reports and logs](batch-reports.md).
 
-[See all parameters →](../api/collate.md#convert-miniseed-to-sac)
+[See all parameters →](../api/waveform.md#convert-miniseed-to-sac)

@@ -4,8 +4,8 @@
 
 ### Initialize inversion grids
 
-::: seispy.mcmc.init_grids
+::: seispy.mcmc.preparation.init_grids
 
 ### Collect inversion results
 
-::: seispy.mcmc.collect_results
+::: seispy.mcmc.results.collect_results

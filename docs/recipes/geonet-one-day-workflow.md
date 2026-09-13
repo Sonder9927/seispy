@@ -17,7 +17,7 @@ It presents two workflows:
    integrated decimation, producing response-removed 25 Hz SAC directly from
    MiniSEED.
 
-Both workflows preserve the downloaded MiniSEED files.
+Both workflows preserve the succeeded MiniSEED files.
 
 ## Shared configuration and download
 
@@ -37,7 +37,7 @@ from pathlib import Path
 
 from obspy import read
 
-from seispy import collate, decimate_files, download, response
+from seispy import download, response, waveform
 
 
 FDSN_BASE_URL = "https://service.geonet.org.nz"
@@ -108,7 +108,7 @@ stages. The intermediate SAC files make each transformation easy to inspect.
 
 ```text
 100 Hz MiniSEED
-    ↓ mseed2sac
+    ↓ convert_mseed_to_sac
 100 Hz raw-count SAC
     ↓ deconvolution
 100 Hz displacement SAC (nm)
@@ -123,8 +123,8 @@ SAC_COUNTS_100HZ = ROOT / "02_sac_counts_100hz"
 SAC_DISP_100HZ = ROOT / "03_sac_displacement_nm_100hz"
 SAC_DISP_1HZ = ROOT / "04_sac_displacement_nm_1hz"
 
-# 1. Convert the downloaded MiniSEED files to raw-count SAC.
-converted = collate.mseed2sac(
+# 1. Convert the succeeded MiniSEED files to raw-count SAC.
+converted = waveform.convert_mseed_to_sac(
     MSEED,
     SAC_COUNTS_100HZ,
     pattern="*.mseed",
@@ -135,7 +135,7 @@ converted = collate.mseed2sac(
 require_ok("MiniSEED-to-SAC conversion", converted)
 
 # 2. Remove the response without changing the 100 Hz sampling rate.
-deconvolved = response.deconvolution_by_station(
+deconvolved = response.remove_instrument_response(
     SAC_COUNTS_100HZ / NETWORK,
     STATIONXML,
     backend="obspy",
@@ -149,7 +149,7 @@ deconvolved = response.deconvolution_by_station(
 require_ok("Instrument-response removal", deconvolved)
 
 # 3. Resample from 100 Hz to 1 Hz in SAC-compatible stages.
-resampled = decimate_files(
+resampled = waveform.decimate_waveforms(
     SAC_DISP_100HZ / NETWORK,
     factors=[5, 5, 4],
     backend="scipy",
@@ -192,7 +192,7 @@ Append this code to the shared download script instead of Part 1:
 ```python
 SAC_DISP_25HZ = ROOT / "02_sac_displacement_nm_25hz"
 
-deconvolved = response.deconvolution_by_station(
+deconvolved = response.remove_instrument_response(
     MSEED / NETWORK,
     STATIONXML,
     backend="obspy",

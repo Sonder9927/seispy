@@ -43,6 +43,16 @@ cd seispy
 uv sync
 ```
 
+The base install covers acquisition and standard waveform processing. Install
+only the optional workflows you need:
+
+```bash
+uv sync --extra plot       # download-statistics plots
+uv sync --extra mcmc       # MCMC preparation and result collection
+uv sync --extra notebook   # interactive tutorials
+uv sync --all-extras       # every optional workflow
+```
+
 Run Python commands inside the project environment with `uv run`:
 
 ```bash
@@ -55,16 +65,16 @@ Convert a MiniSEED directory to a SAC directory tree while preserving the
 source files:
 
 ```python
-from seispy import collate
+from seispy import waveform
 
-summary = collate.mseed2sac(
+summary = waveform.convert_mseed_to_sac(
     "data/miniseed",
     "data/sac",
     pattern="*.mseed",
     remove_original=False,
 )
 
-print(summary.input_succeeded, summary.input_failed)
+print(summary.succeeded, summary.failed)
 ```
 
 For complete, copyable workflows, start with the

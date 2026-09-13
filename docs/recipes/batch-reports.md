@@ -9,12 +9,14 @@ SeisPy's long-running batch functions persist both a machine-readable JSON
 report and a human-readable text log by default:
 
 - `download_waveforms`
-- `download_waveforms_mass`
-- `mseed2sac`
-- `format_head`
-- `decimate_files`
-- `deconvolution_by_station`
-- `cut_events`
+- `mass_download_waveforms`
+- `convert_mseed_to_sac`
+- `format_sac_headers`
+- `decimate_waveforms`
+- `remove_instrument_response`
+- `cut_event_waveforms`
+- `correct_clock_drift`
+- `correct_orientation`
 
 Both artifacts use the same `run_id` and are stored below the function's output
 root:

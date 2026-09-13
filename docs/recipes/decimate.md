@@ -11,9 +11,9 @@ Pass the ordered decimation factors. Their product is the total reduction;
 `[5, 5, 4]` changes 100 Hz data to 1 Hz:
 
 ```python
-from seispy import decimate_files
+from seispy import waveform
 
-summary = decimate_files(
+summary = waveform.decimate_waveforms(
     "data/deconvolved",
     factors=[5, 5, 4],
     backend="scipy",
@@ -45,7 +45,7 @@ different numbers of files while preserving every relative output path.
 For the SAC backend, values are sequential decimation factors:
 
 ```python
-summary = decimate_files(
+summary = waveform.decimate_waveforms(
     "data/deconvolved",
     factors=[2, 2, 5],
     backend="sac",

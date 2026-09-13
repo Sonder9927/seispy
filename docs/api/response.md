@@ -1,24 +1,10 @@
 # Response API
 
-Prepare station metadata and remove instrument responses from waveform data.
+Remove instrument responses from waveform data. StationXML preparation now
+belongs to the [Inventory API](inventory.md); the old response-package exports
+remain available for compatibility.
 
 ## Functions
-
-### Combine inventories
-
-::: seispy.response.inventory.combine_inventories
-
-### Select inventory channels
-
-::: seispy.response.inventory.select_inventory
-
-### Shift channel start times
-
-::: seispy.response.inventory.shift_channel_starttime
-
-### Write an inventory
-
-::: seispy.response.inventory.write_inventory
 
 ### Remove instrument responses
 
@@ -34,11 +20,11 @@ Prepare station metadata and remove instrument responses from waveform data.
     lowering guarantees a valid taper, but does not guarantee that the adjusted
     band still covers the user's scientific target.
 
-::: seispy.response.remove_response.deconvolution_by_station
+::: seispy.response.removal.remove_instrument_response
 
 ### Process one stream
 
-::: seispy.response.remove_response.stream_removed_response
+::: seispy.response.removal.remove_response_from_file
 
 ## Result models
 
@@ -47,4 +33,4 @@ normally do not instantiate it directly.
 
 ### Deconvolution summary
 
-::: seispy.response.remove_response.DeconvolutionSummary
+::: seispy.response.removal.ResponseRemovalSummary
