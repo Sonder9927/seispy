@@ -3,6 +3,10 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "analyze_inventory": ("seispy.inventory", "analyze_inventory"),
+    "InventoryAnalysis": ("seispy.inventory", "InventoryAnalysis"),
+    "InventoryIssue": ("seispy.inventory", "InventoryIssue"),
+    "InventorySuitability": ("seispy.inventory", "InventorySuitability"),
     "combine_inventories": ("seispy.response.inventory", "combine_inventories"),
     "select_inventory": ("seispy.response.inventory", "select_inventory"),
     "shift_channel_starttime": (
