@@ -139,6 +139,41 @@ def test_multitrace_miniseed_gets_one_unique_sac_name_per_trace(tmp_path):
     assert any("BHN" in path.name for path in destinations)
 
 
+def test_daily_nslc_segment_names_do_not_repeat_identity(tmp_path):
+    source_root = tmp_path / "source"
+    target = source_root / "1U.ARD.00.BHE.2023.257.mseed"
+    output_root = tmp_path / "output"
+
+    def trace(start):
+        return SimpleNamespace(
+            stats=SimpleNamespace(
+                network="1U",
+                station="ARD",
+                location="00",
+                channel="BHE",
+                starttime=UTCDateTime(start),
+            )
+        )
+
+    destinations = remove_response._obspy_destinations(
+        target,
+        [
+            trace("2023-09-14T00:00:00"),
+            trace("2023-09-14T03:02:56.780"),
+            trace("2023-09-14T03:17:16.850"),
+        ],
+        source_root,
+        output_root,
+        False,
+    )
+
+    assert [path.name for path in destinations] == [
+        "1U.ARD.00.BHE.2023.257T000000000.sac",
+        "1U.ARD.00.BHE.2023.257T030256780.sac",
+        "1U.ARD.00.BHE.2023.257T031716850.sac",
+    ]
+
+
 def test_remove_original_failure_preserves_source_and_is_reported(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA"

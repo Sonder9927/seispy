@@ -4,7 +4,11 @@ DEFAULT_MAX_GAP_SECONDS = 1.0
 
 
 def merge_contiguous_segments(stream):
-    """Merge only directly contiguous compatible traces, preserving every gap."""
+    """Merge losslessly compatible traces while preserving gaps and conflicts.
+
+    Directly contiguous traces and sample-identical overlaps are merged. Every
+    gap and every overlap containing different samples remains segmented.
+    """
     return stream.merge(method=-1)
 
 

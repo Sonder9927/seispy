@@ -600,29 +600,35 @@ def _obspy_destinations(target, stream, src_root, output_dir, remove_original):
         return [base]
     destinations = []
     for index, trace in enumerate(stream, start=1):
-        stats = trace.stats
-        trace_id = (
-            ".".join(
-                filter(
-                    None,
-                    (
-                        getattr(stats, "network", ""),
-                        getattr(stats, "station", ""),
-                        getattr(stats, "location", ""),
-                        getattr(stats, "channel", ""),
-                    ),
-                )
-            )
-            or f"trace{index}"
-        )
-        start = stats.starttime.strftime("%Y%jT%H%M%S%f")
-        marker = ".deconv" if remove_original else ""
         destinations.append(
-            base.with_name(f"{target.stem}.{trace_id}.{start}{marker}.sac")
+            base.with_name(_segment_sac_name(target, trace, index, remove_original))
         )
     if len(set(destinations)) != len(destinations):
         raise ValueError(f"MiniSEED traces produce duplicate output names: {target}")
     return destinations
+
+
+def _segment_sac_name(target, trace, index, remove_original):
+    """Return a compact, unique name for one continuous output segment."""
+    stats = trace.stats
+    codes = (
+        str(getattr(stats, "network", "")),
+        str(getattr(stats, "station", "")),
+        str(getattr(stats, "location", "") or "--"),
+        str(getattr(stats, "channel", "")),
+    )
+    trace_id = ".".join(codes) if any(codes) else f"trace{index}"
+    stem = target.stem
+    if stem != trace_id and not stem.startswith(f"{trace_id}."):
+        stem = f"{stem}.{trace_id}"
+    day_suffix = stats.starttime.strftime("%Y.%j")
+    time_of_day = stats.starttime.strftime("%H%M%S%f")[:-3]
+    if stem.endswith(day_suffix):
+        timestamp = f"T{time_of_day}"
+    else:
+        timestamp = f".{stats.starttime.strftime('%Y%j')}T{time_of_day}"
+    marker = ".deconv" if remove_original else ""
+    return f"{stem}{timestamp}{marker}.sac"
 
 
 def sac_deconv(

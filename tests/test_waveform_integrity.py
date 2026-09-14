@@ -31,3 +31,31 @@ def test_contiguous_only_merge_preserves_short_and_long_gaps():
         stream = merge_contiguous_segments(_segments(gap_samples))
         assert len(stream) == 2
         assert len(stream.get_gaps()) == 1
+
+
+def _overlapping_segments(*, identical):
+    first = Trace(np.arange(100, dtype=np.int32))
+    first.stats.network = "NZ"
+    first.stats.station = "AAA"
+    first.stats.channel = "HHZ"
+    first.stats.sampling_rate = 100.0
+    first.stats.starttime = UTCDateTime("2026-01-01")
+    start = 90 if identical else 0
+    second = Trace(np.arange(start, start + 100, dtype=np.int32))
+    second.stats.update(first.stats)
+    second.stats.starttime = first.stats.starttime + 0.9
+    return Stream([first, second])
+
+
+def test_identical_overlap_is_deduplicated_and_merged():
+    stream = merge_contiguous_segments(_overlapping_segments(identical=True))
+
+    assert len(stream) == 1
+    np.testing.assert_array_equal(stream[0].data, np.arange(190))
+
+
+def test_conflicting_overlap_remains_segmented():
+    stream = merge_contiguous_segments(_overlapping_segments(identical=False))
+
+    assert len(stream) == 2
+    assert stream.get_gaps()[0][6] < 0
