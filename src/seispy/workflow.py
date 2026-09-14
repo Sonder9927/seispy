@@ -158,10 +158,13 @@ class BatchRun(AbstractContextManager):
         save_report: bool | None = True,
         save_log: bool = True,
         logger: logging.Logger | None = None,
-        checkpoint_interval: float = 1.0,
+        checkpoint_interval: float = 5.0,
+        progress_log_interval: float = 60.0,
     ) -> None:
         if checkpoint_interval < 0:
             raise ValueError("checkpoint_interval cannot be negative")
+        if progress_log_interval < 0:
+            raise ValueError("progress_log_interval cannot be negative")
         self.name = name
         self.run_id = run_id or new_run_id()
         self.artifact_root = Path(artifact_root).expanduser().resolve()
@@ -175,7 +178,9 @@ class BatchRun(AbstractContextManager):
         self._save_report = save_report
         self._logger = logger
         self._checkpoint_interval = checkpoint_interval
+        self._progress_log_interval = progress_log_interval
         self._last_checkpoint = 0.0
+        self._last_progress_log = 0.0
         self._run_logger: logging.Logger | None = None
         self._handler: logging.Handler | None = None
         self._started = time.monotonic()
@@ -211,7 +216,9 @@ class BatchRun(AbstractContextManager):
             "log_path": self.log_path,
         }
         self._write_report()
-        self._last_checkpoint = time.monotonic()
+        now = time.monotonic()
+        self._last_checkpoint = now
+        self._last_progress_log = now
         self.info("run_id=%s started task=%s", self.run_id, self.name)
         return self
 
@@ -223,26 +230,25 @@ class BatchRun(AbstractContextManager):
     def checkpoint(self, *, completed: int, total: int, **fields: Any) -> None:
         self._state.update(fields, total=total, completed=completed)
         now = time.monotonic()
-        if (
-            completed < total
-            and now - self._last_checkpoint < self._checkpoint_interval
-        ):
-            return
-        self._write_report()
-        self._last_checkpoint = now
-        counters = " ".join(
-            f"{key}={value}"
-            for key, value in fields.items()
-            if isinstance(value, (int, float, bool))
-        )
-        suffix = f" {counters}" if counters else ""
-        self.info(
-            "run_id=%s progress=%d/%d%s",
-            self.run_id,
-            completed,
-            total,
-            suffix,
-        )
+        finished = completed >= total
+        if finished or now - self._last_checkpoint >= self._checkpoint_interval:
+            self._write_report()
+            self._last_checkpoint = now
+        if finished or now - self._last_progress_log >= self._progress_log_interval:
+            counters = " ".join(
+                f"{key}={value}"
+                for key, value in fields.items()
+                if isinstance(value, (int, float, bool))
+            )
+            suffix = f" {counters}" if counters else ""
+            self.info(
+                "run_id=%s progress=%d/%d%s",
+                self.run_id,
+                completed,
+                total,
+                suffix,
+            )
+            self._last_progress_log = now
 
     def complete(self, summary: BatchSummary) -> BatchSummary:
         started_at = self._state.get("started_at")

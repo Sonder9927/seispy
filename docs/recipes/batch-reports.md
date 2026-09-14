@@ -32,9 +32,11 @@ For in-place decimation or response removal, `<output>` is the source root.
 
 The report is created before worker processing starts. Completed waveform
 tasks, file batches, events, and stations update the in-memory state
-immediately; the atomic JSON checkpoint and progress log are flushed at least
-once per second and at completion. This bounds reporting overhead while keeping
-forced-termination progress current to within roughly one second:
+immediately. The atomic JSON checkpoint is flushed approximately every five
+seconds, while routine text progress is recorded approximately once per minute.
+Warnings, errors, interruptions, and the final progress update are written
+immediately. This keeps long-running logs readable while retaining recent
+recovery state:
 
 | `status` | Meaning |
 | --- | --- |

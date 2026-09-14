@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from seispy.workflow import (
     BatchRun,
@@ -72,7 +73,13 @@ def test_summary_status_and_automatic_issue_report(tmp_path):
 
 
 def test_batch_run_persists_progress_and_completes_summary(tmp_path):
-    with BatchRun("task", tmp_path, run_id="run", checkpoint_interval=0) as run:
+    with BatchRun(
+        "task",
+        tmp_path,
+        run_id="run",
+        checkpoint_interval=0,
+        progress_log_interval=0,
+    ) as run:
         run.start(total=3, succeeded=0, failed=0)
         run.checkpoint(completed=1, total=3, succeeded=1, failed=0)
         progress = json.loads(run.report_path.read_text())
@@ -91,6 +98,45 @@ def test_batch_run_persists_progress_and_completes_summary(tmp_path):
     assert summary.log_path.is_file()
     assert json.loads(summary.report_path.read_text())["status"] == "completed"
     assert "progress=1/3" in summary.log_path.read_text()
+
+
+def test_batch_run_throttles_reports_and_progress_logs_independently(tmp_path):
+    with BatchRun(
+        "task",
+        tmp_path,
+        run_id="run",
+        checkpoint_interval=5,
+        progress_log_interval=60,
+    ) as run:
+        run.start(total=2, succeeded=0)
+        run._last_checkpoint = 100
+        run._last_progress_log = 100
+
+        with patch("seispy.workflow.time.monotonic", return_value=101):
+            run.checkpoint(completed=1, total=2, succeeded=1)
+
+        report = json.loads(run.report_path.read_text())
+        assert report["completed"] == 0
+        assert "progress=1/2" not in run.log_path.read_text()
+
+        with patch("seispy.workflow.time.monotonic", return_value=106):
+            run.checkpoint(completed=1, total=2, succeeded=1)
+
+        report = json.loads(run.report_path.read_text())
+        assert report["completed"] == 1
+        assert "progress=1/2" not in run.log_path.read_text()
+
+        with patch("seispy.workflow.time.monotonic", return_value=107):
+            run.checkpoint(completed=2, total=2, succeeded=2)
+
+        report = json.loads(run.report_path.read_text())
+        assert report["completed"] == 2
+        assert "progress=2/2" in run.log_path.read_text()
+        summary = run.complete(
+            _Summary(value=Path("data"), run_id="run", duration_seconds=0)
+        )
+
+    assert summary.status == "completed"
 
 
 def test_checkpoint_serializes_nested_dataclass_issues(tmp_path):
