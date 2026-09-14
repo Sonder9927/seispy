@@ -1,202 +1,152 @@
 ---
-title: Download waveforms
-description: Download daily MiniSEED or SAC waveform files from FDSN.
+title: Download and archive waveforms
+description: Stage raw FDSN responses, then validate them into MiniSEED or SAC archives.
 ---
 
-# Download waveforms
+# Download and archive waveforms
 
-**Use this when:** you want a daily waveform archive grouped by network,
-station, and year, with Julian day retained in each filename.
+Waveform acquisition has two explicit stages:
 
-## Example
+1. `download_waveforms` transfers FDSN response bytes into an untrusted staging
+   directory. It never invokes ObsPy's MiniSEED decoder.
+2. `archive_waveforms` validates those responses in isolated processes and
+   commits trusted MiniSEED or SAC files.
+
+This boundary keeps network concurrency independent from CPU-heavy native
+decoding and prevents concurrent libmseed calls in download threads.
+
+## Download raw responses
 
 ```python
 from seispy import download
 
-summary = download.download_waveforms(
-    "data/mseed",
+download_summary = download.download_waveforms(
+    "data/waveform-staging",
     network="NZ",
     starttime="2025-01-01",
-    endtime="2025-01-03",
+    endtime="2025-01-03",  # exclusive
     station=["WEL", "KHZ"],
     channel="BH?",
-    output_format="mseed",
-    max_workers=2,
+    inventory="data/metadata/stations.xml",
+    network_workers=10,
     max_retries=2,
     retry_backoff=1.0,
-    overwrite=False,
-    inventory="data/metadata/stations.xml",
-)
-
-print(f"Downloaded: {summary.succeeded}/{summary.total}")
-print(f"No data: {summary.no_data}; failed: {summary.failed}")
-print(f"Report: {summary.report_path}")
-print(f"Log: {summary.log_path}")
-```
-
-To download SAC directly, keep the same selectors but use the SAC archive root
-and format together:
-
-```python
-summary = download.download_waveforms(
-    "data/sac",
-    network="NZ",
-    starttime="2025-01-01",
-    endtime="2025-01-03",
-    station="WEL",
-    channel="BH?",
-    output_format="sac",
 )
 ```
 
-## Download restricted data
+Successful responses are stored byte-for-byte with a `.mseed.raw` suffix.
+This suffix deliberately marks them as unverified and keeps ordinary MiniSEED
+file scans from treating them as trusted data. With StationXML, filenames
+include network, station, location, channel, UTC day, and a partial-day start
+time when needed:
 
-Pass the same FDSN web-service credentials when downloading response metadata
-and waveforms. The following EarthScope example downloads restricted MiniSEED,
-checks daily availability, and removes the instrument response with ObsPy:
+```text
+data/waveform-staging/NZ/WEL/2025/NZ.WEL.10.HHZ.2025.001.mseed.raw
+data/waveform-staging/NZ/WEL/2025/NZ.WEL.10.HHZ.2025.001.060000.mseed.raw
+```
+
+StationXML is an exact request manifest: requests are clipped to channel epochs
+and UTC-day boundaries. It is not used to validate bytes during download.
+
+## Archive as MiniSEED
 
 ```python
-from seispy import deconvolution, download
+from seispy import waveform
 
-
-NET = "1U"
-MSEED_DIR = "data/mseed"
-SAC_DIR = "data/sac"
-
-inventory = download.download_inventory(
-    "data/metadata/1U_inventory.xml",
-    client="https://service.earthscope.org",
-    username="username",
-    password="password",
-    network=NET,
-    starttime="2023-08-01",
-    endtime="2025-05-01",
-    level="response",
-)
-
-download_summary = download.download_waveforms(
-    MSEED_DIR,
-    client="https://service.earthscope.org",
-    network=NET,
-    starttime="2023-08-01",
-    endtime="2025-05-01",
+archive_summary = waveform.archive_waveforms(
+    "data/waveform-staging",
+    "data/mseed",
     output_format="mseed",
-    max_workers=10,
-    username="username",
-    password="password",
-    inventory=inventory,
-)
-
-availability = download.download_status(
-    f"{MSEED_DIR}/{NET}",
-    start_date="2023-08-01",
-    end_date="2025-04-30",
-)
-
-response_summary = deconvolution.remove_instrument_response(
-    f"{MSEED_DIR}/{NET}",
-    resp=inventory,
-    backend="obspy",
-    pattern="*.mseed",
-    output_dir=f"{SAC_DIR}/{NET}",
-    max_workers=18,
-    decimate_factors=4,
-)
-
-print(
-    f"Downloaded: {download_summary.succeeded}/{download_summary.total}; "
-    f"failed: {download_summary.failed}"
-)
-print(
-    f"Response removed: {response_summary.succeeded}/{response_summary.total}; "
-    f"failed: {response_summary.failed}"
+    inventory="data/metadata/stations.xml",
+    max_workers=5,
+    remove_original=False,
 )
 ```
 
-The placeholder values `username="username"` and `password="password"` must
-be replaced with credentials issued by the provider. For EarthScope, sign in
-to the [EarthScope user profile](https://www.earthscope.org/user), open the
-**Credentials** tab, and click **REVEAL MY CREDENTIALS**. If credentials have
-not yet been issued, click **CREATE FDSNWS CREDENTIALS** first. Access to the
-requested restricted network must already have been granted.
+Valid MiniSEED is copied without re-encoding. Headers, archive identity, and—if
+StationXML is supplied—channel epoch and sample rate are checked first.
+`max_workers` controls isolated archive processes and defaults to 5. A large
+server may raise it independently of the downloader's `network_workers`; for
+example, keep network transfers at 10 and use 40 archive workers if memory and
+storage throughput permit.
 
-!!! warning "Keep credentials private"
+## Archive as SAC
 
-    Never commit real credentials to source control or include them in shared
-    notebooks, documentation, screenshots, or logs. For reusable scripts,
-    load them from environment variables or a secret manager instead of
-    writing them directly in Python.
+SAC uses the same staging input and integrity checks. Each resulting trace is
+written to its canonical SAC path:
 
-`download_waveforms` treats `endtime` as exclusive, whereas `download_status`
-treats `end_date` as inclusive. Consequently, the example downloads through
-2025-04-30 and uses that date as the final availability day.
+```python
+sac_summary = waveform.archive_waveforms(
+    "data/waveform-staging",
+    "data/sac",
+    output_format="sac",
+    inventory="data/metadata/stations.xml",
+    max_workers=5,
+)
+```
 
-## Result
+This replaces “download SAC directly”: an FDSN dataselect response is normally
+MiniSEED, so SAC creation belongs to local validation and archival rather than
+network transport.
 
-MiniSEED files are written below `data/mseed/<network>/<station>/<year>/`.
-The returned summary distinguishes succeeded, existing, no-data, and failed
-requests.
+## Original-file policy and damaged records
+
+`remove_original=False` is the safe default. With `remove_original=True`, a raw
+response is removed only after every output derived from it has been validated
+and committed. Failed sources remain in staging.
+
+By default, an integrity warning triggers record-level recovery. Independently
+valid MiniSEED records may still be archived, but the damaged original is
+always retained as evidence—even when `remove_original=True`. Set
+`discard_corrupt_records=False` to reject the whole response instead.
+
+## Restricted data
+
+Pass provider credentials only to the network stage:
+
+```python
+download.download_waveforms(
+    "data/waveform-staging",
+    client="https://service.earthscope.org",
+    username="username",
+    password="password",
+    network="1U",
+    starttime="2023-08-01",
+    endtime="2025-05-01",
+    inventory="data/metadata/1U_inventory.xml",
+)
+```
+
+Load real credentials from environment variables or a secret manager; do not
+commit them to a script.
 
 ## Reports, logs, and interrupted runs
 
-Reports and persistent logs are enabled by default. They are written below the
-waveform output directory:
+Both stages enable JSON reports and text logs by default under their respective
+output directories:
 
 ```text
-data/mseed/logs/waveform-download-<run_id>.log
-data/mseed/logs/reports/waveform-download-<run_id>.json
+<root>/logs/waveform-download-<run_id>.log
+<root>/logs/reports/waveform-download-<run_id>.json
+<root>/logs/waveform-archive-<run_id>.log
+<root>/logs/reports/waveform-archive-<run_id>.json
 ```
 
-The JSON report is created with `status: "running"` before waveform workers
-start and tracks completed tasks with periodic atomic flushes. A normal run finishes with
-`status: "completed"`; a caught keyboard or system interruption records
-`status: "interrupted"`. If the process is forcibly terminated and cannot run
-cleanup code, the last atomic report remains marked `running`, showing how far
-the run progressed. The text log provides a human-readable start, progress,
-error, and completion history using the same `run_id`.
+A report starts with `status: "running"` and is updated atomically. Normal,
+caught interruption, and exception exits become `completed`, `interrupted`,
+and `failed`. If the operating system terminates the process before cleanup,
+the last report remains `running`, preserving the last checkpoint. Set
+`save_report=False` or `save_log=False` to disable either artifact.
 
-Set `save_report=False` or `save_log=False` to disable either artifact. Passing
-`save_report=None` preserves the former issue-only behavior: a checkpoint is
-maintained while the command runs but removed after a clean completion.
+## Choosing concurrency
 
-When `inventory` is a StationXML path or an ObsPy `Inventory`, it is an exact
-download manifest. Matching channel epochs are read locally and converted into
-NSLC requests, clipped to both the metadata epoch and the requested time range,
-then split at UTC-day boundaries. The station service is not queried again.
-The `network`, `station`, `location`, and `channel` selectors are applied to
-the manifest before tasks are created.
+- `network_workers` is I/O concurrency and defaults to 10. Respect provider
+  connection and rate limits.
+- archive `max_workers` is process concurrency and defaults to 5. Size it for
+  available memory, CPU, and disk bandwidth.
+- The two pools no longer impose backpressure on each other. Run the stages
+  sequentially for the simplest workflow, or schedule archival independently
+  using only raw files whose download has already committed.
 
-XML-guided MiniSEED uses one collision-free file per exact channel request:
-
-```text
-NZ.WEL.10.HHZ.2025.001.mseed
-```
-
-The filename records network, station, location, channel, UTC day, and—for a
-partial-day chunk—its requested start time. It does not claim an end time;
-actual sample coverage is read from the MiniSEED headers. Downloaded trace
-identity and sample rate are validated against StationXML before the file is
-committed.
-
-Without `inventory`, the original station-day behavior and daily MiniSEED name
-are retained for compatibility. Existing outputs are checked before a network
-request is made, so rerunning the same command resumes an interrupted archive.
-
-## Experimental bulk downloader
-
-See the separate [MassDownloader guide](mass-download-waveforms.md) for
-provider discovery, bulk requests, StationXML filtering, concurrency settings,
-and a comparison with this stable downloader.
-
-!!! tip "Learn with a short interval"
-
-    Start with one station and one or two days. Increase the interval and
-    `max_workers` only after confirming the service and selectors.
-
-!!! note "Be considerate of public FDSN services"
-
-    More workers are not always faster. Start with 2–5 workers and follow the
-    data provider's usage policy. Temporary request failures are retried with
-    exponential backoff; no-data responses are not retried.
-
-[See all parameters →](../api/download.md#download-waveforms)
+[See download parameters →](../api/download.md#download-waveforms)
+[See archive parameters →](../api/waveform.md#archive-raw-waveform-responses)

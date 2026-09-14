@@ -4,6 +4,10 @@ Convert, organize, merge, and annotate waveform files.
 
 ## Functions
 
+### Archive raw waveform responses
+
+::: seispy.waveform.archiving.archive_waveforms
+
 ### Convert MiniSEED to SAC
 
 ::: seispy.waveform.conversion.convert_mseed_to_sac
@@ -24,6 +28,10 @@ Convert, organize, merge, and annotate waveform files.
 
 These immutable summaries are returned by the corresponding batch functions.
 Applications normally do not instantiate them directly.
+
+### Waveform archive summary
+
+::: seispy.waveform.archiving.WaveformArchiveSummary
 
 ### MiniSEED conversion summary
 

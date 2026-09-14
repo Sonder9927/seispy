@@ -56,4 +56,5 @@ def test_domain_public_apis_use_canonical_names():
     assert callable(download.mass_download_waveforms)
     assert download.BulkDownloadSummary.__name__ == "BulkDownloadSummary"
     assert callable(waveform.decimate_waveforms)
+    assert callable(waveform.archive_waveforms)
     assert not hasattr(waveform, "decimate_by_station")

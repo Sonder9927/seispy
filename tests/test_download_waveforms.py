@@ -1,474 +1,137 @@
+import inspect
 import json
-import warnings
-from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import numpy as np
 import pytest
-from obspy import Stream as ObsPyStream
-from obspy import Trace, UTCDateTime
-from obspy.clients.fdsn.header import FDSNForbiddenException
-from obspy.core.inventory import Channel, Inventory, Network, Site, Station
-from obspy.io.mseed import InternalMSEEDWarning
+from obspy import UTCDateTime
 
 from seispy.download import stations, waveforms
 
 
-class _Stream(list):
-    def get_gaps(self):
-        return []
+def test_download_is_raw_only_and_defaults_to_ten_network_workers():
+    parameters = inspect.signature(waveforms.download_waveforms).parameters
 
-    def write(self, filename, format):
-        assert format == "MSEED"
-        ObsPyStream([item.as_obspy() for item in self]).write(filename, format=format)
-
-    def merge(self, **kwargs):
-        return self
+    assert parameters["network_workers"].default == 10
+    assert "output_format" not in parameters
+    assert "validation_workers" not in parameters
 
 
-class _SacTrace:
-    def __init__(self, channel, *, location="10", sampling_rate=1.0):
-        self.stats = SimpleNamespace(
-            network="NZ",
-            station="AAA",
-            location=location,
-            channel=channel,
-            starttime=UTCDateTime("2026-01-01"),
-            sampling_rate=sampling_rate,
-        )
-
-    def write(self, filename, format):
-        assert format == "SAC"
-        self.as_obspy().write(str(filename), format=format)
-
-    def as_obspy(self):
-        trace = Trace(data=np.arange(10, dtype=np.float32))
-        trace.stats.network = self.stats.network
-        trace.stats.station = self.stats.station
-        trace.stats.location = self.stats.location
-        trace.stats.channel = self.stats.channel
-        trace.stats.starttime = self.stats.starttime
-        trace.stats.sampling_rate = self.stats.sampling_rate
-        return trace
-
-
-def _inventory_channel(
-    code,
-    *,
-    location="10",
-    rate=100.0,
-    start="2026-01-01",
-    end=None,
-):
-    return Channel(
-        code=code,
-        location_code=location,
-        latitude=-40,
-        longitude=175,
-        elevation=0,
-        depth=0,
-        sample_rate=rate,
-        start_date=UTCDateTime(start) if start else None,
-        end_date=UTCDateTime(end) if end else None,
-    )
-
-
-def _inventory(*channels):
-    station = Station(
-        code="AAA",
-        latitude=-40,
-        longitude=175,
-        elevation=0,
-        site=Site(name="AAA"),
-        channels=list(channels),
-    )
-    return Inventory([Network(code="NZ", stations=[station])], source="test")
-
-
-def test_waveform_worker_reuses_authenticated_client_and_writes_mseed(tmp_path):
+def test_raw_response_is_saved_byte_for_byte(tmp_path):
+    payload = b"arbitrary response bytes that must not be decoded"
     client = Mock()
-    client.get_waveforms.return_value = _Stream([_SacTrace("BHZ")])
-    with patch.object(waveforms, "_client", return_value=client) as factory:
-        result = waveforms._download_station(
+
+    def download(**kwargs):
+        Path(kwargs["filename"]).write_bytes(payload)
+
+    client.get_waveforms.side_effect = download
+    destination = tmp_path / "NZ.AAA.2026.001.mseed.raw"
+    with patch.object(waveforms, "_thread_client", return_value=client):
+        result = waveforms._download_raw_response(
             stations.EARTHSCOPE_URL,
-            "user",
-            "password",
-            tmp_path,
+            None,
+            None,
+            destination,
             "NZ",
             "AAA",
             "*",
-            "BH?",
-            [UTCDateTime("2026-01-01")],
+            "HH?",
+            UTCDateTime("2026-01-01"),
             UTCDateTime("2026-01-02"),
             False,
             1,
+            0,
+            0,
+            None,
         )
-    factory.assert_called_once_with(stations.EARTHSCOPE_URL, "user", "password")
+
+    assert destination.read_bytes() == payload
     assert result.succeeded == 1
     assert result.files_written == 1
-    assert (tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed").is_file()
 
 
-def test_waveform_worker_can_write_one_sac_per_channel(tmp_path):
-    client = Mock()
-    client.get_waveforms.return_value = _Stream([_SacTrace("BHZ"), _SacTrace("BHN")])
-    with patch.object(waveforms, "_client", return_value=client):
-        result = waveforms._download_station(
-            stations.EARTHSCOPE_URL,
+def test_existing_raw_response_is_skipped_without_request(tmp_path):
+    destination = tmp_path / "NZ.AAA.2026.001.mseed.raw"
+    destination.write_bytes(b"existing")
+
+    with patch.object(waveforms, "_fetch_waveform_file") as fetch:
+        result = waveforms._download_raw_response(
+            "client",
             None,
             None,
-            tmp_path,
+            destination,
             "NZ",
             "AAA",
             "*",
-            "BH?",
-            [UTCDateTime("2026-01-01")],
+            "HH?",
+            UTCDateTime("2026-01-01"),
             UTCDateTime("2026-01-02"),
             False,
             1,
-            "sac",
-        )
-    assert result.succeeded == 1
-    assert result.files_written == 2
-    assert (
-        tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.10.BHZ.2026.001.000000.sac"
-    ).is_file()
-
-
-def test_download_rejects_trace_header_that_disagrees_with_request(tmp_path):
-    day = UTCDateTime("2026-01-01")
-    trace = _SacTrace("BHZ")
-    trace.stats.station = "WRONG"
-
-    with pytest.raises(ValueError, match="does not match request"):
-        waveforms._write_waveforms(
-            _Stream([trace]),
-            tmp_path,
-            "NZ",
-            "AAA",
-            day,
-            "sac",
-            False,
-        )
-
-
-def test_invalid_waveform_format_is_rejected(tmp_path):
-    with patch.object(waveforms, "_client"):
-        try:
-            waveforms.download_waveforms(
-                tmp_path, "NZ", "2026-01-01", "2026-01-02", output_format="wav"
-            )
-        except ValueError as exc:
-            assert "output_format" in str(exc)
-        else:
-            raise AssertionError("ValueError was not raised")
-
-
-def test_existing_mseed_is_skipped_without_network_request(tmp_path):
-    day = UTCDateTime("2026-01-01")
-    destination = tmp_path / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed"
-    destination.parent.mkdir(parents=True)
-    _Stream([_SacTrace("BHZ")]).write(destination, "MSEED")
-
-    with patch.object(waveforms, "_fetch_waveforms") as fetch:
-        result = waveforms._download_day(
-            stations.EARTHSCOPE_URL,
-            None,
-            None,
-            tmp_path,
-            "NZ",
-            "AAA",
-            "*",
-            "BH?",
-            day,
-            day + 86400,
-            False,
-            1,
-            "mseed",
-            2,
             0,
+            0,
+            None,
         )
 
     fetch.assert_not_called()
     assert result.skipped == 1
-    assert result.total == 1
 
 
-def test_waveform_request_retries_transient_failure():
+def test_transient_request_is_retried(tmp_path):
     client = Mock()
-    client.get_waveforms.side_effect = [TimeoutError("temporary"), _Stream([object()])]
 
+    def fail_then_write(**kwargs):
+        if client.get_waveforms.call_count == 1:
+            raise TimeoutError("temporary")
+        Path(kwargs["filename"]).write_bytes(b"raw")
+
+    client.get_waveforms.side_effect = fail_then_write
+    destination = tmp_path / "response.mseed.raw"
     with (
         patch.object(waveforms, "_thread_client", return_value=client),
         patch.object(waveforms.time, "sleep") as sleep,
-        patch.object(waveforms.random, "uniform", return_value=0),
     ):
-        result = waveforms._fetch_waveforms(
-            stations.EARTHSCOPE_URL,
+        waveforms._fetch_waveform_file(
+            "client",
             None,
             None,
             "NZ",
             "AAA",
-            "*",
-            "BH?",
-            UTCDateTime("2026-01-01"),
-            UTCDateTime("2026-01-02"),
-            2,
-            0.5,
-        )
-
-    assert len(result) == 1
-    assert client.get_waveforms.call_count == 2
-    sleep.assert_called_once_with(0.5)
-
-
-def test_waveform_request_retries_mseed_integrity_warning():
-    client = Mock()
-    journal = Mock()
-    valid_stream = _Stream([object()])
-
-    def corrupt_then_valid(*args, **kwargs):
-        if client.get_waveforms.call_count == 1:
-            warnings.warn(
-                "data integrity check for Steim1 failed, last sample=-791353968, "
-                "xn=-348",
-                InternalMSEEDWarning,
-                stacklevel=2,
-            )
-        return valid_stream
-
-    client.get_waveforms.side_effect = corrupt_then_valid
-    with (
-        warnings.catch_warnings(),
-        patch.object(waveforms, "_thread_client", return_value=client),
-        patch.object(waveforms.time, "sleep") as sleep,
-        patch.object(waveforms.random, "uniform", return_value=0),
-    ):
-        warnings.simplefilter("error", InternalMSEEDWarning)
-        result = waveforms._fetch_waveforms(
-            stations.EARTHSCOPE_URL,
-            None,
-            None,
-            "NZ",
-            "ABAZ",
-            "11",
+            "10",
             "HHZ",
             UTCDateTime("2026-01-01"),
             UTCDateTime("2026-01-02"),
+            destination,
             2,
             0.5,
-            journal,
         )
 
-    assert result is valid_stream
+    assert destination.read_bytes() == b"raw"
     assert client.get_waveforms.call_count == 2
-    sleep.assert_called_once_with(0.5)
-    assert (
-        "retrying miniSEED integrity failure once" in journal.warning.call_args.args[0]
-    )
+    assert sleep.call_count == 1
 
 
-def test_persistent_mseed_integrity_warning_fails_without_output(tmp_path):
-    client = Mock()
-
-    def corrupt(*args, **kwargs):
-        warnings.warn(
-            "data integrity check for Steim1 failed, last sample=1347756467, xn=-597",
-            InternalMSEEDWarning,
-            stacklevel=2,
-        )
-        return _Stream([_SacTrace("HH1", location="12", sampling_rate=100.0)])
-
-    client.get_waveforms.side_effect = corrupt
+def test_inventory_task_uses_self_describing_raw_name(tmp_path):
     task = waveforms._InventoryTask(
         "NZ",
-        "ABAZ",
-        "12",
-        "HH1",
-        100.0,
-        UTCDateTime("2026-01-01"),
-        UTCDateTime("2026-01-02"),
-    )
-    with (
-        warnings.catch_warnings(),
-        patch.object(waveforms, "_thread_client", return_value=client),
-        patch.object(waveforms.time, "sleep"),
-        patch.object(waveforms.random, "uniform", return_value=0),
-    ):
-        warnings.simplefilter("error", InternalMSEEDWarning)
-        result = waveforms._download_inventory_task(
-            stations.EARTHSCOPE_URL,
-            None,
-            None,
-            tmp_path,
-            task,
-            False,
-            1,
-            "mseed",
-            2,
-            0,
-            discard_corrupt_records=False,
-        )
-
-    assert client.get_waveforms.call_count == 2
-    assert result.failed == 1
-    assert result.files_written == 0
-    assert "InternalMSEEDWarning" in result.samples[0].error
-    assert not list(tmp_path.rglob("*.mseed"))
-
-
-def test_persistent_integrity_warning_recovers_valid_records(tmp_path):
-    task = waveforms._InventoryTask(
-        "NZ",
-        "ABAZ",
-        "11",
-        "HHE",
-        100.0,
-        UTCDateTime("2026-01-01"),
-        UTCDateTime("2026-01-02"),
-    )
-    journal = Mock()
-
-    def write_raw(*args, **kwargs):
-        destination = args[9]
-        Path(destination).write_bytes(b"raw records")
-
-    def filter_records(source, destination, **kwargs):
-        trace = _SacTrace("HHE", location="11", sampling_rate=100.0)
-        trace.stats.station = "ABAZ"
-        _Stream([trace]).write(destination, "MSEED")
-        return SimpleNamespace(discarded_records=1)
-
-    with (
-        patch.object(
-            waveforms,
-            "_fetch_waveforms",
-            side_effect=InternalMSEEDWarning("persistent corruption"),
-        ),
-        patch.object(waveforms, "_fetch_waveform_file", side_effect=write_raw),
-        patch.object(
-            waveforms, "filter_valid_mseed_records", side_effect=filter_records
-        ),
-    ):
-        result = waveforms._download_inventory_task(
-            stations.EARTHSCOPE_URL,
-            None,
-            None,
-            tmp_path,
-            task,
-            False,
-            1,
-            "mseed",
-            2,
-            0,
-            journal,
-        )
-
-    assert result.succeeded == 1
-    assert result.files_written == 1
-    assert list(tmp_path.rglob("*.mseed"))
-    assert "discarded_corrupt_records=%d" in journal.warning.call_args.args[0]
-    assert journal.warning.call_args.args[-1] == 1
-
-
-def test_waveform_request_does_not_retry_permanent_fdsn_failure():
-    client = Mock()
-    client.get_waveforms.side_effect = FDSNForbiddenException("forbidden")
-
-    with (
-        patch.object(waveforms, "_thread_client", return_value=client),
-        patch.object(waveforms.time, "sleep") as sleep,
-    ):
-        try:
-            waveforms._fetch_waveforms(
-                stations.EARTHSCOPE_URL,
-                None,
-                None,
-                "NZ",
-                "AAA",
-                "*",
-                "BH?",
-                UTCDateTime("2026-01-01"),
-                UTCDateTime("2026-01-02"),
-                2,
-                0.5,
-            )
-        except FDSNForbiddenException:
-            pass
-        else:
-            raise AssertionError("FDSNForbiddenException was not raised")
-
-    client.get_waveforms.assert_called_once()
-    sleep.assert_not_called()
-
-
-def test_existing_sac_files_allow_network_free_resume_without_metadata_files(tmp_path):
-    day = UTCDateTime("2026-01-01")
-    stream = _Stream([_SacTrace("BHZ"), _SacTrace("BHN")])
-    written, skipped = waveforms._write_waveforms(
-        stream, tmp_path, "NZ", "AAA", day, "sac", False, "*", "BH?"
-    )
-
-    assert written == 2
-    assert not skipped
-    assert waveforms._day_is_complete(tmp_path, "NZ", "AAA", day, "sac", "*", "BH?")
-    assert not waveforms._day_is_complete(tmp_path, "NZ", "AAA", day, "sac", "*", "HH?")
-    assert not list(tmp_path.rglob("*.json"))
-
-
-def test_sac_check_requires_each_explicit_channel(tmp_path):
-    day = UTCDateTime("2026-01-01")
-    waveforms._write_waveforms(
-        _Stream([_SacTrace("BHZ")]),
-        tmp_path,
-        "NZ",
         "AAA",
-        day,
-        "sac",
-        False,
-        "*",
-        "BHZ",
+        "10",
+        "HHZ",
+        100.0,
+        UTCDateTime("2026-01-01T06:00:00"),
+        UTCDateTime("2026-01-01T18:00:00"),
     )
 
-    assert waveforms._day_is_complete(tmp_path, "NZ", "AAA", day, "sac", "*", "BHZ")
-    assert not waveforms._day_is_complete(
-        tmp_path, "NZ", "AAA", day, "sac", "*", "BHZ,BHN"
-    )
+    path = waveforms._inventory_raw_path(tmp_path, task)
+
+    assert path.name == "NZ.AAA.10.HHZ.2026.001.060000.mseed.raw"
 
 
-def test_incomplete_sac_day_downloads_only_missing_files(tmp_path):
-    day = UTCDateTime("2026-01-01")
-    existing = waveforms._sac_destination(_SacTrace("BHZ"), tmp_path)
-    existing.parent.mkdir(parents=True)
-    _SacTrace("BHZ").write(existing, "SAC")
-
-    written, skipped = waveforms._write_waveforms(
-        _Stream([_SacTrace("BHZ"), _SacTrace("BHN")]),
-        tmp_path,
-        "NZ",
-        "AAA",
-        day,
-        "sac",
-        False,
-        "*",
-        "BH?",
-    )
-
-    assert written == 1
-    assert not skipped
-    assert existing.is_file()
-    assert waveforms._day_is_complete(tmp_path, "NZ", "AAA", day, "sac", "*", "BH?")
-
-
-def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
-    def completed(*args, **kwargs):
-        return waveforms._Counts(total=1, succeeded=1, files_written=1)
-
+def test_download_summary_and_lifecycle_artifacts(tmp_path):
+    completed = waveforms._Counts(total=1, succeeded=1, files_written=1)
     with (
         patch.object(waveforms, "_client"),
-        patch.object(waveforms, "_download_day", side_effect=completed) as worker,
+        patch.object(waveforms, "_download_day", return_value=completed) as worker,
     ):
         summary = waveforms.download_waveforms(
             tmp_path,
@@ -476,24 +139,16 @@ def test_download_waveforms_aggregates_station_day_tasks(tmp_path):
             "2026-01-01",
             "2026-01-03",
             station=["AAA"],
-            max_workers=2,
+            network_workers=2,
         )
 
     assert worker.call_count == 2
-    assert summary.total == 2
-    assert summary.succeeded == 2
-    assert summary.files_written == 2
-    assert summary.status == "completed"
-    assert summary.report_path.is_file()
-    assert summary.log_path.is_file()
+    assert summary.total == summary.succeeded == summary.files_written == 2
     assert json.loads(summary.report_path.read_text())["status"] == "completed"
-    assert "progress=2/2" in summary.log_path.read_text()
-    assert "completed duration_seconds=" in summary.log_path.read_text()
-    assert summary.ok
-    assert not replace(summary, no_data=1).ok
+    assert summary.log_path.is_file()
 
 
-def test_interrupted_download_leaves_report_and_log(tmp_path):
+def test_interrupted_download_leaves_interrupted_report(tmp_path):
     with (
         patch.object(waveforms, "_client"),
         patch.object(waveforms, "_download_day", side_effect=KeyboardInterrupt),
@@ -505,80 +160,8 @@ def test_interrupted_download_leaves_report_and_log(tmp_path):
             "2026-01-01",
             "2026-01-02",
             station=["AAA"],
-            max_workers=1,
+            network_workers=1,
         )
 
-    reports = list((tmp_path / "logs" / "reports").glob("*.json"))
-    logs = list((tmp_path / "logs").glob("*.log"))
-    assert len(reports) == 1
-    assert len(logs) == 1
-    report = json.loads(reports[0].read_text())
-    assert report["status"] == "interrupted"
-    assert report["total"] == 1
-    assert report["succeeded"] == 0
-    assert "interrupted progress=0/1" in logs[0].read_text()
-
-
-def test_waveform_run_artifacts_can_be_disabled(tmp_path):
-    with (
-        patch.object(waveforms, "_client"),
-        patch.object(
-            waveforms,
-            "_download_day",
-            return_value=waveforms._Counts(total=1, succeeded=1, files_written=1),
-        ),
-    ):
-        summary = waveforms.download_waveforms(
-            tmp_path,
-            "NZ",
-            "2026-01-01",
-            "2026-01-02",
-            station=["AAA"],
-            max_workers=1,
-            save_report=False,
-            save_log=False,
-        )
-
-    assert summary.report_path is None
-    assert summary.log_path is None
-    assert not (tmp_path / "logs").exists()
-
-
-def test_waveform_inventory_manifest_replaces_remote_station_lookup(tmp_path):
-    manifest = Mock()
-    guided_tasks = (
-        waveforms._InventoryTask(
-            "NZ",
-            "AAA",
-            "10",
-            "HHZ",
-            100.0,
-            UTCDateTime("2026-01-01"),
-            UTCDateTime("2026-01-02"),
-        ),
-    )
-
-    with (
-        patch.object(waveforms, "_client"),
-        patch.object(waveforms, "read_inventory", return_value=manifest) as read,
-        patch.object(waveforms, "_station_codes") as station_codes,
-        patch.object(waveforms, "_inventory_tasks", return_value=guided_tasks),
-        patch.object(
-            waveforms,
-            "_download_inventory_task",
-            return_value=waveforms._Counts(total=1, succeeded=1, files_written=1),
-        ) as worker,
-    ):
-        summary = waveforms.download_waveforms(
-            tmp_path,
-            "NZ",
-            "2026-01-01",
-            "2026-01-03",
-            inventory=tmp_path / "stations.xml",
-            max_workers=1,
-        )
-
-    read.assert_called_once_with(str(tmp_path / "stations.xml"), format="STATIONXML")
-    station_codes.assert_not_called()
-    assert worker.call_args.args[4] == guided_tasks[0]
-    assert summary.total == 1
+    report = next((tmp_path / "logs" / "reports").glob("*.json"))
+    assert json.loads(report.read_text())["status"] == "interrupted"

@@ -39,9 +39,9 @@ def _():
     import pandas as pd
     from obspy import UTCDateTime, read_inventory
 
-    from seispy import download
+    from seispy import download, waveform
 
-    return Path, UTCDateTime, copy, defaultdict, download, pd, read_inventory
+    return Path, UTCDateTime, copy, defaultdict, download, pd, read_inventory, waveform
 
 
 @app.cell
@@ -59,6 +59,7 @@ def _(Path, UTCDateTime):
     METADATA_DIR = ROOT / "metadata"
     RAW_XML = METADATA_DIR / "geonet_nz_all_channels_raw.xml"
     SELECTED_XML = METADATA_DIR / "geonet_nz_100hz_selected.xml"
+    RAW_DIR = ROOT / "waveform_staging"
     MSEED_DIR = ROOT / "mseed"
     return (
         EAST,
@@ -68,6 +69,7 @@ def _(Path, UTCDateTime):
         MAX_WORKERS,
         METADATA_DIR,
         MSEED_DIR,
+        RAW_DIR,
         NETWORK,
         NORTH,
         RAW_XML,
@@ -536,16 +538,18 @@ def _(
     GEONET,
     MAX_WORKERS,
     MSEED_DIR,
+    RAW_DIR,
     NETWORK,
     START,
     download,
     mo,
     selected_inventory,
     start_waveforms,
+    waveform,
 ):
     if start_waveforms.value:
-        waveform_summary = download.download_waveforms(
-            MSEED_DIR,
+        download_summary = download.download_waveforms(
+            RAW_DIR,
             network=NETWORK,
             starttime=START,
             endtime=END,
@@ -554,19 +558,25 @@ def _(
             channel="*",
             client=GEONET,
             inventory=selected_inventory,
-            output_format="mseed",
-            max_workers=MAX_WORKERS,
+            network_workers=10,
             max_retries=5,
             retry_backoff=2.0,
             overwrite=False,
             save_report=True,
         )
+        waveform_summary = waveform.archive_waveforms(
+            RAW_DIR,
+            MSEED_DIR,
+            inventory=selected_inventory,
+            max_workers=MAX_WORKERS,
+            remove_original=False,
+        )
         download_status = mo.callout(
-            f"任务数：{waveform_summary.total:,}；下载："
-            f"{waveform_summary.downloaded:,}；跳过：{waveform_summary.skipped:,}；"
-            f"无数据：{waveform_summary.no_data:,}；失败："
+            f"下载任务：{download_summary.total:,}；成功："
+            f"{download_summary.succeeded:,}；无数据：{download_summary.no_data:,}；"
+            f"归档成功：{waveform_summary.succeeded:,}；归档失败："
             f"{waveform_summary.failed:,}；报告：`{waveform_summary.report_path}`",
-            kind="success" if waveform_summary.ok else "warn",
+            kind=("success" if download_summary.ok and waveform_summary.ok else "warn"),
         )
     else:
         download_status = mo.md("点击按钮后才会开始波形下载。")

@@ -60,7 +60,7 @@ number of days.
 | Providers | One FDSN provider per call | One or multiple providers |
 | Availability discovery | Station lookup or local inventory | Managed by ObsPy |
 | Output | Daily MiniSEED or per-trace SAC | Channel/time-chunk MiniSEED |
-| Concurrency | `max_workers` station-day threads | `threads_per_client` per provider |
+| Concurrency | Raw network threads; archival is a separate process stage | `threads_per_client` per provider |
 | Retry/reporting | SeisPy lifecycle report, log, summary, and sampled errors | SeisPy lifecycle report and log plus ObsPy acquisition report |
 | Spatial selection | FDSN selectors | Global, rectangular, circular, or custom domain |
 | Metadata | Optional input inventory | Downloads matching StationXML |

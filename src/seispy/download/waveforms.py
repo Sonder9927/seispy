@@ -1,17 +1,16 @@
-"""Download waveform data from FDSN providers."""
+"""Download unmodified waveform responses from FDSN providers."""
 
 import fnmatch
 import logging
 import random
 import threading
 import time
-import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-from obspy import UTCDateTime, read, read_inventory
+from obspy import UTCDateTime, read_inventory
 from obspy.clients.fdsn.header import (
     FDSNBadGatewayException,
     FDSNInternalServerException,
@@ -21,27 +20,18 @@ from obspy.clients.fdsn.header import (
     FDSNTooManyRequestsException,
 )
 from obspy.core.inventory import Inventory
-from obspy.io.mseed import InternalMSEEDWarning
-from seispy.archive import (
-    WaveformIdentity,
-    channel_mseed_path,
-    mseed_path,
-    stream_day_identity,
-)
+from tqdm import tqdm
+
+from seispy.archive import channel_mseed_path
+from seispy.download.stations import EARTHSCOPE_URL, _client
+from seispy.inventory import analyze_inventory
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
-    cleanup_outputs,
     commit_output,
     new_run_id,
     temporary_output_path,
 )
-from tqdm import tqdm
-
-from seispy.waveform.integrity import merge_short_gaps
-from seispy.waveform.mseed_recovery import filter_valid_mseed_records
-from seispy.download.stations import EARTHSCOPE_URL, _client
-from seispy.inventory import analyze_inventory
 
 logger = logging.getLogger(__name__)
 _THREAD_STATE = threading.local()
@@ -53,19 +43,12 @@ _RETRYABLE_ERRORS = (
     FDSNServiceUnavailableException,
     FDSNTimeoutException,
     FDSNTooManyRequestsException,
-    InternalMSEEDWarning,
 )
 
 
 @dataclass(frozen=True)
 class WaveformDownloadError:
-    """Describe one sampled waveform download failure.
-
-    Attributes:
-        station: Station code associated with the failure.
-        day: Requested UTC day in ISO format.
-        error: Exception type and message.
-    """
+    """Describe one sampled raw waveform download failure."""
 
     station: str
     day: str
@@ -85,8 +68,6 @@ class _Counts:
 
 @dataclass(frozen=True, order=True)
 class _InventoryTask:
-    """One exact StationXML-backed waveform request."""
-
     network: str
     station: str
     location: str
@@ -98,34 +79,7 @@ class _InventoryTask:
 
 @dataclass(frozen=True)
 class WaveformDownloadSummary(BatchSummary):
-    """Summarize a waveform download run without retaining every task.
-
-    This class is returned by :func:`download_waveforms`; applications normally
-    do not instantiate it directly.
-
-    Attributes:
-        run_id: Unique identifier for the processing run.
-        total: Number of requested station-day or XML-guided NSLC-day tasks.
-        succeeded: Number of tasks succeeded successfully.
-        skipped: Number skipped because output already existed.
-        no_data: Number for which the FDSN service returned no data.
-        failed: Number of unexpected failures.
-        files_written: Number of waveform files committed to disk.
-        issue_samples: Bounded sample of unexpected download errors.
-        output_dir: Root directory containing the succeeded files.
-        duration_seconds: Total elapsed wall-clock time.
-        report_path: JSON report path when a report was generated.
-        log_path: Persistent text log path when logging was enabled.
-        status: Run state: running, completed, interrupted, or failed.
-
-    Examples:
-        ```python
-        summary = download_waveforms(...)
-        print(summary.succeeded, summary.failed)
-        if summary.report_path:
-            print(summary.report_path)
-        ```
-    """
+    """Summarize downloads of unverified ``.mseed.raw`` responses."""
 
     total: int
     succeeded: int
@@ -153,75 +107,57 @@ def download_waveforms(
     client: str = EARTHSCOPE_URL,
     username: str | None = None,
     password: str | None = None,
-    max_workers: int = 5,
+    network_workers: int = 10,
     overwrite: bool = False,
     max_error_samples: int = 20,
     max_retries: int = 2,
     retry_backoff: float = 1.0,
     save_report: bool | None = True,
     save_log: bool = True,
-    output_format: Literal["mseed", "sac"] = "mseed",
     inventory: str | Path | Inventory | None = None,
-    discard_corrupt_records: bool = True,
 ) -> WaveformDownloadSummary:
-    """Download daily waveform files for one network.
+    """Download FDSN responses byte-for-byte without invoking libmseed.
+
+    The output is an unverified staging area. Files use the ``.mseed.raw``
+    suffix and must be passed to :func:`seispy.waveform.archive_waveforms`
+    before normal processing.
 
     Args:
-        output_dir: Root directory for the succeeded waveform tree.
+        output_dir: Root directory for raw waveform responses.
         network: FDSN network code.
-        starttime: Inclusive start time accepted by ``UTCDateTime``.
-        endtime: Exclusive end time accepted by ``UTCDateTime``.
-        station: Station wildcard, comma-separated codes, or a list of codes.
+        starttime: Inclusive request start time.
+        endtime: Exclusive request end time.
+        station: Station wildcard, comma-separated codes, or explicit list.
         location: FDSN location selector.
         channel: FDSN channel selector.
         client: ObsPy FDSN client name or service URL.
         username: Username for restricted data.
         password: Password for restricted data.
-        max_workers: Maximum number of concurrent waveform requests.
-        overwrite: Whether existing destination files may be replaced.
-        max_error_samples: Maximum number of failures retained in the summary.
-        max_retries: Number of retries after a transient waveform request failure.
-        retry_backoff: Initial retry delay in seconds. Later delays increase
-            exponentially and include a small random jitter.
-        save_report: Write a continuously updated JSON report. Defaults to
-            ``True``. ``None`` retains the report only when issues occur.
-        save_log: Write a persistent, human-readable run log. Defaults to
-            ``True``.
-        output_format: Output format, either ``"mseed"`` or ``"sac"``.
-        inventory: Optional StationXML path or ObsPy inventory used as an exact
-            waveform manifest. Matching NSLC epochs are clipped to the request
-            interval and split at UTC-day boundaries. Remote station discovery
-            is not performed.
-        discard_corrupt_records: For XML-guided miniSEED downloads, preserve
-            independently valid raw records and discard corrupt records after a
-            persistent miniSEED integrity warning. No interpolation is applied.
+        network_workers: Maximum concurrent network transfers. Defaults to 10.
+        overwrite: Replace existing non-empty raw responses.
+        max_error_samples: Maximum sampled failures retained in the summary.
+        max_retries: Retries after a transient request failure.
+        retry_backoff: Initial exponential retry delay in seconds.
+        save_report: Persist the continuously updated JSON run report.
+        save_log: Persist the human-readable run log.
+        inventory: Optional StationXML path or Inventory used as an exact NSLC
+            request manifest. It is not used to validate downloaded bytes.
 
     Returns:
-        Counts, sampled failures, output location, and run duration.
-
-    Raises:
-        ValueError: If arguments, credentials, or the time range are invalid.
-
-    Examples:
-        ```python
-        summary = download_waveforms(
-            "data/mseed", "NZ", "2025-01-01", "2025-01-03",
-            station=["WEL"], channel="BH?", max_workers=1,
-        )
-        summary.output_dir.name
-        # => 'mseed'
-        ```
+        Download counts and paths. ``succeeded`` means transport succeeded; it
+        does not claim that the response is valid MiniSEED.
     """
-    run_id = new_run_id()
-    if max_workers < 1 or max_error_samples < 0 or max_retries < 0 or retry_backoff < 0:
+    if (
+        network_workers < 1
+        or max_error_samples < 0
+        or max_retries < 0
+        or retry_backoff < 0
+    ):
         raise ValueError(
-            "max_workers must be positive; sample/retry counts and backoff "
+            "network_workers must be positive; sample/retry counts and backoff "
             "must be non-negative"
         )
-    output_format = output_format.lower()
-    if output_format not in {"mseed", "sac"}:
-        raise ValueError("output_format must be 'mseed' or 'sac'")
-    _client(client, username, password)  # validate credentials and endpoint early
+    _client(client, username, password)
     start, end = UTCDateTime(starttime), UTCDateTime(endtime)
     if start >= end:
         raise ValueError("starttime must be earlier than endtime")
@@ -238,13 +174,9 @@ def download_waveforms(
             if isinstance(inventory, Inventory)
             else read_inventory(str(inventory), format="STATIONXML")
         )
-        # ``read_inventory`` always returns Inventory in production.  The type
-        # guard also keeps custom inventory-like test adapters usable.
         if isinstance(manifest, Inventory):
-            inventory_analysis = analyze_inventory(
-                manifest, starttime=start, endtime=end
-            )
-            inventory_analysis.download_suitability.require_safe("waveform download")
+            analysis = analyze_inventory(manifest, starttime=start, endtime=end)
+            analysis.download_suitability.require_safe("waveform download")
         task_items = _inventory_tasks(
             manifest, network, station, location, channel, start, end
         )
@@ -255,16 +187,14 @@ def download_waveforms(
             )
         stations = sorted({task.station for task in task_items})
         inventory_guided = True
+
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
-    aggregate = {
-        "total": 0,
-        "succeeded": 0,
-        "skipped": 0,
-        "no_data": 0,
-        "failed": 0,
-        "files_written": 0,
-    }
+    run_id = new_run_id()
+    aggregate = dict.fromkeys(
+        ("total", "succeeded", "skipped", "no_data", "failed", "files_written"),
+        0,
+    )
     issue_samples = []
     with BatchRun(
         "waveform-download",
@@ -286,29 +216,24 @@ def download_waveforms(
         )
         run.info(
             "run_id=%s request client=%s network=%s stations=%d days=%d "
-            "channel=%s format=%s",
+            "channel=%s network_workers=%d raw_only=true",
             run_id,
             client,
             network,
             len(stations),
             len(days),
             channel,
-            output_format,
+            network_workers,
         )
         tasks = iter(task_items)
         with (
-            warnings.catch_warnings(),
-            ThreadPoolExecutor(max_workers=max_workers) as executor,
-            tqdm(total=len(task_items), desc="Downloading waveforms") as bar,
+            ThreadPoolExecutor(max_workers=network_workers) as executor,
+            tqdm(total=len(task_items), desc="Downloading raw waveforms") as bar,
         ):
-            # Keep one filter active for the lifetime of the worker pool. Warning
-            # filter contexts are process-wide on Python 3.12, so entering one in
-            # every worker would race when concurrent requests finish.
-            warnings.simplefilter("error", InternalMSEEDWarning)
             pending = set()
             exhausted = False
             while pending or not exhausted:
-                while not exhausted and len(pending) < max_workers * 3:
+                while not exhausted and len(pending) < network_workers * 3:
                     try:
                         task = next(tasks)
                     except StopIteration:
@@ -324,11 +249,9 @@ def download_waveforms(
                             task,
                             overwrite,
                             min(max_error_samples, 1),
-                            output_format,
                             max_retries,
                             retry_backoff,
                             run,
-                            discard_corrupt_records,
                         )
                     else:
                         code, day = task
@@ -346,35 +269,33 @@ def download_waveforms(
                             min(day + 86400, end),
                             overwrite,
                             min(max_error_samples, 1),
-                            output_format,
                             max_retries,
                             retry_backoff,
                             run,
                         )
                     pending.add(future)
-                if pending:
-                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        result = future.result()
-                        for name in aggregate:
-                            aggregate[name] += getattr(result, name)
-                        issue_samples.extend(
-                            result.samples[
-                                : max(0, max_error_samples - len(issue_samples))
-                            ]
-                        )
-                        bar.update(1)
-                        run.checkpoint(
-                            completed=aggregate["total"],
-                            total=len(task_items),
-                            succeeded=aggregate["succeeded"],
-                            skipped=aggregate["skipped"],
-                            no_data=aggregate["no_data"],
-                            failed=aggregate["failed"],
-                            files_written=aggregate["files_written"],
-                            issue_samples=tuple(issue_samples),
-                            output_dir=output,
-                        )
+                if not pending:
+                    continue
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    result = future.result()
+                    for name in aggregate:
+                        aggregate[name] += getattr(result, name)
+                    issue_samples.extend(
+                        result.samples[: max(0, max_error_samples - len(issue_samples))]
+                    )
+                    bar.update(1)
+                    run.checkpoint(
+                        completed=aggregate["total"],
+                        total=len(task_items),
+                        succeeded=aggregate["succeeded"],
+                        skipped=aggregate["skipped"],
+                        no_data=aggregate["no_data"],
+                        failed=aggregate["failed"],
+                        files_written=aggregate["files_written"],
+                        issue_samples=tuple(issue_samples),
+                        output_dir=output,
+                    )
         summary = run.complete(
             WaveformDownloadSummary(
                 run_id=run_id,
@@ -416,7 +337,6 @@ def _station_codes(client, username, password, network, station, start, end):
 
 
 def _inventory_tasks(inventory, network, station, location, channel, start, end):
-    """Return exact NSLC-day requests backed by StationXML channel epochs."""
     station_patterns = _patterns(station)
     location_patterns = _patterns(location, normalize_empty_location=True)
     channel_patterns = _patterns(channel)
@@ -445,7 +365,6 @@ def _inventory_tasks(inventory, network, station, location, channel, start, end)
                     float(item.sample_rate),
                 )
                 intervals.setdefault(key, []).append((epoch_start, epoch_end))
-
     tasks = []
     for key, epochs in sorted(intervals.items()):
         merged = []
@@ -492,52 +411,6 @@ def _thread_client(base_url, username, password):
     return _THREAD_STATE.client
 
 
-def _download_station(
-    base_url,
-    username,
-    password,
-    output,
-    network,
-    station,
-    location,
-    channel,
-    days,
-    end,
-    overwrite,
-    sample_limit,
-    output_format="mseed",
-    max_retries=0,
-    retry_backoff=0,
-):
-    # Compatibility wrapper used by callers of the former station-level worker.
-    _THREAD_STATE.key = None
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", InternalMSEEDWarning)
-        return _combine(
-            [
-                _download_day(
-                    base_url,
-                    username,
-                    password,
-                    output,
-                    network,
-                    station,
-                    location,
-                    channel,
-                    day,
-                    min(day + 86400, end),
-                    overwrite,
-                    sample_limit,
-                    output_format,
-                    max_retries,
-                    retry_backoff,
-                )
-                for day in days
-            ],
-            sample_limit,
-        )
-
-
 def _download_inventory_task(
     base_url,
     username,
@@ -546,223 +419,28 @@ def _download_inventory_task(
     task,
     overwrite,
     sample_limit,
-    output_format,
     max_retries,
     retry_backoff,
     journal=None,
-    discard_corrupt_records=True,
 ):
-    if not overwrite and _inventory_task_is_complete(output, task, output_format):
-        return _Counts(total=1, skipped=1)
-    try:
-        try:
-            stream = _fetch_waveforms(
-                base_url,
-                username,
-                password,
-                task.network,
-                task.station,
-                task.location or "--",
-                task.channel,
-                task.starttime,
-                task.endtime,
-                max_retries,
-                retry_backoff,
-                journal,
-            )
-        except InternalMSEEDWarning:
-            if output_format != "mseed" or not discard_corrupt_records:
-                raise
-            discarded = _recover_inventory_mseed(
-                base_url,
-                username,
-                password,
-                output,
-                task,
-                overwrite,
-                max_retries,
-                retry_backoff,
-                journal,
-            )
-            if journal is not None:
-                journal.warning(
-                    "recovered nslc=%s.%s.%s.%s start=%s end=%s; "
-                    "discarded_corrupt_records=%d; gaps were preserved",
-                    task.network,
-                    task.station,
-                    task.location,
-                    task.channel,
-                    task.starttime,
-                    task.endtime,
-                    discarded,
-                )
-            return _Counts(total=1, succeeded=1, files_written=1)
-        _validate_inventory_stream(stream, task)
-        if output_format == "mseed":
-            destination = _inventory_mseed_path(output, task)
-            if destination.exists() and not overwrite:
-                raise FileExistsError(
-                    f"existing MiniSEED is invalid for its XML task: {destination}; "
-                    "use overwrite=True to replace it"
-                )
-            temporary = temporary_output_path(destination)
-            try:
-                stream.write(str(temporary), format="MSEED")
-                commit_output(temporary, destination, overwrite=overwrite)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-            written, was_skipped = 1, False
-        else:
-            written, was_skipped = _write_waveforms(
-                stream,
-                output,
-                task.network,
-                task.station,
-                UTCDateTime(task.starttime.date),
-                output_format,
-                overwrite,
-                task.location or "--",
-                task.channel,
-            )
-        return _Counts(
-            total=1,
-            succeeded=int(not was_skipped),
-            skipped=int(was_skipped),
-            files_written=written,
-        )
-    except FDSNNoDataException:
-        return _Counts(total=1, no_data=1)
-    except Exception as exc:
-        samples = ()
-        if sample_limit:
-            samples = (
-                WaveformDownloadError(
-                    task.station,
-                    task.starttime.strftime("%Y-%m-%d"),
-                    f"{type(exc).__name__}: {exc}",
-                ),
-            )
-        return _Counts(total=1, failed=1, samples=samples)
-
-
-def _inventory_mseed_path(output, task):
-    return channel_mseed_path(
-        output,
+    destination = _inventory_raw_path(output, task)
+    return _download_raw_response(
+        base_url,
+        username,
+        password,
+        destination,
         task.network,
         task.station,
-        task.location,
+        task.location or "--",
         task.channel,
         task.starttime,
         task.endtime,
+        overwrite,
+        sample_limit,
+        max_retries,
+        retry_backoff,
+        journal,
     )
-
-
-def _recover_inventory_mseed(
-    base_url,
-    username,
-    password,
-    output,
-    task,
-    overwrite,
-    max_retries,
-    retry_backoff,
-    journal,
-):
-    destination = _inventory_mseed_path(output, task)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() and not overwrite:
-        raise FileExistsError(
-            f"existing MiniSEED is invalid for its XML task: {destination}; "
-            "use overwrite=True to replace it"
-        )
-    raw = temporary_output_path(destination.with_suffix(".raw.mseed"))
-    filtered = temporary_output_path(destination)
-    try:
-        _fetch_waveform_file(
-            base_url,
-            username,
-            password,
-            task.network,
-            task.station,
-            task.location or "--",
-            task.channel,
-            task.starttime,
-            task.endtime,
-            raw,
-            max_retries,
-            retry_backoff,
-            journal,
-        )
-        recovery = filter_valid_mseed_records(
-            raw,
-            filtered,
-            network=task.network,
-            station=task.station,
-            location=task.location,
-            channel=task.channel,
-            sample_rate=task.sample_rate,
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", InternalMSEEDWarning)
-            recovered_stream = read(filtered, format="MSEED")
-        _validate_inventory_stream(recovered_stream, task)
-        commit_output(filtered, destination, overwrite=overwrite)
-        return recovery.discarded_records
-    finally:
-        raw.unlink(missing_ok=True)
-        filtered.unlink(missing_ok=True)
-
-
-def _validate_inventory_stream(stream, task):
-    if not len(stream):
-        raise ValueError("waveform stream is empty")
-    expected = (task.network, task.station, task.location, task.channel)
-    for trace in stream:
-        identity = WaveformIdentity.from_trace(trace)
-        actual = (
-            identity.network,
-            identity.station,
-            identity.location,
-            identity.channel,
-        )
-        if actual != expected:
-            raise ValueError(
-                f"succeeded trace identity {actual!r} does not match XML task "
-                f"{expected!r}"
-            )
-        if abs(float(trace.stats.sampling_rate) - task.sample_rate) > 1e-6:
-            raise ValueError(
-                f"succeeded sample rate {trace.stats.sampling_rate} does not "
-                f"match XML task {task.sample_rate}"
-            )
-
-
-def _inventory_task_is_complete(output, task, output_format):
-    if output_format == "mseed":
-        path = _inventory_mseed_path(output, task)
-        if not path.is_file() or path.stat().st_size == 0:
-            return False
-        try:
-            stream = read(path, headonly=True)
-            _validate_inventory_stream(stream, task)
-            return True
-        except Exception as exc:
-            logger.warning(
-                "ignoring invalid XML-guided MiniSEED file %s: %s", path, exc
-            )
-        return False
-    directory = output / task.network / task.station / str(task.starttime.year)
-    location = task.location or "--"
-    pattern = f"{task.network}.{task.station}.{location}.{task.channel}.*.sac"
-    for path in directory.glob(pattern):
-        try:
-            stream = read(path, headonly=True)
-            _validate_inventory_stream(stream, task)
-            return True
-        except Exception:
-            continue
-    return False
 
 
 def _download_day(
@@ -778,17 +456,52 @@ def _download_day(
     request_end,
     overwrite,
     sample_limit,
-    output_format,
     max_retries,
     retry_backoff,
     journal=None,
 ):
-    if not overwrite and _day_is_complete(
-        output, network, station, day, output_format, location, channel
-    ):
+    destination = _station_day_raw_path(output, network, station, day)
+    return _download_raw_response(
+        base_url,
+        username,
+        password,
+        destination,
+        network,
+        station,
+        location,
+        channel,
+        day,
+        request_end,
+        overwrite,
+        sample_limit,
+        max_retries,
+        retry_backoff,
+        journal,
+    )
+
+
+def _download_raw_response(
+    base_url,
+    username,
+    password,
+    destination,
+    network,
+    station,
+    location,
+    channel,
+    start,
+    end,
+    overwrite,
+    sample_limit,
+    max_retries,
+    retry_backoff,
+    journal,
+):
+    if destination.is_file() and destination.stat().st_size > 0 and not overwrite:
         return _Counts(total=1, skipped=1)
+    temporary = temporary_output_path(destination)
     try:
-        stream = _fetch_waveforms(
+        _fetch_waveform_file(
             base_url,
             username,
             password,
@@ -796,29 +509,19 @@ def _download_day(
             station,
             location,
             channel,
-            day,
-            request_end,
+            start,
+            end,
+            temporary,
             max_retries,
             retry_backoff,
             journal,
         )
-        written, was_skipped = _write_waveforms(
-            stream,
-            output,
-            network,
-            station,
-            day,
-            output_format,
-            overwrite,
-            location,
-            channel,
+        commit_output(
+            temporary,
+            destination,
+            overwrite=overwrite or destination.exists(),
         )
-        return _Counts(
-            total=1,
-            succeeded=int(not was_skipped),
-            skipped=int(was_skipped),
-            files_written=written,
-        )
+        return _Counts(total=1, succeeded=1, files_written=1)
     except FDSNNoDataException:
         return _Counts(total=1, no_data=1)
     except Exception as exc:
@@ -826,13 +529,35 @@ def _download_day(
         if sample_limit:
             samples = (
                 WaveformDownloadError(
-                    station, day.strftime("%Y-%m-%d"), f"{type(exc).__name__}: {exc}"
+                    station,
+                    start.strftime("%Y-%m-%d"),
+                    f"{type(exc).__name__}: {exc}",
                 ),
             )
         return _Counts(total=1, failed=1, samples=samples)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def _fetch_waveforms(
+def _inventory_raw_path(output, task):
+    archive = channel_mseed_path(
+        output,
+        task.network,
+        task.station,
+        task.location,
+        task.channel,
+        task.starttime,
+        task.endtime,
+    )
+    return archive.with_suffix(f"{archive.suffix}.raw")
+
+
+def _station_day_raw_path(output, network, station, day):
+    directory = output / network / station / str(day.year)
+    return directory / f"{network}.{station}.{day.year}.{day.julday:03d}.mseed.raw"
+
+
+def _fetch_waveform_file(
     base_url,
     username,
     password,
@@ -842,59 +567,31 @@ def _fetch_waveforms(
     channel,
     start,
     end,
+    destination,
     max_retries,
     retry_backoff,
     journal=None,
 ):
+    """Download response bytes without asking ObsPy to decode MiniSEED."""
     client = _thread_client(base_url, username, password)
+    destination = Path(destination)
     for attempt in range(max_retries + 1):
+        destination.unlink(missing_ok=True)
         try:
-            stream = client.get_waveforms(
+            client.get_waveforms(
                 network=network,
                 station=station,
                 location=location,
                 channel=channel,
                 starttime=start,
                 endtime=end,
+                filename=str(destination),
             )
-            if not len(stream):
-                raise FDSNNoDataException("empty stream")
-            return stream
+            if not destination.is_file() or destination.stat().st_size == 0:
+                raise FDSNNoDataException("empty raw waveform response")
+            return
         except FDSNNoDataException:
             raise
-        except InternalMSEEDWarning as exc:
-            # Retry this integrity failure at most once. If it persists, the
-            # caller can recover records locally from one untouched download.
-            if attempt >= min(max_retries, 1):
-                if journal is not None:
-                    journal.error(
-                        "persistent miniSEED integrity failure after %d attempts "
-                        "nslc=%s.%s.%s.%s start=%s end=%s error=%s: %s",
-                        attempt + 1,
-                        network,
-                        station,
-                        location,
-                        channel,
-                        start,
-                        end,
-                        type(exc).__name__,
-                        exc,
-                    )
-                raise
-            delay = retry_backoff
-            if journal is not None:
-                journal.warning(
-                    "retrying miniSEED integrity failure once delay=%.3fs "
-                    "nslc=%s.%s.%s.%s start=%s end=%s",
-                    delay,
-                    network,
-                    station,
-                    location,
-                    channel,
-                    start,
-                    end,
-                )
-            time.sleep(delay + random.uniform(0, delay * 0.1))
         except _RETRYABLE_ERRORS as exc:
             if attempt == max_retries:
                 if journal is not None:
@@ -930,199 +627,3 @@ def _fetch_waveforms(
                     exc,
                 )
             time.sleep(delay + random.uniform(0, delay * 0.1))
-
-
-def _fetch_waveform_file(
-    base_url,
-    username,
-    password,
-    network,
-    station,
-    location,
-    channel,
-    start,
-    end,
-    destination,
-    max_retries,
-    retry_backoff,
-    journal=None,
-):
-    """Download untouched miniSEED bytes for record-level recovery."""
-    client = _thread_client(base_url, username, password)
-    retryable = tuple(
-        error for error in _RETRYABLE_ERRORS if error is not InternalMSEEDWarning
-    )
-    for attempt in range(max_retries + 1):
-        Path(destination).unlink(missing_ok=True)
-        try:
-            client.get_waveforms(
-                network=network,
-                station=station,
-                location=location,
-                channel=channel,
-                starttime=start,
-                endtime=end,
-                filename=str(destination),
-            )
-            if not Path(destination).is_file() or Path(destination).stat().st_size == 0:
-                raise FDSNNoDataException("empty raw miniSEED response")
-            return
-        except FDSNNoDataException:
-            raise
-        except retryable as exc:
-            if attempt == max_retries:
-                raise
-            delay = retry_backoff * (2**attempt)
-            if journal is not None:
-                journal.warning(
-                    "retrying raw miniSEED recovery attempt=%d/%d delay=%.3fs "
-                    "nslc=%s.%s.%s.%s error=%s: %s",
-                    attempt + 2,
-                    max_retries + 1,
-                    delay,
-                    network,
-                    station,
-                    location,
-                    channel,
-                    type(exc).__name__,
-                    exc,
-                )
-            time.sleep(delay + random.uniform(0, delay * 0.1))
-
-
-def _write_waveforms(
-    stream,
-    output,
-    network,
-    station,
-    day,
-    output_format,
-    overwrite,
-    location="*",
-    channel="*",
-):
-    if output_format == "mseed":
-        actual = stream_day_identity(stream)
-        expected = (network, station, int(day.year), int(day.julday))
-        if actual != expected:
-            raise ValueError(
-                f"succeeded stream identity {actual!r} does not match request "
-                f"{expected!r}"
-            )
-        destination = mseed_path(output, stream)
-        if destination.exists() and not overwrite:
-            return 0, True
-        temporary = temporary_output_path(destination)
-        try:
-            stream.write(str(temporary), format="MSEED")
-            commit_output(temporary, destination, overwrite=overwrite)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            raise
-        return 1, False
-
-    merge_short_gaps(stream)
-    destinations = []
-    for trace in stream:
-        identity = WaveformIdentity.from_trace(trace)
-        expected = (network, station, int(day.year), int(day.julday))
-        actual = (identity.network, identity.station, identity.year, identity.julday)
-        if actual != expected:
-            raise ValueError(
-                f"succeeded trace identity {actual!r} does not match request "
-                f"{expected!r}"
-            )
-        destinations.append(identity.sac_path(output))
-    temporary_paths = []
-    created = []
-    try:
-        for trace, destination in zip(stream, destinations, strict=True):
-            if destination.exists() and not overwrite:
-                continue
-            temporary = temporary_output_path(destination)
-            temporary_paths.append(temporary)
-            trace.write(str(temporary), format="SAC")
-            commit_output(temporary, destination, overwrite=overwrite)
-            temporary_paths.remove(temporary)
-            created.append(destination)
-    except Exception:
-        cleanup_outputs(temporary_paths)
-        if not overwrite:
-            cleanup_outputs(created)
-        raise
-    return len(created), not created
-
-
-def _day_is_complete(output, network, station, day, output_format, location, channel):
-    directory = output / network / station / str(day.year)
-    expected = (network, station, int(day.year), int(day.julday))
-    if output_format == "mseed":
-        path = directory / f"{network}.{station}.{day.year}.{day.julday:03d}.mseed"
-        if not path.is_file() or path.stat().st_size == 0:
-            return False
-        try:
-            return stream_day_identity(read(path, headonly=True)) == expected
-        except Exception as exc:
-            logger.warning("ignoring invalid MiniSEED file %s: %s", path, exc)
-            return False
-    records = []
-    for path in directory.glob("*.sac"):
-        if path.stat().st_size == 0:
-            continue
-        try:
-            traces = read(path, headonly=True)
-            if len(traces) != 1:
-                raise ValueError("SAC file must contain exactly one trace")
-            identity = WaveformIdentity.from_trace(traces[0])
-            actual = (
-                identity.network,
-                identity.station,
-                identity.year,
-                identity.julday,
-            )
-            if actual == expected and identity.matches_sac_path(path, output):
-                records.append((identity.location, identity.channel))
-        except Exception as exc:
-            logger.warning("ignoring invalid SAC file %s: %s", path, exc)
-    return _selectors_are_complete(records, location, channel)
-
-
-def _selectors_are_complete(records, location, channel):
-    if not records:
-        return False
-    locations = [value.strip() for value in location.split(",") if value.strip()]
-    channels = [value.strip() for value in channel.split(",") if value.strip()]
-    matching = [
-        (file_location, file_channel)
-        for file_location, file_channel in records
-        if any(fnmatch.fnmatchcase(file_location, item) for item in locations)
-        and any(fnmatch.fnmatchcase(file_channel, item) for item in channels)
-    ]
-    if not matching:
-        return False
-    explicit_channels = [
-        item for item in channels if "*" not in item and "?" not in item
-    ]
-    return all(
-        any(file_channel == item for _, file_channel in matching)
-        for item in explicit_channels
-    )
-
-
-def _sac_destination(trace, directory):
-    return WaveformIdentity.from_trace(trace).sac_path(directory)
-
-
-def _combine(items, limit):
-    samples = []
-    for item in items:
-        samples.extend(item.samples[: max(0, limit - len(samples))])
-    return _Counts(
-        sum(x.total for x in items),
-        sum(x.succeeded for x in items),
-        sum(x.skipped for x in items),
-        sum(x.no_data for x in items),
-        sum(x.failed for x in items),
-        sum(x.files_written for x in items),
-        tuple(samples),
-    )

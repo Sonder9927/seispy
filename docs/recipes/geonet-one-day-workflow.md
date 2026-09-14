@@ -49,7 +49,8 @@ END = "2025-01-02T00:00:00"  # FDSN end times are exclusive.
 
 ROOT = Path("data/geonet/2025-01-01")
 STATIONXML = ROOT / "metadata" / "NZ_ABAZ_AKFZ_HH_2025-01-01.xml"
-MSEED = ROOT / "01_mseed_raw"
+RAW = ROOT / "00_waveform_staging"
+MSEED = ROOT / "01_mseed"
 
 
 def require_ok(stage, summary):
@@ -81,8 +82,8 @@ rates = sorted({float(channel.sample_rate) for channel in channels})
 if rates != [100.0]:
     raise RuntimeError(f"Expected only 100 Hz channels, found {rates}")
 
-waveforms = download.download_waveforms(
-    MSEED,
+raw_waveforms = download.download_waveforms(
+    RAW,
     client=FDSN_BASE_URL,
     network=NETWORK,
     station=STATIONS,
@@ -90,15 +91,24 @@ waveforms = download.download_waveforms(
     channel=CHANNEL,
     starttime=START,
     endtime=END,
-    output_format="mseed",
     inventory=inventory,
-    max_workers=2,
+    network_workers=10,
     max_retries=3,
     retry_backoff=2.0,
     overwrite=False,
     save_report=True,
 )
-require_ok("MiniSEED download", waveforms)
+require_ok("raw waveform download", raw_waveforms)
+
+waveforms = waveform.archive_waveforms(
+    RAW,
+    MSEED,
+    output_format="mseed",
+    inventory=inventory,
+    max_workers=5,
+    remove_original=False,
+)
+require_ok("MiniSEED archive", waveforms)
 ```
 
 ## Part 1: complete workflow from 100 Hz MiniSEED to 1 Hz SAC

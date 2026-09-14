@@ -3,6 +3,15 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "archive_waveforms": ("seispy.waveform.archiving", "archive_waveforms"),
+    "WaveformArchiveIssue": (
+        "seispy.waveform.archiving",
+        "WaveformArchiveIssue",
+    ),
+    "WaveformArchiveSummary": (
+        "seispy.waveform.archiving",
+        "WaveformArchiveSummary",
+    ),
     "convert_mseed_to_sac": ("seispy.waveform.conversion", "convert_mseed_to_sac"),
     "WaveformConversionIssue": (
         "seispy.waveform.conversion",
