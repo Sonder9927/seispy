@@ -44,9 +44,9 @@ inventory = download.download_inventory(
 )
 
 summary = deconvolution.remove_instrument_response(
-    "data/sac",
+    "data/sac/NZ",
     "data/metadata/stations.xml",
-    output_dir="data/deconvolved",
+    output_dir="data/deconvolved/NZ",
     remove_original=False,
 )
 print(summary.succeeded, summary.failed)
@@ -65,7 +65,7 @@ download.download_earthquake_events(
 )
 
 summary = event.cut_event_waveforms(
-    "data/continuous",
+    "data/continuous/NZ",
     "data/events",
     "data/events.csv",
     station_csv="data/stations.csv",

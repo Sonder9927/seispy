@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def correct_orientation(
-    src_dir: str | Path,
+    net_dir: str | Path,
     dest_dir: str | Path,
     cor_csv: str | Path,
     max_workers: int = 4,
@@ -26,7 +26,7 @@ def correct_orientation(
     """Rotate three-component SAC data to correct sensor orientation.
 
     Args:
-        src_dir: Root directory of input SAC files grouped by station.
+        net_dir: One network directory of input SAC files grouped by station.
         dest_dir: Destination root preserving the input directory structure.
         cor_csv: CSV containing station orientation and tilt values in degrees.
         max_workers: Maximum number of station worker processes.
@@ -40,7 +40,7 @@ def correct_orientation(
     Examples:
         ```python
         correct_orientation(
-            "data/sac", "data/orientation-corrected", "orientation.csv",
+            "data/sac/NZ", "data/orientation-corrected/NZ", "orientation.csv",
             max_workers=1,
         )
         ```
@@ -50,7 +50,7 @@ def correct_orientation(
         raise ValueError("max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
-    src_path = Path(src_dir).expanduser().resolve()
+    src_path = Path(net_dir).expanduser().resolve()
     output_path = Path(dest_dir).expanduser().resolve()
     if not src_path.is_dir():
         raise NotADirectoryError(f"Source directory does not exist: {src_path}")
@@ -239,5 +239,5 @@ if __name__ == "__main__":
     cor_csv = "/path/to/cor.csv"
 
     correct_orientation(
-        src_dir=src_directory, dest_dir=dest_directory, cor_csv=cor_csv, max_workers=4
+        net_dir=src_directory, dest_dir=dest_directory, cor_csv=cor_csv, max_workers=4
     )

@@ -22,6 +22,20 @@ def _raw_mseed(root, *, channel="HHZ"):
     return path
 
 
+def _unsorted_sac(root):
+    trace = Trace(data=np.arange(100, dtype=np.float32))
+    trace.stats.network = "NZ"
+    trace.stats.station = "AAA"
+    trace.stats.location = "10"
+    trace.stats.channel = "HHZ"
+    trace.stats.starttime = UTCDateTime("2026-01-01")
+    trace.stats.sampling_rate = 10
+    path = root / "incoming" / "arbitrary-name.sac"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trace.write(str(path), format="SAC")
+    return path
+
+
 def test_archive_defaults_are_safe():
     parameters = inspect.signature(waveform.archive_waveforms).parameters
 
@@ -70,6 +84,43 @@ def test_sac_archive_writes_one_valid_file_per_trace(tmp_path):
     assert read(files[0], format="SAC")[0].id == "NZ.AAA.10.HHZ"
     assert raw.exists()
     assert summary.files_written == 1
+
+
+def test_archive_organizes_existing_sac_from_headers(tmp_path):
+    source = tmp_path / "unsorted"
+    original = _unsorted_sac(source)
+    output = tmp_path / "archive"
+
+    summary = waveform.archive_waveforms(
+        source,
+        output,
+        output_format="sac",
+        pattern="*.sac",
+        max_workers=1,
+    )
+
+    archived = output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.000000.sac"
+    assert archived.is_file()
+    assert read(archived, format="SAC")[0].id == "NZ.AAA.10.HHZ"
+    assert original.is_file()
+    assert summary.succeeded == summary.files_written == 1
+    assert summary.failed == 0
+
+
+def test_sac_source_cannot_be_archived_as_mseed(tmp_path):
+    source = tmp_path / "unsorted"
+    original = _unsorted_sac(source)
+
+    summary = waveform.archive_waveforms(
+        source,
+        tmp_path / "archive",
+        pattern="*.sac",
+        max_workers=1,
+    )
+
+    assert summary.failed == 1
+    assert "output_format='sac'" in summary.issue_samples[0].error
+    assert original.is_file()
 
 
 def test_invalid_source_is_reported_and_retained(tmp_path):

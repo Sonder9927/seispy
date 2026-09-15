@@ -85,7 +85,7 @@ class CutEventSummary(BatchSummary):
 
 
 def cut_event_waveforms(
-    src_dir: str | Path,
+    net_dir: str | Path,
     dest_dir: str | Path,
     event_csv: str | Path,
     station_csv: str | Path | None = None,
@@ -98,7 +98,7 @@ def cut_event_waveforms(
     """Cut event windows from continuous SAC data.
 
     Args:
-        src_dir: One network directory containing station/year SAC archives.
+        net_dir: One network directory containing station/year SAC archives.
         dest_dir: Destination root for event waveform files.
         event_csv: Event table consumed by :func:`load_events`.
         station_csv: Optional station table. Directory names are used if omitted.
@@ -129,9 +129,9 @@ def cut_event_waveforms(
         raise ValueError("max_error_samples cannot be negative")
 
     events = load_events(event_csv, time_window)
-    stations = load_stations(src_dir, station_csv)
+    stations = load_stations(net_dir, station_csv)
     archive_index = WaveformArchiveIndex.build(
-        src_dir, stations={item["station"] for item in stations}
+        net_dir, stations={item["station"] for item in stations}
     )
     waveform_reader = WaveformReader()
     events.sort(key=lambda item: item["start"])
@@ -168,9 +168,9 @@ def cut_event_waveforms(
             issue_samples=tuple(samples),
         )
         run.info(
-            "run_id=%s src=%s dest=%s stations=%d events=%d time_window=%s",
+            "run_id=%s net_dir=%s dest=%s stations=%d events=%d time_window=%s",
             run_id,
-            src_dir,
+            net_dir,
             dest_dir,
             len(stations),
             len(events),
@@ -182,7 +182,7 @@ def cut_event_waveforms(
                     result = cut_event_station(
                         event,
                         station,
-                        src_dir,
+                        net_dir,
                         dest_dir,
                         archive_index=archive_index,
                         waveform_reader=waveform_reader,

@@ -14,8 +14,8 @@ times expected by the correction workflow.
 from seispy import correct
 
 summary = correct.correct_clock_drift(
-    "data/sac",
-    "data/drift-corrected",
+    "data/sac/NZ",
+    "data/drift-corrected/NZ",
     "data/metadata/clock-drift.csv",
     max_workers=2,
 )
@@ -30,8 +30,8 @@ values are in degrees.
 
 ```python
 summary = correct.correct_orientation(
-    "data/drift-corrected",
-    "data/orientation-corrected",
+    "data/drift-corrected/NZ",
+    "data/orientation-corrected/NZ",
     "data/metadata/orientation.csv",
     max_workers=2,
 )

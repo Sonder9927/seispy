@@ -149,4 +149,4 @@ the last report remains `running`, preserving the last checkpoint. Set
   using only raw files whose download has already committed.
 
 [See download parameters →](../api/download.md#download-waveforms)
-[See archive parameters →](../api/waveform.md#archive-raw-waveform-responses)
+[See archive parameters →](../api/waveform.md#archive-waveform-files)

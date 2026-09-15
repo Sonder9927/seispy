@@ -4,7 +4,7 @@ Convert, organize, merge, and annotate waveform files.
 
 ## Functions
 
-### Archive raw waveform responses
+### Archive waveform files
 
 ::: seispy.waveform.archiving.archive_waveforms
 
@@ -24,10 +24,6 @@ workflows.
 ::: seispy.waveform.coverage.summarize_waveform_coverage
 
 ::: seispy.waveform.coverage.plot_waveform_coverage
-
-### Sort SAC files
-
-::: seispy.waveform.organization.sort_waveforms
 
 ### Merge daily waveforms
 

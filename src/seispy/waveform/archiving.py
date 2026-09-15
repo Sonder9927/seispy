@@ -1,4 +1,4 @@
-"""Validate raw waveform responses and commit trusted MiniSEED or SAC archives."""
+"""Validate and organize waveform files into trusted canonical archives."""
 
 import shutil
 import warnings
@@ -49,7 +49,7 @@ class _ArchiveResult:
 
 @dataclass(frozen=True)
 class WaveformArchiveSummary(BatchSummary):
-    """Summarize conversion of raw responses into a trusted archive."""
+    """Summarize validation and organization into a trusted archive."""
 
     total: int
     succeeded: int
@@ -85,19 +85,23 @@ def archive_waveforms(
     save_report: bool | None = True,
     save_log: bool = True,
 ) -> WaveformArchiveSummary:
-    """Validate raw responses and archive them as MiniSEED or SAC.
+    """Validate and organize MiniSEED responses or SAC files.
 
-    Native MiniSEED operations run in isolated worker processes. A source is
-    removed only after every output for that source commits successfully.
-    Sources that required record recovery are retained as forensic evidence.
+    Raw MiniSEED responses can be archived as MiniSEED or converted to SAC.
+    Existing SAC files can be reorganized into canonical SAC paths by selecting
+    them with ``pattern`` and ``output_format="sac"``. Native waveform reads run
+    in isolated worker processes. A source is removed only after every output
+    for that source commits successfully. Sources that required MiniSEED record
+    recovery are retained as forensic evidence.
 
     Args:
-        source_dir: Root containing ``.mseed.raw`` responses.
+        source_dir: Root containing raw MiniSEED responses or SAC files.
         output_dir: Root for the trusted waveform archive.
         output_format: Trusted archive format, ``"mseed"`` or ``"sac"``.
         inventory: Optional StationXML metadata used to verify NSLC epochs and
             sample rates.
-        pattern: Recursive source filename pattern.
+        pattern: Recursive source filename pattern. Use, for example,
+            ``"*.sac"`` to organize existing SAC files.
         max_workers: Number of isolated validation/archive processes.
         remove_original: Remove a fully valid raw source after all outputs
             commit. Recovered sources are retained.
@@ -317,27 +321,32 @@ def _archive_one(
     source = Path(source_name)
     filtered = None
     recovered = False
-    discarded = 0
     try:
-        try:
-            stream = _read_full_mseed(source)
+        is_sac = source.suffix.lower() == ".sac"
+        if is_sac:
+            if output_format != "sac":
+                raise ValueError("SAC sources require output_format='sac'")
+            stream = _read_full_sac(source)
             trusted_source = source
-        except InternalMSEEDWarning:
-            if not discard_corrupt_records:
-                raise
-            filtered = temporary_output_path(source)
-            recovery = filter_valid_mseed_records(
-                source,
-                filtered,
-                network="*",
-                station="*",
-                location="*",
-                channel="*",
-            )
-            stream = _read_full_mseed(filtered)
-            trusted_source = filtered
-            recovered = True
-            discarded = recovery.discarded_records
+        else:
+            try:
+                stream = _read_full_mseed(source)
+                trusted_source = source
+            except InternalMSEEDWarning:
+                if not discard_corrupt_records:
+                    raise
+                filtered = temporary_output_path(source)
+                filter_valid_mseed_records(
+                    source,
+                    filtered,
+                    network="*",
+                    station="*",
+                    location="*",
+                    channel="*",
+                )
+                stream = _read_full_mseed(filtered)
+                trusted_source = filtered
+                recovered = True
         _validate_inventory(stream)
         if output_format == "mseed":
             written, skipped = _archive_mseed(
@@ -382,6 +391,13 @@ def _read_full_mseed(path):
         stream = read(path, format="MSEED")
     if not stream:
         raise ValueError("waveform stream is empty")
+    return stream
+
+
+def _read_full_sac(path):
+    stream = read(path, format="SAC")
+    if len(stream) != 1:
+        raise ValueError(f"SAC source must contain exactly one trace: {path}")
     return stream
 
 

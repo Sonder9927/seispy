@@ -44,16 +44,6 @@ _SUMMARY_COLUMNS = [
     "last_date",
 ]
 _OKABE_ITO_BLUE = "#0072B2"
-_DEFAULT_FONT = "DejaVu Sans"
-_CJK_FONT_CANDIDATES = (
-    "Noto Sans CJK SC",
-    "Source Han Sans SC",
-    "PingFang SC",
-    "Microsoft YaHei",
-    "Hiragino Sans GB",
-    "SimHei",
-    "Arial Unicode MS",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +60,7 @@ class WaveformCoverageReport:
 
 
 def waveform_coverage(
-    data_dir: str | Path,
+    net_dir: str | Path,
     *,
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
@@ -90,7 +80,7 @@ def waveform_coverage(
     estimates each valid canonical station-day filename as fully covered.
     """
     coverage = scan_waveform_coverage(
-        data_dir,
+        net_dir,
         start_date=start_date,
         end_date=end_date,
         extensions=extensions,
@@ -127,7 +117,7 @@ def waveform_coverage(
         ha="left",
         va="bottom",
         fontsize=8.5,
-        fontweight="semibold",
+        fontweight="bold",
         annotation_clip=False,
     )
     figure_path = _save_figure(figure, output_figure, dpi)
@@ -138,7 +128,7 @@ def waveform_coverage(
 
 
 def scan_waveform_coverage(
-    data_dir: str | Path,
+    net_dir: str | Path,
     *,
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
@@ -146,7 +136,7 @@ def scan_waveform_coverage(
     read_mode: Literal["filename", "header"] = "header",
 ) -> pd.DataFrame:
     """Return measured or filename-estimated coverage for each station-day."""
-    root = Path(data_dir).expanduser()
+    root = Path(net_dir).expanduser()
     if not root.is_dir():
         raise FileNotFoundError(f"waveform directory does not exist: {root}")
     start, end = _date_bounds(start_date, end_date)
@@ -291,9 +281,8 @@ def plot_waveform_coverage(
         .to_numpy()
     )
     height = max(3.2, min(14.0, 1.2 + 0.32 * len(stations)))
-    font_family = _plot_font_family((title, *stations))
     cmap = LinearSegmentedColormap.from_list("waveform_coverage", ["#FFFFFF", color])
-    with plt.rc_context({"font.family": font_family, "font.size": 9}):
+    with plt.rc_context({"font.size": 9}):
         fig, ax = plt.subplots(figsize=(10.0, height), constrained_layout=True)
         ax.imshow(
             matrix,
@@ -316,7 +305,7 @@ def plot_waveform_coverage(
         ax.set_yticks(range(len(stations)), labels=stations)
         ax.set_xlabel("Date (UTC)")
         ax.set_ylabel("Station")
-        ax.set_title(title, loc="left", fontweight="semibold")
+        ax.set_title(title, loc="left", fontweight="bold")
         ax.tick_params(axis="y", length=0)
         if output_file is not None:
             _save_figure(fig, output_file, dpi)
@@ -444,23 +433,3 @@ def _save_summary(summary, output_csv):
     destination.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(destination, index=False, encoding="utf-8")
     return destination
-
-
-def _plot_font_family(labels) -> str:
-    if not any(_contains_cjk(str(label)) for label in labels):
-        return _DEFAULT_FONT
-    from matplotlib import font_manager
-
-    installed = {font.name for font in font_manager.fontManager.ttflist}
-    return next(
-        (name for name in _CJK_FONT_CANDIDATES if name in installed), _DEFAULT_FONT
-    )
-
-
-def _contains_cjk(value: str) -> bool:
-    return any(
-        "\u3400" <= character <= "\u4dbf"
-        or "\u4e00" <= character <= "\u9fff"
-        or "\uf900" <= character <= "\ufaff"
-        for character in value
-    )

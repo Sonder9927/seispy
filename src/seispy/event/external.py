@@ -17,7 +17,7 @@ def _bundled_command(command: str, bin_path: str = "bin") -> Path:
 
 
 def cut_events_binary(
-    src_dir: str | Path,
+    net_dir: str | Path,
     dest_dir: str | Path,
     event_file: str | Path,
     time_window: int = 10800,
@@ -26,7 +26,7 @@ def cut_events_binary(
     """Cut event windows with the external ``cutevent`` toolchain.
 
     Args:
-        src_dir: Root directory containing continuous data by station.
+        net_dir: One network directory containing continuous data by station.
         dest_dir: Destination root for event waveform files.
         event_file: Catalog created by :func:`write_event_catalog`.
         time_window: Window length after each origin, in seconds.
@@ -43,7 +43,7 @@ def cut_events_binary(
         )
         ```
     """
-    stations = sorted(path for path in Path(src_dir).iterdir() if path.is_dir())
+    stations = sorted(path for path in Path(net_dir).iterdir() if path.is_dir())
     mktraceiodb = _bundled_command("mktraceiodb")
     cutevent = _bundled_command("cutevent")
     with ProcessPoolExecutor(max_workers=max_workers) as executor:

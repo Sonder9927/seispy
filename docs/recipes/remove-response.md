@@ -16,11 +16,11 @@ and recording interval. See [Station metadata](download-inventory.md).
 from seispy import deconvolution
 
 summary = deconvolution.remove_instrument_response(
-    "data/sac",
+    "data/sac/NZ",
     "data/metadata/stations.xml",
     backend="obspy",
     pattern="*.sac",
-    output_dir="data/deconvolved",
+    output_dir="data/deconvolved/NZ",
     remove_original=False,
     max_workers=2,
 )

@@ -50,7 +50,7 @@ Download daily MiniSEED or SAC files by station.
 | I want to... | Copyable example |
 | --- | --- |
 | Convert MiniSEED to SAC | [MiniSEED to SAC](recipes/convert-miniseed.md) |
-| Organize and merge daily SAC files | [Sort and merge](recipes/sort-merge.md) |
+| Organize and merge daily SAC files | [Archive and merge](recipes/sort-merge.md) |
 | Add event and station metadata to SAC headers | [Format headers](recipes/format-headers.md) |
 | Remove an instrument response | [Remove response](recipes/remove-response.md) |
 | Reduce the sampling rate | [Decimate](recipes/decimate.md) |

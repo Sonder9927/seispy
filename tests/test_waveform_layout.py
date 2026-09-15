@@ -7,7 +7,6 @@ from obspy import Trace, UTCDateTime, read
 
 from seispy.archive import WaveformIdentity
 from seispy.waveform.merge import _group_targets, _merge_targets
-from seispy.waveform.organization import _copy_targets
 
 
 def _sac(path: Path, *, channel="BHZ", starttime="2025-01-01T00:00:00"):
@@ -21,17 +20,6 @@ def _sac(path: Path, *, channel="BHZ", starttime="2025-01-01T00:00:00"):
     path.parent.mkdir(parents=True, exist_ok=True)
     trace.write(str(path), format="SAC")
     return trace
-
-
-def test_sort_uses_sac_header_instead_of_source_filename(tmp_path):
-    source = tmp_path / "source" / "misleading-name.sac"
-    trace = _sac(source)
-
-    _copy_targets([source], tmp_path / "archive")
-
-    expected = WaveformIdentity.from_trace(trace).sac_path(tmp_path / "archive")
-    assert expected.is_file()
-    assert expected.parent == tmp_path / "archive" / "NZ" / "WEL" / "2025"
 
 
 def test_merge_groups_flat_archive_by_header_channel_and_day(tmp_path):

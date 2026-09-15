@@ -98,7 +98,7 @@ class DeconvolutionSummary(BatchSummary):
 
 
 def remove_instrument_response(
-    src_dir: str | Path,
+    net_dir: str | Path,
     resp: str | Path | Inventory,
     backend: str = "obspy",
     pattern: str = "*.sac",
@@ -116,7 +116,7 @@ def remove_instrument_response(
     """Remove responses from station-grouped SAC or MiniSEED waveform files.
 
     Args:
-        src_dir: Root directory containing one subdirectory per station.
+        net_dir: One network directory containing one subdirectory per station.
         resp: StationXML path or ObsPy inventory containing matching responses.
         backend: Processing backend, ``"obspy"`` or ``"sac"``.
         pattern: Recursive file pattern within each station directory. Use a
@@ -144,7 +144,7 @@ def remove_instrument_response(
         Processing counts, sampled issues, output location, and run duration.
 
     Raises:
-        NotADirectoryError: If ``src_dir`` does not exist.
+        NotADirectoryError: If ``net_dir`` does not exist.
         ValueError: If the backend, limits, or output policy is invalid, or if
             MiniSEED input is selected with the SAC backend.
 
@@ -162,8 +162,8 @@ def remove_instrument_response(
     Examples:
         ```python
         summary = remove_instrument_response(
-            "data/sac", "data/metadata/stations.xml",
-            output_dir="data/deconvolved",
+            "data/sac/NZ", "data/metadata/stations.xml",
+            output_dir="data/deconvolved/NZ",
             remove_original=False,
         )
         summary.remove_original
@@ -172,7 +172,7 @@ def remove_instrument_response(
     """
     run_id = new_run_id()
     backend = backend.lower()
-    src_path = Path(src_dir).expanduser().resolve()
+    src_path = Path(net_dir).expanduser().resolve()
     if not src_path.is_dir():
         raise NotADirectoryError(f"Source directory does not exist: {src_path}")
     if max_workers < 1:
@@ -219,7 +219,7 @@ def remove_instrument_response(
             remove_original=remove_original,
         )
         run.info(
-            "run_id=%s backend=%s src_dir=%s output_dir=%s remove_original=%s "
+            "run_id=%s backend=%s net_dir=%s output_dir=%s remove_original=%s "
             "pattern=%s max_workers=%d decimate_factors=%s",
             run_id,
             backend,

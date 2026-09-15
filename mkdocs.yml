@@ -60,7 +60,7 @@ nav:
           - Waveform coverage: recipes/waveform-coverage.md
       - Prepare waveforms:
           - MiniSEED to SAC: recipes/convert-miniseed.md
-          - Sort and merge SAC: recipes/sort-merge.md
+          - Archive and merge SAC: recipes/sort-merge.md
           - Format SAC headers: recipes/format-headers.md
           - Remove response: recipes/remove-response.md
           - Decimate: recipes/decimate.md

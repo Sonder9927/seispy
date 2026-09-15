@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def correct_clock_drift(
-    src_dir: str | Path,
+    net_dir: str | Path,
     dest_dir: str | Path,
     drift_csv: str | Path,
     max_workers: int = 4,
@@ -26,7 +26,7 @@ def correct_clock_drift(
     """Correct SAC trace times from station clock-drift metadata.
 
     Args:
-        src_dir: Root directory of input SAC files grouped by station.
+        net_dir: One network directory of input SAC files grouped by station.
         dest_dir: Destination root preserving the input directory structure.
         drift_csv: CSV containing station, drift rate, and validity times.
         max_workers: Maximum number of station worker processes.
@@ -40,7 +40,7 @@ def correct_clock_drift(
     Examples:
         ```python
         correct_clock_drift(
-            "data/sac", "data/drift-corrected", "clock-drift.csv",
+            "data/sac/NZ", "data/drift-corrected/NZ", "clock-drift.csv",
             max_workers=1,
         )
         ```
@@ -50,7 +50,7 @@ def correct_clock_drift(
         raise ValueError("max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
-    src_path = Path(src_dir).expanduser().resolve()
+    src_path = Path(net_dir).expanduser().resolve()
     output_path = Path(dest_dir).expanduser().resolve()
     if not src_path.is_dir():
         raise NotADirectoryError(f"Source directory does not exist: {src_path}")
@@ -242,7 +242,7 @@ if __name__ == "__main__":
     drift_file = "/path/to/cor.csv"
 
     correct_clock_drift(
-        src_dir=src_directory,
+        net_dir=src_directory,
         dest_dir=dest_directory,
         drift_csv=drift_file,
         max_workers=4,

@@ -173,6 +173,17 @@ def test_plot_represents_daily_coverage_as_a_heat_map(tmp_path):
     plt.close(figure)
 
 
+def test_plot_inherits_the_callers_font_family(tmp_path):
+    _waveform(tmp_path, "AAA", 2024, 1, duration_seconds=86_400)
+    coverage = scan_waveform_coverage(tmp_path / "NZ")
+
+    with plt.rc_context({"font.family": "serif"}):
+        figure, axes = plot_waveform_coverage(coverage)
+
+    assert axes.xaxis.label.get_fontfamily() == ["serif"]
+    plt.close(figure)
+
+
 def test_waveform_coverage_exports_figure_and_summary(tmp_path):
     _waveform(tmp_path, "AAA", 2024, 1, duration_seconds=86_400)
     figure_path = tmp_path / "reports" / "coverage.pdf"

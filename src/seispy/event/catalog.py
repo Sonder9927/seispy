@@ -27,9 +27,9 @@ def load_events(catalog: str | Path, time_window: float) -> list[dict]:
     return events
 
 
-def load_stations(src_dir: str | Path, station_csv: str | Path | None) -> list[dict]:
+def load_stations(net_dir: str | Path, station_csv: str | Path | None) -> list[dict]:
     """Load station metadata and validate coverage of source directories."""
-    target_stations = {path.name for path in Path(src_dir).iterdir() if path.is_dir()}
+    target_stations = {path.name for path in Path(net_dir).iterdir() if path.is_dir()}
     if not station_csv:
         return [{"station": station} for station in sorted(target_stations)]
     frame = pd.read_csv(station_csv)
