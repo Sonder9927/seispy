@@ -33,7 +33,7 @@ def test_domain_packages_do_not_import_their_implementations_eagerly():
             "-c",
             "import sys, seispy.download, seispy.waveform, seispy.inventory, "
             "seispy.deconvolution, seispy.correct, seispy.mcmc; "
-            "assert 'seispy.download.availability' not in sys.modules; "
+            "assert 'seispy.waveform.coverage' not in sys.modules; "
             "assert 'seispy.waveform.decimation' not in sys.modules; "
             "assert 'seispy.inventory.analysis' not in sys.modules; "
             "assert 'seispy.deconvolution.removal' not in sys.modules; "
@@ -57,4 +57,6 @@ def test_domain_public_apis_use_canonical_names():
     assert download.BulkDownloadSummary.__name__ == "BulkDownloadSummary"
     assert callable(waveform.decimate_waveforms)
     assert callable(waveform.archive_waveforms)
+    assert callable(waveform.waveform_coverage)
+    assert not hasattr(download, "download_status")
     assert not hasattr(waveform, "decimate_by_station")

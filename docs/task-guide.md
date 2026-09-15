@@ -16,7 +16,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 | Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
 | Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
 | Bulk-download from providers | [Experimental MassDownloader](recipes/mass-download-waveforms.md) | `mass_download_waveforms` |
-| Check waveform download gaps | [Download completeness](recipes/download-statistics.md) | `download_status` |
+| Measure station waveform coverage | [Waveform coverage](recipes/waveform-coverage.md) | `waveform_coverage` |
 | Convert MiniSEED files | [MiniSEED to SAC](recipes/convert-miniseed.md) | `convert_mseed_to_sac` |
 | Organize daily files | [Sort and merge SAC](recipes/sort-merge.md) | `sort_waveforms`, `merge_waveforms_by_day` |
 | Populate SAC headers | [Format SAC headers](recipes/format-headers.md) | `format_sac_headers` |
@@ -32,7 +32,7 @@ copyable example, expected output, safety notes, and a link to the exact API.
 
 - **StationXML needed:** [download metadata](recipes/download-inventory.md)
 - **MiniSEED files:** [convert to SAC](recipes/convert-miniseed.md)
-- **Downloaded waveform tree:** [check completeness](recipes/download-statistics.md)
+- **Waveform archive:** [measure coverage](recipes/waveform-coverage.md)
 - **Continuous SAC files:** [sort and merge](recipes/sort-merge.md),
   [remove response](recipes/remove-response.md), or
   [cut events](recipes/cut-events.md)

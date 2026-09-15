@@ -13,6 +13,23 @@ _EXPORTS = {
         "WaveformArchiveSummary",
     ),
     "convert_mseed_to_sac": ("seispy.waveform.conversion", "convert_mseed_to_sac"),
+    "waveform_coverage": ("seispy.waveform.coverage", "waveform_coverage"),
+    "scan_waveform_coverage": (
+        "seispy.waveform.coverage",
+        "scan_waveform_coverage",
+    ),
+    "summarize_waveform_coverage": (
+        "seispy.waveform.coverage",
+        "summarize_waveform_coverage",
+    ),
+    "plot_waveform_coverage": (
+        "seispy.waveform.coverage",
+        "plot_waveform_coverage",
+    ),
+    "WaveformCoverageReport": (
+        "seispy.waveform.coverage",
+        "WaveformCoverageReport",
+    ),
     "WaveformConversionIssue": (
         "seispy.waveform.conversion",
         "WaveformConversionIssue",

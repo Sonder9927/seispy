@@ -57,7 +57,7 @@ nav:
           - Earthquake catalog: recipes/download-events.md
           - Waveforms: recipes/download-waveforms.md
           - Experimental MassDownloader: recipes/mass-download-waveforms.md
-          - Download completeness: recipes/download-statistics.md
+          - Waveform coverage: recipes/waveform-coverage.md
       - Prepare waveforms:
           - MiniSEED to SAC: recipes/convert-miniseed.md
           - Sort and merge SAC: recipes/sort-merge.md

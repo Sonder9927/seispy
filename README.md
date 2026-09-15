@@ -47,7 +47,7 @@ The base install covers acquisition and standard waveform processing. Install
 only the optional workflows you need:
 
 ```bash
-uv sync --extra plot       # download-statistics plots
+uv sync --extra plot       # waveform-coverage plots
 uv sync --extra mcmc       # MCMC preparation and result collection
 uv sync --extra notebook   # interactive tutorials
 uv sync --all-extras       # every optional workflow

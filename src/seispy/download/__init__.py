@@ -1,4 +1,4 @@
-"""Lazy FDSN download and availability interfaces."""
+"""Lazy FDSN download interfaces."""
 
 from importlib import import_module
 
@@ -14,23 +14,6 @@ _EXPORTS = {
     "BulkDownloadSummary": ("seispy.download.bulk", "BulkDownloadSummary"),
     "download_waveforms": ("seispy.download.waveforms", "download_waveforms"),
     "WaveformDownloadSummary": ("seispy.download.waveforms", "WaveformDownloadSummary"),
-    "download_status": ("seispy.download.availability", "download_status"),
-    "scan_download_availability": (
-        "seispy.download.availability",
-        "scan_download_availability",
-    ),
-    "summarize_download_availability": (
-        "seispy.download.availability",
-        "summarize_download_availability",
-    ),
-    "plot_download_availability": (
-        "seispy.download.availability",
-        "plot_download_availability",
-    ),
-    "DownloadAvailabilityReport": (
-        "seispy.download.availability",
-        "DownloadAvailabilityReport",
-    ),
 }
 
 

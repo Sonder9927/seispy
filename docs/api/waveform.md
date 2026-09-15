@@ -12,6 +12,19 @@ Convert, organize, merge, and annotate waveform files.
 
 ::: seispy.waveform.conversion.convert_mseed_to_sac
 
+### Measure waveform coverage
+
+::: seispy.waveform.coverage.waveform_coverage
+
+The scan, summary, and plot functions are also available separately for custom
+workflows.
+
+::: seispy.waveform.coverage.scan_waveform_coverage
+
+::: seispy.waveform.coverage.summarize_waveform_coverage
+
+::: seispy.waveform.coverage.plot_waveform_coverage
+
 ### Sort SAC files
 
 ::: seispy.waveform.organization.sort_waveforms
@@ -36,6 +49,10 @@ Applications normally do not instantiate them directly.
 ### MiniSEED conversion summary
 
 ::: seispy.waveform.conversion.WaveformConversionSummary
+
+### Waveform coverage report
+
+::: seispy.waveform.coverage.WaveformCoverageReport
 
 ### SAC formatting summary
 

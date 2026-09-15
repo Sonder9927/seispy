@@ -173,8 +173,9 @@ data/
 ```
 
 Unlike the stable downloader, MassDownloader writes a separate file for every
-location, channel, and requested time chunk. `download_status` recognizes both
-layouts and reads waveform headers when calculating station-day availability.
+location, channel, and requested time chunk. `waveform_coverage` recognizes
+both layouts and reads waveform headers when calculating actual station-day
+coverage.
 
 ## Important trade-offs
 
@@ -190,7 +191,7 @@ Limitations:
 
 - only MiniSEED output is supported;
 - the result does not currently provide SeisPy's per-station failure counters;
-- filename intervals describe requested chunks, while `download_status` uses
+- filename intervals describe requested chunks, while `waveform_coverage` uses
   actual waveform headers as the authority;
 - authenticated-provider behavior depends on the configured ObsPy clients and
   has not yet been standardized by this experimental interface;
@@ -199,7 +200,7 @@ Limitations:
 ## Safety recommendations
 
 1. Begin with one provider, one station, and one or two days.
-2. Inspect the ObsPy report and run `download_status` afterward.
+2. Inspect the ObsPy report and run `waveform_coverage` afterward.
 3. Keep `threads_per_client` conservative.
 4. Use `minimum_length=0.9` when near-complete daily coverage is required.
 5. Keep `sanitize=True` when response metadata is required downstream.

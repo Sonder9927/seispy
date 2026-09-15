@@ -12,9 +12,9 @@ SeisPy is organized by workflow domain. Applications normally enter through
 seispy/
 ├── archive.py     # waveform identity, naming, and archive invariants
 ├── workflow.py    # safe outputs, reports, logs, and run lifecycle
-├── download/      # remote acquisition and availability analysis
+├── download/      # remote acquisition
 ├── inventory/     # station metadata analysis and manipulation
-├── waveform/      # conversion, layout, merge, headers, integrity, decimation
+├── waveform/      # coverage, conversion, layout, headers, integrity, decimation
 ├── deconvolution/ # instrument-response removal
 ├── event/         # event catalogs and waveform cutting
 ├── correct/       # station timing and orientation corrections
