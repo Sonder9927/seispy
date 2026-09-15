@@ -5,8 +5,13 @@ description: Download response-level StationXML from an FDSN service.
 
 # Download station metadata
 
-**Use this when:** you need station coordinates or instrument responses before
-response removal.
+## Interface
+
+`download.download_inventory(output_file, ...)`
+
+**Input:** network, station, channel, and time selectors.<br>
+**Output:** an ObsPy `Inventory`, StationXML under `data/metadata/`, and a
+companion station CSV.
 
 ## Example
 

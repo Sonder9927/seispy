@@ -1,9 +1,17 @@
 ---
-title: Decimate waveforms
+title: Reduce the waveform sampling rate
 description: Phase-preserving SAC-compatible waveform decimation.
 ---
 
-# Decimate waveforms
+# Reduce the waveform sampling rate
+
+## Interface
+
+`waveform.decimate_waveforms(src_dir, factors, ...)`
+
+**Input:** SAC or MiniSEED files and an ordered sequence of integer factors.<br>
+**Output:** a copied directory tree at the reduced sampling rate, unless
+in-place processing is explicitly selected.
 
 ## SciPy example
 

@@ -1,50 +1,43 @@
 ---
-title: Choose a task
-description: Find the SeisPy recipe that matches a processing goal.
+title: Choose a workflow
+description: Find the SeisPy recipe from your current input and desired output.
 ---
 
-# Choose a task
+# Choose a workflow
 
-Start from the outcome you need. Every recipe contains prerequisites, a
-copyable example, expected output, safety notes, and a link to the exact API.
+The fastest entry point is your current data:
 
-| Goal | Recipe | Primary function |
+| I currently have… | I want… | Follow this recipe |
 | --- | --- | --- |
-| Learn XML-guided GeoNet 100 Hz downloads interactively | [GeoNet Marimo notebook](recipes/geonet-100hz-notebook.md) | `download_inventory`, `download_waveforms` |
-| Process one GeoNet day end to end | [GeoNet one-day workflow](recipes/geonet-one-day-workflow.md) | download, response removal, decimation |
-| Download StationXML | [Station metadata](recipes/download-inventory.md) | `download_inventory` |
-| Build an event CSV | [Earthquake catalog](recipes/download-events.md) | `download_earthquake_events` |
-| Download daily waveforms | [Waveforms](recipes/download-waveforms.md) | `download_waveforms` |
-| Bulk-download from providers | [Experimental MassDownloader](recipes/mass-download-waveforms.md) | `mass_download_waveforms` |
-| Measure station waveform coverage | [Waveform coverage](recipes/waveform-coverage.md) | `waveform_coverage` |
-| Convert MiniSEED files | [MiniSEED to SAC](recipes/convert-miniseed.md) | `convert_mseed_to_sac` |
-| Organize daily files | [Archive and merge SAC](recipes/sort-merge.md) | `archive_waveforms`, `merge_waveforms_by_day` |
-| Populate SAC headers | [Format SAC headers](recipes/format-headers.md) | `format_sac_headers` |
-| Remove instrument response | [Remove response](recipes/remove-response.md) | `remove_instrument_response` |
-| Reduce sampling rate | [Decimate](recipes/decimate.md) | `decimate_waveforms` |
-| Extract event windows | [Cut event windows](recipes/cut-events.md) | `cut_event_waveforms` |
-| Correct station timing | [Correct stations](recipes/correct-stations.md) | `correct_clock_drift` |
-| Correct sensor orientation | [Correct stations](recipes/correct-stations.md) | `orientation` |
-| Prepare an inversion | [MCMC workflow](recipes/mcmc.md) | `init_grids` |
-| Collect inversion outputs | [MCMC workflow](recipes/mcmc.md) | `collect_results` |
+| Network and time selectors | StationXML | [Download station metadata](recipes/download-inventory.md) |
+| StationXML or a known station list | trusted MiniSEED or SAC | [Download and validate known-station waveforms](recipes/download-waveforms.md) |
+| A geographic region | discovered stations and MiniSEED | [Discover regional waveforms](recipes/mass-download-waveforms.md) |
+| Scattered SAC files | a canonical archive | [Organize SAC files](recipes/archive-sac.md) |
+| A waveform archive | a coverage table and figure | [Measure network coverage](recipes/waveform-coverage.md) |
+| MiniSEED | SAC | [Convert MiniSEED to SAC](recipes/convert-miniseed.md) |
+| Multiple SAC segments per day | one file per channel-day | [Merge continuous SAC files](recipes/merge-sac.md) |
+| Raw-count waveforms plus StationXML | physical units | [Remove instrument response](recipes/remove-response.md) |
+| High-rate waveforms | a lower sampling rate | [Decimate waveforms](recipes/decimate.md) |
+| Continuous SAC plus an event CSV | event windows | [Cut event windows](recipes/cut-events.md) |
+| Event SAC plus metadata tables | populated SAC headers | [Format event SAC headers](recipes/format-headers.md) |
+| SAC plus drift metadata | corrected timestamps | [Correct station clock drift](recipes/correct-clock-drift.md) |
+| Three-component SAC plus orientation metadata | corrected horizontals | [Correct sensor orientation](recipes/correct-orientation.md) |
+| Inversion source datasets | grid inputs and collected results | [Run the MCMC workflow](recipes/mcmc.md) |
 
-## Browse by input
+## New to the project?
 
-- **StationXML needed:** [download metadata](recipes/download-inventory.md)
-- **MiniSEED files:** [convert to SAC](recipes/convert-miniseed.md)
-- **Waveform archive:** [measure coverage](recipes/waveform-coverage.md)
-- **Continuous SAC files:** [archive and merge](recipes/sort-merge.md),
-  [remove response](recipes/remove-response.md), or
-  [cut events](recipes/cut-events.md)
-- **Event and station CSV files:** [format headers](recipes/format-headers.md)
-- **Completed inversion directories:** [collect results](recipes/mcmc.md#collect-results)
+Choose one of these guided paths:
 
-## Browse by output
+- **Five-minute orientation:** [Quick start](quickstart.md)
+- **One complete acquisition and processing run:**
+  [Process one day of GeoNet data](recipes/geonet-one-day-workflow.md)
+- **Interactive 100 Hz walkthrough:**
+  [Run the GeoNet Marimo notebook](recipes/geonet-100hz-notebook.md)
+- **Browse every recipe in processing order:**
+  [Workflow recipes](recipes/index.md)
 
-- **StationXML:** [Station metadata](recipes/download-inventory.md)
-- **Event CSV:** [Earthquake catalog](recipes/download-events.md)
-- **SAC directory tree:** [MiniSEED to SAC](recipes/convert-miniseed.md)
-- **Processed waveform copy:** [Remove response](recipes/remove-response.md) or
-  [resample](recipes/decimate.md)
-- **Event waveform directories:** [Cut event windows](recipes/cut-events.md)
-- **MCMC input grids and summary CSV files:** [MCMC workflow](recipes/mcmc.md)
+## Recipe or interface reference?
+
+Use a recipe to learn ordering, paths, safe defaults, and output inspection.
+Use the [interface reference](api/index.md) after you know the workflow and need
+every parameter, return field, or error mode.

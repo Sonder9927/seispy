@@ -1,8 +1,15 @@
+---
+title: Quick start
+description: Download, validate, and inspect one day of waveform data.
+---
+
 # Quick start
 
-## Install
+This first workflow downloads response metadata and one day of waveform data
+for one station, validates the raw response into a MiniSEED archive, and checks
+its time coverage.
 
-Clone the repository and create the locked environment:
+## Install
 
 ```bash
 git clone https://github.com/Sonder9927/seispy.git
@@ -10,78 +17,94 @@ cd seispy
 uv sync
 ```
 
-## Convert and decimate waveforms
+Run Python through the project environment with `uv run python`, or copy the
+following cells into a notebook using the same environment.
+
+## 1. Download StationXML
+
+Interface: `download.download_inventory(output_file, ...)`
+
+```python
+from seispy import download
+
+inventory = download.download_inventory(
+    "data/metadata/stations.xml",
+    client="https://service.geonet.org.nz",
+    network="NZ",
+    station="WEL",
+    channel="BH?",
+    starttime="2025-01-01",
+    endtime="2025-01-02",
+    level="response",
+)
+```
+
+This creates `data/metadata/stations.xml` and a companion station CSV.
+
+## 2. Download unverified waveform bytes
+
+Interface: `download.download_waveforms(output_dir, ...)`
+
+```python
+downloaded = download.download_waveforms(
+    "data/waveform-staging",
+    client="https://service.geonet.org.nz",
+    network="NZ",
+    station="WEL",
+    channel="BH?",
+    starttime="2025-01-01",
+    endtime="2025-01-02",
+    inventory=inventory,
+    network_workers=4,
+)
+
+print(downloaded.succeeded, downloaded.failed, downloaded.no_data)
+```
+
+Successful responses retain the `.mseed.raw` suffix because they have not yet
+been decoded and validated.
+
+## 3. Commit the trusted MiniSEED archive
+
+Interface: `waveform.archive_waveforms(source_dir, output_dir, ...)`
 
 ```python
 from seispy import waveform
 
-conversion = waveform.convert_mseed_to_sac(
+archived = waveform.archive_waveforms(
+    "data/waveform-staging",
     "data/mseed",
-    "data/sac",
+    inventory=inventory,
+    output_format="mseed",
+    max_workers=2,
     remove_original=False,
 )
-print(conversion.succeeded, conversion.failed)
 
-decimation = waveform.decimate_waveforms(
-    "data/sac",
-    factors=[5, 5, 4],
-    output_dir="data/decimated",
-    remove_original=False,
-)
-print(decimation.succeeded, decimation.failed)
+print(archived.succeeded, archived.failed)
 ```
 
-## Remove an instrument response
+Trusted output is written below `data/mseed/NZ/WEL/2025/`. The staging file is
+kept because this learning example uses `remove_original=False`.
+
+## 4. Measure the result
+
+Interface: `waveform.waveform_coverage(net_dir, ...)`
 
 ```python
-from seispy import deconvolution, download
-
-inventory = download.download_inventory(
-    "data/metadata/stations.xml",
-    network="NZ",
-    station="WEL",
-    channel="BH?",
+coverage = waveform.waveform_coverage(
+    "data/mseed/NZ",
+    start_date="2025-01-01",
+    end_date="2025-01-01",
+    output_csv="data/metadata/waveform-coverage.csv",
 )
 
-summary = deconvolution.remove_instrument_response(
-    "data/sac/NZ",
-    "data/metadata/stations.xml",
-    output_dir="data/deconvolved/NZ",
-    remove_original=False,
-)
-print(summary.succeeded, summary.failed)
+print(coverage.summary)
 ```
 
-## Work with events
+## Continue learning
 
-```python
-from seispy import download, event
-
-download.download_earthquake_events(
-    "2025-01-01",
-    "2025-02-01",
-    "data/events.csv",
-    minmagnitude=5.5,
-)
-
-summary = event.cut_event_waveforms(
-    "data/continuous/NZ",
-    "data/events",
-    "data/events.csv",
-    station_csv="data/stations.csv",
-    time_window=10_800,
-)
-print(summary.succeeded, summary.failed)
-```
-
-## Inspect an interface interactively
-
-```python
-from seispy import deconvolution
-
-help(deconvolution.remove_instrument_response)
-print(deconvolution.__all__)
-```
-
-The public objects exported by each package are stable discovery points. Names
-that start with an underscore are implementation details.
+- Convert the archive with [Convert MiniSEED to SAC](recipes/convert-miniseed.md).
+- Understand acquisition and recovery policy in
+  [Download and validate known-station waveforms](recipes/download-waveforms.md).
+- Find another path from [Choose a workflow](task-guide.md).
+- Look up exact parameters in the [interface reference](api/index.md).

@@ -1,9 +1,16 @@
 ---
-title: Experimental MassDownloader
+title: Discover and download regional waveforms
 description: Bulk-download continuous MiniSEED with ObsPy MassDownloader.
 ---
 
-# Experimental MassDownloader
+# Discover and download regional waveforms
+
+## Interface
+
+`download.mass_download_waveforms(output_dir, domain=..., restrictions=...)`
+
+**Input:** one geographic domain and ObsPy download restrictions.<br>
+**Output:** discovered MiniSEED and matching StationXML files.
 
 !!! warning "Experimental interface"
 

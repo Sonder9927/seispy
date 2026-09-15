@@ -5,6 +5,10 @@ description: Convert one file or a directory tree and inspect the batch summary.
 
 # Convert MiniSEED to SAC
 
+## Interface
+
+`waveform.convert_mseed_to_sac(src, dest, ...)`
+
 **Input:** one MiniSEED file or a directory tree.<br>
 **Output:** SAC files grouped by network, station, year, and Julian day.
 

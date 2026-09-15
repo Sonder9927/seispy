@@ -1,4 +1,4 @@
-# MCMC API
+# MCMC interface
 
 ## Functions
 

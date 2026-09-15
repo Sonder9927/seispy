@@ -1,4 +1,4 @@
-# Decimate API
+# Decimation interface
 
 ## Functions
 

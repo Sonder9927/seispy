@@ -42,7 +42,7 @@ The notebook currently uses this study configuration:
 - Network: `NZ`
 - Longitude: `170–180°`
 - Latitude: `-43.5–-34°`
-- Time: 2023-08-01 to 2025-05-01, with an exclusive end time
+- Time: 2010-01-01 to 2026-01-01, with an exclusive end time
 - Channels: active 100 Hz seismic channels in StationXML, excluding the `HDF`
   pressure channel
 

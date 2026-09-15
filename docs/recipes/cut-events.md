@@ -5,7 +5,14 @@ description: Extract event-centered windows from continuous SAC archives.
 
 # Cut event windows
 
-## Inputs
+## Interface
+
+`event.cut_event_waveforms(net_dir, dest_dir, event_csv, ...)`
+
+**Output:** one directory per event containing the available station SAC
+windows.
+
+### Inputs
 
 - A canonical network directory containing `station/year/file.sac`
 - An event CSV with time, longitude, latitude, depth, and magnitude
@@ -39,7 +46,7 @@ flush progress periodically. See [Batch reports and logs](batch-reports.md).
 
 ## External cutter
 
-Use `event.cut_event_waveforms_binary` only when the required `mktraceiodb` and
+Use `event.cut_events_binary` only when the required `mktraceiodb` and
 `cutevent` executables are installed.
 
 [ObsPy cutting API →](../api/event.md#cut-events-with-obspy)

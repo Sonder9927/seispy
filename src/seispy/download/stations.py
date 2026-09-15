@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from obspy.clients.fdsn import Client
+from obspy import UTCDateTime
 from obspy.core.inventory import Inventory
 
 EARTHSCOPE_URL = "https://service.earthscope.org"
@@ -62,10 +63,16 @@ def download_inventory(
     fdsn = _client(client, username, password)
     downloaded = fdsn.get_stations(level=level, **query)
     inventory = downloaded
+    if level.lower() in {"channel", "response"}:
+        inventory = _filter_channel_epochs_by_query_time(
+            inventory,
+            starttime=query.get("starttime"),
+            endtime=query.get("endtime"),
+        )
     conflict = None
     if level.lower() == "response":
         try:
-            inventory = _normalize_response_epochs(downloaded)
+            inventory = _normalize_response_epochs(inventory)
         except ResponseConflictError as exc:
             conflict = exc
     if output_file is not None:
@@ -82,6 +89,52 @@ def download_inventory(
             stacklevel=2,
         )
     return inventory
+
+
+def _filter_channel_epochs_by_query_time(
+    inventory: Inventory,
+    *,
+    starttime: Any = None,
+    endtime: Any = None,
+) -> Inventory:
+    """Keep channel epochs intersecting the requested half-open time window.
+
+    Some FDSN services include historical station shells without any matching
+    channels.  Filtering a copy locally makes the saved StationXML and its CSV
+    describe only metadata that can guide downloads for the requested window.
+    """
+    if starttime is None and endtime is None:
+        return inventory
+
+    start = None if starttime is None else UTCDateTime(starttime)
+    end = None if endtime is None else UTCDateTime(endtime)
+    if start is not None and end is not None and start >= end:
+        raise ValueError("starttime must be earlier than endtime")
+
+    filtered = inventory.copy()
+    networks = []
+    for network in filtered:
+        kept_stations = []
+        for station in network:
+            station.channels = [
+                channel
+                for channel in station.channels
+                if _channel_epoch_intersects(channel, start=start, end=end)
+            ]
+            if station.channels:
+                kept_stations.append(station)
+        network.stations = kept_stations
+        if network.stations:
+            networks.append(network)
+    filtered.networks = networks
+    return filtered
+
+
+def _channel_epoch_intersects(channel, *, start, end) -> bool:
+    return not (
+        (start is not None and channel.end_date is not None and channel.end_date < start)
+        or (end is not None and channel.start_date is not None and channel.start_date >= end)
+    )
 
 
 def _normalize_response_epochs(inventory: Inventory) -> Inventory:
@@ -203,6 +256,7 @@ def _write_station_csv(inventory: Inventory, path: str | Path) -> Path:
         "elevation_m",
         "start_date",
         "end_date",
+        "channel_count",
         "locations",
         "channels",
     )
@@ -211,6 +265,8 @@ def _write_station_csv(inventory: Inventory, path: str | Path) -> Path:
         writer.writeheader()
         for network in inventory:
             for station in network:
+                if not station.channels:
+                    continue
                 channels = sorted({item.code for item in station.channels})
                 locations = sorted(
                     {item.location_code or "--" for item in station.channels}
@@ -225,6 +281,7 @@ def _write_station_csv(inventory: Inventory, path: str | Path) -> Path:
                         "elevation_m": station.elevation,
                         "start_date": _format_time(station.start_date),
                         "end_date": _format_time(station.end_date),
+                        "channel_count": len(station.channels),
                         "locations": ",".join(locations),
                         "channels": ",".join(channels),
                     }

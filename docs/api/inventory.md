@@ -1,5 +1,5 @@
 ---
-title: Inventory API
+title: Inventory interface
 description: StationXML analysis and manipulation interfaces.
 ---
 

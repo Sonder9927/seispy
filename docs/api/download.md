@@ -1,4 +1,4 @@
-# Download API
+# Download interface
 
 Use these functions to acquire metadata, catalogs, and waveform data from FDSN
 services.

@@ -1,9 +1,20 @@
 ---
-title: Download and archive waveforms
+title: Download and validate known-station waveforms
 description: Stage raw FDSN responses, then validate them into MiniSEED or SAC archives.
 ---
 
-# Download and archive waveforms
+# Download and validate known-station waveforms
+
+## Interfaces
+
+1. `download.download_waveforms(output_dir, ...)` transfers unverified bytes.
+2. `waveform.archive_waveforms(source_dir, output_dir, ...)` validates and
+   commits the archive.
+
+**Input:** StationXML or explicit network, station, channel, and time
+selectors.<br>
+**Output:** trusted files below `data/mseed/` or `data/sac/`, organized by
+network, station, and year.
 
 Waveform acquisition has two explicit stages:
 

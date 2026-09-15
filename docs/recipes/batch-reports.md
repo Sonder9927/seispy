@@ -1,9 +1,9 @@
 ---
-title: Batch reports and logs
+title: Understand batch reports and logs
 description: Track progress and diagnose completed, interrupted, and failed runs.
 ---
 
-# Batch reports and logs
+# Understand batch reports and logs
 
 SeisPy's long-running batch functions persist both a machine-readable JSON
 report and a human-readable text log by default:

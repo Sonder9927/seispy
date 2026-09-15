@@ -10,7 +10,7 @@ a task, copy the example, then follow its link to the full API only when you
 need every parameter.
 
 <div class="hero-actions" markdown>
-[Choose a task](task-guide.md){ .md-button .md-button--primary }
+[Choose a workflow](task-guide.md){ .md-button .md-button--primary }
 [Run the quick start](quickstart.md){ .md-button }
 </div>
 
@@ -50,7 +50,8 @@ Download daily MiniSEED or SAC files by station.
 | I want to... | Copyable example |
 | --- | --- |
 | Convert MiniSEED to SAC | [MiniSEED to SAC](recipes/convert-miniseed.md) |
-| Organize and merge daily SAC files | [Archive and merge](recipes/sort-merge.md) |
+| Organize scattered SAC files | [Build a SAC archive](recipes/archive-sac.md) |
+| Merge continuous SAC segments by day | [Merge SAC by day](recipes/merge-sac.md) |
 | Add event and station metadata to SAC headers | [Format headers](recipes/format-headers.md) |
 | Remove an instrument response | [Remove response](recipes/remove-response.md) |
 | Reduce the sampling rate | [Decimate](recipes/decimate.md) |
@@ -60,7 +61,8 @@ Download daily MiniSEED or SAC files by station.
 | I want to... | Copyable example |
 | --- | --- |
 | Cut event windows from continuous data | [Cut events](recipes/cut-events.md) |
-| Correct clock drift or sensor orientation | [Correct stations](recipes/correct-stations.md) |
+| Correct station clock drift | [Correct clock drift](recipes/correct-clock-drift.md) |
+| Correct sensor orientation | [Correct orientation](recipes/correct-orientation.md) |
 | Generate inputs and collect MCMC results | [MCMC workflow](recipes/mcmc.md) |
 
 !!! tip "A simple learning path"
@@ -76,7 +78,7 @@ Download daily MiniSEED or SAC files by station.
 
 ## Look up exact parameters
 
-Recipes teach the workflow. The [API reference](api/index.md) provides complete
+Recipes teach the workflow. The [interface reference](api/index.md) provides complete
 signatures, return models, and source links. You can also inspect any function
 without opening this site:
 

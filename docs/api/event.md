@@ -1,4 +1,4 @@
-# Event API
+# Event interface
 
 Prepare event catalogs and cut event windows from continuous waveform data.
 

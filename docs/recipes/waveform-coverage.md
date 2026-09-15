@@ -1,12 +1,17 @@
 ---
-title: Measure waveform coverage
+title: Measure network waveform coverage
 description: Measure actual daily waveform time coverage by station.
 ---
 
-# Measure waveform coverage
+# Measure network waveform coverage
 
-**Use this when:** you want to quantify how much waveform data is present for
-each station and UTC day, regardless of how the files were acquired.
+## Interface
+
+`waveform.waveform_coverage(net_dir, ...)`
+
+**Input:** one canonical network directory.<br>
+**Output:** station-day coverage, station summaries, and optional CSV and
+figure files.
 
 ## Expected layout
 

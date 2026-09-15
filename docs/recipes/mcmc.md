@@ -5,6 +5,15 @@ description: Generate per-grid inputs and collect completed inversion outputs.
 
 # MCMC workflow
 
+## Interfaces
+
+- `mcmc.init_grids(config_file, ...)` builds per-grid inversion inputs.
+- `mcmc.collect_results(src_dir, dest_dir)` collects completed outputs.
+
+**Input:** a JSON configuration and its referenced geophysical datasets.<br>
+**Output:** per-grid inversion directories followed by collected result tables
+and figures.
+
 ## Generate grid inputs
 
 Prepare a JSON configuration matching `seispy.mcmc.configuration.Config`, including input

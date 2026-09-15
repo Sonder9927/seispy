@@ -25,7 +25,7 @@ def _(mo):
     5. 针对同台站多 location 的情况分析有效期，并保证同一时刻只选择一套三分量传感器；
     6. 使用筛选后的 XML 生成精确的 NSLC 下载任务，按日下载 MiniSEED。
 
-    > 时间范围为 `2023-08-01T00:00:00Z` 至 `2025-05-01T00:00:00Z`，结束时间不包含在内。
+    > 时间范围为 `2010-01-01T00:00:00Z` 至 `2026-01-01T00:00:00Z`，结束时间不包含在内。
     """)
     return
 
@@ -48,14 +48,14 @@ def _():
 def _(Path, UTCDateTime):
     GEONET = "https://service.geonet.org.nz"
     NETWORK = "NZ"
-    START = UTCDateTime("2023-08-01T00:00:00Z")
-    END = UTCDateTime("2025-05-01T00:00:00Z")
+    START = UTCDateTime("2010-01-01T00:00:00Z")
+    END = UTCDateTime("2026-01-01T00:00:00Z")
     WEST, EAST, SOUTH, NORTH = 170.0, 180.0, -43.5, -34.0
     TARGET_RATE = 100.0
     EXCLUDED_CHANNELS = {"HDF"}
     MAX_WORKERS = 40
 
-    ROOT = Path("data/geonet_nz_100hz_170_180_20230801_20250501").resolve()
+    ROOT = Path("data/geonet_nz_100hz_170_180_20100101_20260101").resolve()
     METADATA_DIR = ROOT / "metadata"
     RAW_XML = METADATA_DIR / "geonet_nz_all_channels_raw.xml"
     SELECTED_XML = METADATA_DIR / "geonet_nz_100hz_selected.xml"
@@ -390,25 +390,76 @@ def _(END, START, UTCDateTime, mo):
     5. 同期 location 优先选择覆盖连续、三分量完整且后续稳定的一套；
     6. 绝不把一个 location 的 Z 与另一个 location 的水平分量组合。
 
-    人工审阅得到的同期消歧规则：
+    对 2010–2026 原始 XML 人工审阅后，采用以下同期消歧原则：
 
-    - `ABAZ`：11 使用至 2024-11-20 02:16 UTC，之后使用 12；
-    - `MAVZ`：10 使用至 2024-06-21 03:55 UTC，之后使用 11；
-    - `WHSZ`：使用覆盖更长且为 N/E 定向的 10；
-    - `WTAZ`：使用覆盖完整目标时段的 13。
+    - `ABAZ`、`MAVZ`、`WTAZ` 按设备换装时间从旧 location 接续到新 location；
+    - `EPAZ`、`ETAZ`、`HBAZ`、`MBAZ`、`ORRZ`、`RVAZ`、`TKGZ`、`URZ`
+      的新 location 与长期主数据流同期，因而继续使用覆盖历史更完整的
+      location 10；
+    - `WHSZ` 的 10 与 11 长期同期，选择含标准 N/E 定向且历史连续的 10；
+    - `NEZ` 历经多次换装，按 XML 中完整三分量的有效期依次使用 10、11、
+      10、12、11；XML 本身没有覆盖的间隔保持为空，不人为补齐。
     """)
 
     LOCATION_WINDOWS = {
         "ABAZ": {
-            "11": ((START, UTCDateTime("2024-11-20T02:16:00Z")),),
+            "10": ((START, UTCDateTime("2023-07-28T01:09:36Z")),),
+            "11": (
+                (
+                    UTCDateTime("2023-07-28T01:09:36Z"),
+                    UTCDateTime("2024-11-20T02:16:00Z"),
+                ),
+            ),
             "12": ((UTCDateTime("2024-11-20T02:16:00Z"), END),),
+        },
+        "EPAZ": {"10": ((START, END),)},
+        "ETAZ": {"10": ((START, END),)},
+        "HBAZ": {"10": ((START, END),)},
+        "KBAZ": {
+            "10": ((START, UTCDateTime("2023-11-21T04:26:00Z")),),
+            "12": ((UTCDateTime("2025-04-28T04:25:00Z"), END),),
         },
         "MAVZ": {
             "10": ((START, UTCDateTime("2024-06-21T03:55:00Z")),),
             "11": ((UTCDateTime("2024-06-21T03:55:00Z"), END),),
         },
+        "MBAZ": {"10": ((START, END),)},
+        "NEZ": {
+            "10": (
+                (START, UTCDateTime("2010-06-07T23:35:00Z")),
+                (
+                    UTCDateTime("2020-01-31T05:44:00Z"),
+                    UTCDateTime("2023-02-28T22:51:00Z"),
+                ),
+            ),
+            "11": (
+                (
+                    UTCDateTime("2010-06-07T23:35:00Z"),
+                    UTCDateTime("2020-01-31T05:44:00Z"),
+                ),
+                (UTCDateTime("2024-07-31T03:44:00Z"), END),
+            ),
+            "12": (
+                (
+                    UTCDateTime("2023-02-28T22:51:00Z"),
+                    UTCDateTime("2024-07-31T03:44:00Z"),
+                ),
+            ),
+        },
+        "ORRZ": {"10": ((START, END),)},
+        "RVAZ": {"10": ((START, END),)},
+        "TKGZ": {"10": ((START, END),)},
+        "URZ": {"10": ((START, END),)},
         "WHSZ": {"10": ((START, END),)},
-        "WTAZ": {"13": ((START, END),)},
+        "WTAZ": {
+            "12": (
+                (
+                    UTCDateTime("2022-05-25T22:54:00Z"),
+                    UTCDateTime("2023-04-12T03:28:00Z"),
+                ),
+            ),
+            "13": ((UTCDateTime("2023-04-12T03:28:00Z"), END),),
+        },
     }
     design_explanation  # noqa: B018 - marimo 渲染单元格末尾表达式
     return (LOCATION_WINDOWS,)

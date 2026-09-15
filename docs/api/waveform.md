@@ -1,4 +1,4 @@
-# Waveform API
+# Waveform interface
 
 Convert, organize, merge, and annotate waveform files.
 

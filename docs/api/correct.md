@@ -1,4 +1,4 @@
-# Correction API
+# Correction interface
 
 ## Functions
 

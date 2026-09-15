@@ -5,7 +5,12 @@ description: Query FDSN events and save a normalized SeisPy CSV.
 
 # Download an earthquake catalog
 
-**Use this when:** you need an event table for filtering, header formatting, or
+## Interface
+
+`download.download_earthquake_events(starttime, endtime, output_file, ...)`
+
+**Input:** time range plus optional magnitude and geographic selectors.<br>
+**Output:** a normalized event `DataFrame` and CSV for header formatting or
 event-window cutting.
 
 ## Example

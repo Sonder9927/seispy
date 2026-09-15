@@ -1,7 +1,7 @@
-# Deconvolution API
+# Deconvolution interface
 
 Remove instrument responses from waveform data. StationXML preparation belongs
-to the separate [Inventory API](inventory.md).
+to the separate [Inventory interface](inventory.md).
 
 ## Functions
 

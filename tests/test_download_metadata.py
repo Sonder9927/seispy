@@ -23,6 +23,9 @@ def test_inventory_download_has_no_logging_and_writes_stationxml(tmp_path):
     client.get_stations.return_value = inv
     with (
         patch.object(stations, "_client", return_value=client),
+        patch.object(
+            stations, "_filter_channel_epochs_by_query_time", return_value=inv
+        ),
         patch.object(stations, "_normalize_response_epochs", return_value=inv),
         patch.object(stations, "_write_station_csv") as write_csv,
     ):
@@ -43,6 +46,9 @@ def test_inventory_conflict_preserves_raw_stationxml_by_default(tmp_path):
     conflict = stations.ResponseConflictError("conflicting responses")
     with (
         patch.object(stations, "_client", return_value=client),
+        patch.object(
+            stations, "_filter_channel_epochs_by_query_time", return_value=raw
+        ),
         patch.object(stations, "_normalize_response_epochs", side_effect=conflict),
         patch.object(stations, "_write_station_csv") as write_csv,
         pytest.warns(stations.ResponseConflictWarning, match="raw StationXML"),
@@ -63,6 +69,9 @@ def test_strict_inventory_conflict_raises_after_raw_stationxml_is_saved(tmp_path
     conflict = stations.ResponseConflictError("conflicting responses")
     with (
         patch.object(stations, "_client", return_value=client),
+        patch.object(
+            stations, "_filter_channel_epochs_by_query_time", return_value=raw
+        ),
         patch.object(stations, "_normalize_response_epochs", side_effect=conflict),
         patch.object(stations, "_write_station_csv") as write_csv,
         pytest.raises(stations.ResponseConflictError, match="conflicting responses"),
@@ -114,7 +123,55 @@ def test_station_csv_contains_coordinates_and_channel_summary(tmp_path):
     contents = (tmp_path / "station.csv").read_text()
     assert "network,station,station_name,latitude,longitude,elevation_m" in contents
     assert "NZ,AAA,Alpha Station,-41.1,174.8,123.0" in contents
-    assert "--,BHZ" in contents
+    assert ",1,--,BHZ" in contents
+
+
+def test_channel_level_inventory_is_filtered_to_requested_time(tmp_path):
+    active = _channel("2023-01-01", None, _response(1.0))
+    expired = _channel("1970-01-01", "1980-01-01", _response(1.0))
+    inventory = Inventory(
+        networks=[
+            Network(
+                code="NZ",
+                stations=[
+                    Station(
+                        code="ACTIVE",
+                        latitude=0,
+                        longitude=0,
+                        elevation=0,
+                        site=Site(name="Active"),
+                        channels=[active, expired],
+                    ),
+                    Station(
+                        code="001A",
+                        latitude=0,
+                        longitude=0,
+                        elevation=0,
+                        site=Site(name="Historical"),
+                        channels=[expired.copy()],
+                    ),
+                ],
+            )
+        ],
+        source="test",
+    )
+    client = Mock()
+    client.get_stations.return_value = inventory
+
+    with patch.object(stations, "_client", return_value=client):
+        result = stations.download_inventory(
+            tmp_path / "raw.xml",
+            level="channel",
+            starttime="2010-01-01",
+            endtime="2026-01-01",
+        )
+
+    assert [station.code for station in result[0]] == ["ACTIVE"]
+    assert len(result[0][0].channels) == 1
+    csv_text = (tmp_path / "raw.csv").read_text()
+    assert "ACTIVE" in csv_text
+    assert "001A" not in csv_text
+    assert "channel_count" in csv_text
 
 
 def _response(value):

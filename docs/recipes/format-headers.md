@@ -1,12 +1,17 @@
 ---
-title: Format SAC headers
+title: Populate event SAC headers
 description: Populate event and station metadata in SAC headers.
 ---
 
-# Format SAC headers
+# Populate event SAC headers
 
-**Use this when:** event directories and station traces exist, but SAC headers
-need consistent coordinates and event metadata.
+## Interface
+
+`waveform.format_sac_headers(src_dir, dest_dir, event_csv, station_csv, ...)`
+
+**Input:** an event waveform tree plus event and station CSV files.<br>
+**Output:** a copied event tree with consistent station and event metadata in
+each SAC header.
 
 ## Required tables
 

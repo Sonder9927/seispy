@@ -5,7 +5,15 @@ description: Deconvolve SAC files with StationXML while preserving source data.
 
 # Remove instrument response
 
-## Prerequisite
+## Interface
+
+`deconvolution.remove_instrument_response(net_dir, resp, ...)`
+
+**Input:** one network directory plus response-level StationXML.<br>
+**Output:** SAC waveforms in physical units under a separate network directory
+by default.
+
+### Prerequisite
 
 Download response-level StationXML that covers the network, stations, channels,
 and recording interval. See [Station metadata](download-inventory.md).
