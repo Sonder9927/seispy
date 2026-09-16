@@ -17,7 +17,7 @@ from seispy.workflow import (
     resolve_separate_directory_trees,
     temporary_output_path,
 )
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.waveform.integrity import merge_short_gaps
 
@@ -204,14 +204,16 @@ def _run_conversion_batches(batches, output, max_workers, max_error_samples, run
     worker_limit = min(max_error_samples, 1)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_process_batch, batch, output, worker_limit): batch
+            executor.submit(
+                call_with_warnings, _process_batch, batch, output, worker_limit
+            ): batch
             for batch in batches
         }
-        with tqdm(total=total, desc="Converting MiniSEED") as bar:
+        with progress_bar(total=total, desc="Converting MiniSEED", unit="file") as bar:
             for future in as_completed(futures):
                 batch = futures[future]
                 try:
-                    result = future.result()
+                    result = resolve_worker_call(future.result())
                 except Exception as exc:
                     result = _failed_batch(batch, exc, worker_limit)
                 counts.append(result)

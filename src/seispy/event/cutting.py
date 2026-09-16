@@ -16,7 +16,7 @@ from seispy.workflow import (
     new_run_id,
     temporary_output_path,
 )
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.waveform.integrity import merge_contiguous_segments
 from seispy.event.archive_index import WaveformArchiveIndex, WaveformReader
@@ -201,7 +201,7 @@ def cut_event_waveforms(
             time_window,
             workers,
         )
-        with tqdm(total=total, desc="Processing...") as pbar:
+        with progress_bar(total=total, desc="Cutting events", unit="task") as pbar:
             station_tasks = (
                 (
                     station,
@@ -297,16 +297,16 @@ def _station_results(tasks, events, output_dir, max_error_samples, max_workers):
     ) as executor:
         pending = set()
         for task in tasks:
-            pending.add(executor.submit(_cut_station_events, *task))
+            pending.add(executor.submit(call_with_warnings, _cut_station_events, *task))
             if len(pending) < max_workers * 2:
                 continue
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                yield future.result()
+                yield resolve_worker_call(future.result())
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                yield future.result()
+                yield resolve_worker_call(future.result())
 
 
 def _initialize_cut_worker(events, output_dir, max_error_samples):

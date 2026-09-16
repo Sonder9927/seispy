@@ -1,9 +1,10 @@
 """Orchestrate MCMC grid preparation."""
 
 from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from pathlib import Path
 
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_iter, resolve_worker_call
 
 from seispy.mcmc.configuration import Config, load_config
 from seispy.mcmc.models import MCMCGrid, VsModelLibrary, make_mcmc_grid
@@ -62,13 +63,18 @@ def init_grids(config_path: str | Path, max_workers: int = 1) -> None:
 
     if max_workers > 1:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            iterator = executor.map(process_point, tasks)
+            iterator = executor.map(call_with_warnings, repeat(process_point), tasks)
             written = 0
-            for grid, phase in tqdm(iterator, total=len(tasks)):
+            for result in progress_iter(
+                iterator, total=len(tasks), desc="Preparing MCMC", unit="grid"
+            ):
+                grid, phase = resolve_worker_call(result)
                 written += int(writer.write(grid, phase))
     else:
         written = 0
-        for task in tqdm(tasks):
+        for task in progress_iter(
+            tasks, total=len(tasks), desc="Preparing MCMC", unit="grid"
+        ):
             grid, phase = process_point(task)
             written += int(writer.write(grid, phase))
 

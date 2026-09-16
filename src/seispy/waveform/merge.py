@@ -5,7 +5,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_iter, resolve_worker_call
 
 from seispy.archive import WaveformIdentity
 from seispy.waveform.integrity import merge_short_gaps
@@ -40,16 +40,17 @@ def merge_waveforms_by_day(
     groups, errs = _group_targets(src_path, pattern)
     with ProcessPoolExecutor(max_workers=5) as executor:
         futures = [
-            executor.submit(_merge_targets, targets, output_path)
+            executor.submit(call_with_warnings, _merge_targets, targets, output_path)
             for targets in groups.values()
         ]
-        for future in tqdm(
+        for future in progress_iter(
             as_completed(futures),
             total=len(futures),
             mininterval=2,
             desc="Merging channel-days",
+            unit="day",
         ):
-            error = future.result()
+            error = resolve_worker_call(future.result())
             if error:
                 errs.append(error)
     if errs:

@@ -6,7 +6,7 @@ import obspy
 import pandas as pd
 from obspy.signal.rotate import rotate2zne
 from seispy.workflow import BatchRun, new_run_id
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.correct.summary import CorrectionCounts, CorrectionIssue, CorrectionSummary
 
@@ -76,6 +76,7 @@ def correct_orientation(
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
+                    call_with_warnings,
                     _process_station_orientation,
                     station,
                     cor_data[station],
@@ -85,11 +86,13 @@ def correct_orientation(
                 ): station
                 for station in valid_stations
             }
-            with tqdm(total=len(futures), desc="Correcting orientation") as bar:
+            with progress_bar(
+                total=len(futures), desc="Correcting orientation", unit="station"
+            ) as bar:
                 for future in as_completed(futures):
                     station = futures[future]
                     try:
-                        results.append(future.result())
+                        results.append(resolve_worker_call(future.result()))
                     except Exception as exc:
                         run.error("station=%s error=%s", station, exc)
                         station_total = station_totals[station]

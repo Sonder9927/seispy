@@ -6,7 +6,7 @@ import obspy
 import pandas as pd
 from obspy import UTCDateTime
 from seispy.workflow import BatchRun, new_run_id
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.correct.summary import CorrectionCounts, CorrectionIssue, CorrectionSummary
 
@@ -75,6 +75,7 @@ def correct_clock_drift(
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
+                    call_with_warnings,
                     _process_station_drift_correction,
                     station,
                     drift_data[station],
@@ -84,11 +85,13 @@ def correct_clock_drift(
                 ): station
                 for station in valid_stations
             }
-            with tqdm(total=len(futures), desc="Correcting clock drift") as bar:
+            with progress_bar(
+                total=len(futures), desc="Correcting clocks", unit="station"
+            ) as bar:
                 for future in as_completed(futures):
                     station = futures[future]
                     try:
-                        results.append(future.result())
+                        results.append(resolve_worker_call(future.result()))
                     except Exception as exc:
                         run.error("station=%s error=%s", station, exc)
                         station_total = station_totals[station]

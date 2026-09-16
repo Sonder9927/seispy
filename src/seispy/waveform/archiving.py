@@ -10,7 +10,7 @@ from typing import Literal
 from obspy import read, read_inventory
 from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.archive import WaveformIdentity, matches_mseed_path
 from seispy.waveform.integrity import merge_short_gaps
@@ -159,7 +159,7 @@ def archive_waveforms(
         pending = {}
         executor = _archive_executor(max_workers, manifest)
         try:
-            with tqdm(total=len(files), desc="Archiving waveforms") as bar:
+            with progress_bar(total=len(files), desc="Archiving", unit="file") as bar:
                 while pending or tasks is not None:
                     while tasks is not None and len(pending) < max_workers * 3:
                         try:
@@ -169,6 +169,7 @@ def archive_waveforms(
                             break
                         try:
                             future = executor.submit(
+                                call_with_warnings,
                                 _archive_one,
                                 str(path),
                                 str(source),
@@ -199,7 +200,7 @@ def archive_waveforms(
                     for future in done:
                         path = pending.pop(future)
                         try:
-                            result = future.result()
+                            result = resolve_worker_call(future.result())
                         except Exception as exc:
                             result = _failed_result(path, exc)
                         _record_result(result, counters, issues, max_error_samples)

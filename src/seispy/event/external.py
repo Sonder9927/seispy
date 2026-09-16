@@ -5,7 +5,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.workflow import resolve_separate_directory_trees
 
@@ -53,6 +53,7 @@ def cut_events_binary(
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
+                call_with_warnings,
                 _cut_station,
                 index,
                 station,
@@ -64,9 +65,11 @@ def cut_events_binary(
             )
             for index, station in enumerate(stations)
         }
-        with tqdm(total=len(futures), desc="Processing stations") as bar:
+        with progress_bar(
+            total=len(futures), desc="Processing stations", unit="station"
+        ) as bar:
             for future in as_completed(futures):
-                future.result()
+                resolve_worker_call(future.result())
                 bar.update(1)
 
 

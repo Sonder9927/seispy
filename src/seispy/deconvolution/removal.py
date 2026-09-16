@@ -13,8 +13,8 @@ from typing import Any, Callable, Literal, Sequence
 import obspy
 import numpy as np
 from obspy.core.inventory import Inventory
-from tqdm import tqdm
 
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 from seispy.waveform.integrity import merge_contiguous_segments
 from seispy.waveform.decimation import (
     _normalize_factors,
@@ -313,7 +313,7 @@ def _run_deconvolution_batches(
     ) as executor:
         futures = {}
         exhausted = False
-        with tqdm(total=total, desc="Deconvolving waveforms") as bar:
+        with progress_bar(total=total, desc="Deconvolving", unit="file") as bar:
             while futures or not exhausted:
                 while not exhausted and len(futures) < max_workers * 2:
                     try:
@@ -322,6 +322,7 @@ def _run_deconvolution_batches(
                         exhausted = True
                         break
                     future = executor.submit(
+                        call_with_warnings,
                         _process_worker_batch,
                         batch,
                         src_path,
@@ -337,7 +338,7 @@ def _run_deconvolution_batches(
                 for future in done:
                     batch = futures.pop(future)
                     try:
-                        result = future.result()
+                        result = resolve_worker_call(future.result())
                     except Exception as exc:
                         result = _failed_batch(
                             batch,

@@ -20,7 +20,7 @@ from seispy.workflow import (
     temporary_output_path,
 )
 from scipy.signal import resample_poly
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 100
@@ -244,12 +244,12 @@ def _run_decimation_batches(
                 output_path,
                 worker_sample_limit,
             )
-            futures[executor.submit(worker, *args)] = batch
-        with tqdm(total=len(futures), desc="Decimating file batches") as pbar:
+            futures[executor.submit(call_with_warnings, worker, *args)] = batch
+        with progress_bar(total=len(futures), desc="Decimating", unit="batch") as pbar:
             for future in as_completed(futures):
                 batch = futures[future]
                 try:
-                    results.append(future.result())
+                    results.append(resolve_worker_call(future.result()))
                 except Exception as exc:
                     results.append(
                         _failed_batch(

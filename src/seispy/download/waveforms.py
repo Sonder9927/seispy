@@ -20,7 +20,7 @@ from obspy.clients.fdsn.header import (
     FDSNTooManyRequestsException,
 )
 from obspy.core.inventory import Inventory
-from tqdm import tqdm
+from seispy.progress import progress_bar
 
 from seispy.archive import channel_mseed_path
 from seispy.download.stations import EARTHSCOPE_URL, _client
@@ -228,7 +228,9 @@ def download_waveforms(
         tasks = iter(task_items)
         with (
             ThreadPoolExecutor(max_workers=network_workers) as executor,
-            tqdm(total=len(task_items), desc="Downloading raw waveforms") as bar,
+            progress_bar(
+                total=len(task_items), desc="Downloading", unit="request"
+            ) as bar,
         ):
             pending = set()
             exhausted = False

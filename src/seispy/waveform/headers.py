@@ -14,7 +14,7 @@ from seispy.workflow import (
     new_run_id,
     temporary_output_path,
 )
-from tqdm import tqdm
+from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +266,7 @@ def _run_format_tasks(
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
+                call_with_warnings,
                 format_per_event,
                 event_dir,
                 event_info,
@@ -277,11 +278,13 @@ def _run_format_tasks(
             ): event_dir
             for event_dir, event_info in tasks
         }
-        with tqdm(total=len(tasks), desc="Formatting events") as bar:
+        with progress_bar(
+            total=len(tasks), desc="Formatting headers", unit="event"
+        ) as bar:
             for future in as_completed(futures):
                 event_dir = futures[future]
                 try:
-                    result = future.result()
+                    result = resolve_worker_call(future.result())
                 except Exception as exc:
                     files = sorted(event_dir.glob(pattern))
                     result = _failed_event(files, exc, worker_limit)
