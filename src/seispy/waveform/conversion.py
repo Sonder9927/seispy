@@ -14,6 +14,7 @@ from seispy.workflow import (
     cleanup_outputs,
     commit_output,
     new_run_id,
+    resolve_separate_directory_trees,
     temporary_output_path,
 )
 from tqdm import tqdm
@@ -38,8 +39,6 @@ class _Counts:
     total: int = 0
     succeeded: int = 0
     failed: int = 0
-    removed: int = 0
-    removal_failed: int = 0
     traces_written: int = 0
     conflicts: int = 0
     samples: tuple[WaveformConversionIssue, ...] = ()
@@ -57,11 +56,9 @@ class WaveformConversionSummary(BatchSummary):
         total: Number of MiniSEED inputs discovered.
         succeeded: Number converted successfully.
         failed: Number that could not be converted.
-        originals_removed: Number of source files removed after conversion.
-        removal_failed: Number of requested removals that failed.
         traces_written: Number of SAC traces committed to disk.
         output_conflicts: Number of existing destinations not overwritten.
-        issue_samples: Bounded sample of conversion and removal issues.
+        issue_samples: Bounded sample of conversion issues.
         output_dir: Root directory containing generated SAC files.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
@@ -76,8 +73,6 @@ class WaveformConversionSummary(BatchSummary):
     total: int
     succeeded: int
     failed: int
-    originals_removed: int
-    removal_failed: int
     traces_written: int
     output_conflicts: int
     issue_samples: tuple[WaveformConversionIssue, ...]
@@ -85,7 +80,7 @@ class WaveformConversionSummary(BatchSummary):
 
     @property
     def has_issues(self) -> bool:
-        return bool(self.failed or self.removal_failed)
+        return bool(self.failed)
 
 
 def convert_mseed_to_sac(
@@ -95,7 +90,6 @@ def convert_mseed_to_sac(
     batch_size: int = 1000,
     max_workers: int = 5,
     *,
-    remove_original: bool = False,
     max_error_samples: int = 20,
     save_report: bool | None = True,
     save_log: bool = True,
@@ -108,7 +102,6 @@ def convert_mseed_to_sac(
         pattern: Recursive file pattern used when ``source`` is a directory.
         batch_size: Maximum number of input files assigned to each worker task.
         max_workers: Maximum number of worker processes.
-        remove_original: Remove each input only after all its outputs commit.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
             ``True``. ``None`` retains it only when issues occur.
@@ -119,28 +112,27 @@ def convert_mseed_to_sac(
 
     Raises:
         FileNotFoundError: If ``source`` does not exist.
-        ValueError: If limits are invalid or output is nested inside the input.
+        ValueError: If limits are invalid or input and output trees overlap.
 
     Examples:
         ```python
-        summary = convert_mseed_to_sac(
-            "data/mseed", "data/sac", remove_original=False
-        )
+        summary = convert_mseed_to_sac("data/mseed", "data/sac")
         summary.output_dir.name
         # => 'sac'
         ```
     """
     run_id = new_run_id()
     source = Path(source).expanduser().resolve()
-    output = Path(output_dir).expanduser().resolve()
     if not source.exists():
         raise FileNotFoundError(source)
     if batch_size < 1 or max_workers < 1:
         raise ValueError("batch_size and max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
-    if source.is_dir() and (output == source or source in output.parents):
-        raise ValueError("output_dir must be outside the source directory")
+    if source.is_dir():
+        source, output = resolve_separate_directory_trees(source, output_dir)
+    else:
+        output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     files = [source] if source.is_file() else sorted(source.rglob(pattern))
     files = [path for path in files if path.is_file()]
@@ -158,24 +150,15 @@ def convert_mseed_to_sac(
             input_completed=0,
             succeeded=0,
             failed=0,
-            originals_removed=0,
-            removal_failed=0,
             traces_written=0,
             output_conflicts=0,
             issue_samples=(),
             output_dir=output,
         )
-        run.info(
-            "run_id=%s source=%s output=%s remove_original=%s",
-            run_id,
-            source,
-            output,
-            remove_original,
-        )
+        run.info("run_id=%s source=%s output=%s", run_id, source, output)
         combined = _run_conversion_batches(
             batches,
             output,
-            remove_original,
             max_workers,
             max_error_samples,
             run,
@@ -186,8 +169,6 @@ def convert_mseed_to_sac(
                 total=combined.total,
                 succeeded=combined.succeeded,
                 failed=combined.failed,
-                originals_removed=combined.removed,
-                removal_failed=combined.removal_failed,
                 traces_written=combined.traces_written,
                 output_conflicts=combined.conflicts,
                 issue_samples=combined.samples,
@@ -204,7 +185,7 @@ def convert_mseed_to_sac(
                 item.destination,
                 item.error,
             )
-        if summary.failed + summary.removal_failed > len(summary.issue_samples):
+        if summary.failed > len(summary.issue_samples):
             run.warning(
                 "run_id=%s error_samples_truncated shown=%d",
                 run_id,
@@ -217,17 +198,13 @@ def convert_mseed_to_sac(
     return summary
 
 
-def _run_conversion_batches(
-    batches, output, remove_original, max_workers, max_error_samples, run
-):
+def _run_conversion_batches(batches, output, max_workers, max_error_samples, run):
     counts = []
     total = sum(len(batch) for batch in batches)
     worker_limit = min(max_error_samples, 1)
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(
-                _process_batch, batch, output, remove_original, worker_limit
-            ): batch
+            executor.submit(_process_batch, batch, output, worker_limit): batch
             for batch in batches
         }
         with tqdm(total=total, desc="Converting MiniSEED") as bar:
@@ -246,8 +223,6 @@ def _run_conversion_batches(
                     input_completed=combined.total,
                     succeeded=combined.succeeded,
                     failed=combined.failed,
-                    originals_removed=combined.removed,
-                    removal_failed=combined.removal_failed,
                     traces_written=combined.traces_written,
                     output_conflicts=combined.conflicts,
                     issue_samples=combined.samples,
@@ -256,13 +231,11 @@ def _run_conversion_batches(
     return _combine(counts, max_error_samples)
 
 
-def _process_batch(files, output, remove_original, limit):
-    return _combine(
-        [_convert_file(f, output, remove_original, limit) for f in files], limit
-    )
+def _process_batch(files, output, limit):
+    return _combine([_convert_file(f, output, limit) for f in files], limit)
 
 
-def _convert_file(source, output, remove_original, limit):
+def _convert_file(source, output, limit):
     created = []
     temporary = None
     destination = None
@@ -299,26 +272,7 @@ def _convert_file(source, output, remove_original, limit):
             else ()
         )
         return _Counts(total=1, failed=1, conflicts=int(conflict), samples=sample)
-    removed = removal_failed = 0
-    samples = ()
-    if remove_original:
-        try:
-            source.unlink()
-            removed = 1
-        except OSError as exc:
-            removal_failed = 1
-            samples = (
-                (
-                    WaveformConversionIssue(
-                        source,
-                        "original_removal_failed",
-                        f"{type(exc).__name__}: {exc}",
-                    ),
-                )
-                if limit
-                else ()
-            )
-    return _Counts(1, 1, 0, removed, removal_failed, len(created), 0, samples)
+    return _Counts(total=1, succeeded=1, traces_written=len(created))
 
 
 def _trace_destination(trace, output):
@@ -379,12 +333,10 @@ def _combine(items, limit):
     for item in items:
         samples.extend(item.samples[: max(0, limit - len(samples))])
     return _Counts(
-        sum(x.total for x in items),
-        sum(x.succeeded for x in items),
-        sum(x.failed for x in items),
-        sum(x.removed for x in items),
-        sum(x.removal_failed for x in items),
-        sum(x.traces_written for x in items),
-        sum(x.conflicts for x in items),
-        tuple(samples),
+        total=sum(x.total for x in items),
+        succeeded=sum(x.succeeded for x in items),
+        failed=sum(x.failed for x in items),
+        traces_written=sum(x.traces_written for x in items),
+        conflicts=sum(x.conflicts for x in items),
+        samples=tuple(samples),
     )

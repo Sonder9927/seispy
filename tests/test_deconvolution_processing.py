@@ -94,25 +94,25 @@ def test_sac_decimation_commands_precede_response_removal(tmp_path):
         return SimpleNamespace(returncode=0, stderr=b"")
 
     header = SimpleNamespace(stats=SimpleNamespace(sampling_rate=100.0, npts=10_000))
+    source = station / "trace.sac"
+    combined_pz = tmp_path / "responses.pz"
+    combined_pz.write_text("combined")
     with (
         patch.object(remove_response.obspy, "read", return_value=[header]),
-        patch.object(
-            remove_response,
-            "_sac_pz_for_trace",
-            return_value=tmp_path / "response.pz",
-        ),
+        patch.object(remove_response, "_response_epoch_for_trace"),
         patch.object(remove_response.subprocess, "run", side_effect=run_sac),
         patch.object(remove_response, "_validate_deconvolved_file"),
     ):
-        result = remove_response.sac_deconv(
-            station,
-            "*.sac",
+        result = remove_response._process_sac_batch(
+            [source],
             object(),
+            combined_pz,
             source_root,
             output_root,
-            False,
             20,
-            decimate_factors=[5, 5, 4],
+            remove_response.DEFAULT_PRE_FILTER,
+            {},
+            (5, 5, 4),
         )
 
     assert result.succeeded == 1

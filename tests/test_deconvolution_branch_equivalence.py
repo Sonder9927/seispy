@@ -17,8 +17,7 @@ from seispy.waveform.decimation import (
     _scipy_decimate_batch,
 )
 from seispy.deconvolution.removal import (
-    obspy_deconv,
-    sac_deconv,
+    deconvolve_waveforms,
     remove_response_from_file,
 )
 
@@ -133,23 +132,24 @@ def test_response_removal_branches_remain_numerically_equivalent(comparison_path
 
     outputs = {}
     for name, backend, factors in (
-        ("sac-pre", sac_deconv, (4,)),
-        ("obspy-pre", obspy_deconv, (4,)),
-        ("sac-100hz", sac_deconv, ()),
-        ("obspy-100hz", obspy_deconv, ()),
+        ("sac-pre", "sac", (4,)),
+        ("obspy-pre", "obspy", (4,)),
+        ("sac-100hz", "sac", ()),
+        ("obspy-100hz", "obspy", ()),
     ):
         output = tmp_path / name
         output.mkdir()
-        summary = backend(
-            station,
-            "*.sac",
-            inventory,
+        summary = deconvolve_waveforms(
             source_root,
-            output,
-            False,
-            20,
-            PRE_FILTER,
+            inventory,
+            output_dir=output,
+            backend=backend,
+            max_workers=1,
+            max_error_samples=20,
+            pre_filt=PRE_FILTER,
             decimate_factors=factors,
+            save_report=False,
+            save_log=False,
         )
         assert summary.succeeded == 1
         assert summary.failed == 0
@@ -165,7 +165,6 @@ def test_response_removal_branches_remain_numerically_equivalent(comparison_path
             (4,),
             outputs["sac-100hz"],
             sac_post,
-            False,
             20,
         ).succeeded
         == 1
@@ -176,7 +175,6 @@ def test_response_removal_branches_remain_numerically_equivalent(comparison_path
             (4,),
             outputs["obspy-100hz"],
             obspy_post,
-            False,
             20,
         ).succeeded
         == 1

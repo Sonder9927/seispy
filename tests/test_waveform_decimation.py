@@ -36,46 +36,37 @@ def test_output_directory_keeps_relative_path_and_name(tmp_path):
         patch.object(decimate.obspy, "read", return_value=_Stream()),
         patch.object(decimate, "_sac_fir_coefficients", return_value=np.ones(1)),
     ):
-        result = decimate._scipy_decimate_batch(
-            (source,), (5,), source_root, output, False, 1
-        )
+        result = decimate._scipy_decimate_batch((source,), (5,), source_root, output, 1)
     assert source.read_bytes() == b"original data"
     assert (output / "STA" / "001" / "trace.sac").read_bytes() == b"smaller"
     assert result.succeeded == 1
 
 
-def test_remove_original_replaces_same_file_safely(tmp_path):
+def test_decimation_rejects_overlapping_output_tree(tmp_path):
     source_root = tmp_path / "source"
-    station = source_root / "STA"
-    station.mkdir(parents=True)
-    source = station / "trace.sac"
-    source.write_bytes(b"original data")
-    with (
-        patch.object(decimate.obspy, "read", return_value=_Stream()),
-        patch.object(decimate, "_sac_fir_coefficients", return_value=np.ones(1)),
-    ):
-        result = decimate._scipy_decimate_batch(
-            (source,), (5,), source_root, None, True, 1
+    source_root.mkdir()
+
+    with np.testing.assert_raises_regex(ValueError, "separate directory trees"):
+        decimate.decimate_waveforms(
+            source_root, (5,), output_dir=source_root / "output"
         )
-    assert source.read_bytes() == b"smaller"
-    assert result.succeeded == 1
-    assert result.failed == 0
 
 
-def test_failure_keeps_original_and_limits_samples(tmp_path):
+def test_failure_limits_issue_samples_and_writes_no_output(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA"
     station.mkdir(parents=True)
     sources = [station / f"trace-{index}.sac" for index in range(3)]
     for source in sources:
         source.write_bytes(b"original")
+    output = tmp_path / "output"
     with patch.object(decimate.obspy, "read", side_effect=RuntimeError("bad file")):
         result = decimate._scipy_decimate_batch(
-            tuple(sources), (5,), source_root, None, True, 1
+            tuple(sources), (5,), source_root, output, 1
         )
     assert result.failed == 3
     assert len(result.issue_samples) == 1
-    assert all(source.read_bytes() == b"original" for source in sources)
+    assert not list(output.rglob("*.sac"))
 
 
 def test_factors_have_sac_compatible_range():
@@ -95,7 +86,7 @@ def test_scipy_decimation_preserves_impulse_alignment():
     assert np.argmax(trace.data) == 100
 
 
-def test_failed_sac_decimation_batch_keeps_originals(tmp_path):
+def test_failed_sac_decimation_batch_writes_no_output(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA"
     station.mkdir(parents=True)
@@ -103,11 +94,12 @@ def test_failed_sac_decimation_batch_keeps_originals(tmp_path):
     for source in sources:
         source.write_bytes(b"original")
     failed = SimpleNamespace(returncode=1, stderr=b"decimation failed")
+    output = tmp_path / "output"
 
     with patch.object(decimate.subprocess, "run", return_value=failed):
         summary = decimate._sac_decimate_batch(
-            tuple(sources), (5,), source_root, None, True, 20
+            tuple(sources), (5,), source_root, output, 20
         )
 
     assert summary.failed == 3
-    assert all(source.read_bytes() == b"original" for source in sources)
+    assert not list(output.rglob("*.sac"))

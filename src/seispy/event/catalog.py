@@ -5,7 +5,7 @@ from obspy import UTCDateTime
 
 
 def load_events(catalog: str | Path, time_window: float) -> list[dict]:
-    """Load event metadata and build integer-second cutting windows."""
+    """Load event metadata without discarding sub-second origin times."""
     frame = pd.read_csv(
         catalog,
         parse_dates=["time"],
@@ -13,7 +13,7 @@ def load_events(catalog: str | Path, time_window: float) -> list[dict]:
     )
     events = []
     for _, row in frame.iterrows():
-        start = UTCDateTime(int(row["time"].timestamp()))
+        start = UTCDateTime(row["time"].to_pydatetime())
         events.append(
             {
                 "start": start,
@@ -27,22 +27,61 @@ def load_events(catalog: str | Path, time_window: float) -> list[dict]:
     return events
 
 
-def load_stations(net_dir: str | Path, station_csv: str | Path | None) -> list[dict]:
-    """Load station metadata and validate coverage of source directories."""
-    target_stations = {path.name for path in Path(net_dir).iterdir() if path.is_dir()}
+def load_stations(
+    station_keys: set[tuple[str, str]], station_csv: str | Path | None
+) -> list[dict]:
+    """Load metadata for indexed network/station identities."""
+    target_stations = set(station_keys)
+    if not target_stations:
+        return []
     if not station_csv:
-        return [{"station": station} for station in sorted(target_stations)]
-    frame = pd.read_csv(station_csv)
+        return [
+            {"network": network, "station": station}
+            for network, station in sorted(target_stations)
+        ]
+    frame = pd.read_csv(station_csv, dtype={"network": str, "station": str})
     if "station" not in frame.columns:
         raise ValueError("station_csv is missing column: station")
-    missing = target_stations - set(frame["station"])
+    networks = {network for network, _ in target_stations}
+    if "network" not in frame.columns:
+        if len(networks) != 1:
+            raise ValueError(
+                "station_csv must include network when source_dir contains "
+                "multiple networks"
+            )
+        frame["network"] = next(iter(networks), "")
+    available = set(
+        zip(
+            frame["network"].astype(str),
+            frame["station"].astype(str),
+            strict=True,
+        )
+    )
+    duplicated = frame.duplicated(subset=["network", "station"], keep=False)
+    if duplicated.any():
+        duplicate_keys = set(
+            zip(
+                frame.loc[duplicated, "network"].astype(str),
+                frame.loc[duplicated, "station"].astype(str),
+                strict=True,
+            )
+        )
+        duplicates = sorted(duplicate_keys)[:5]
+        raise ValueError(
+            f"station_csv contains duplicate network/station rows: {duplicates}"
+        )
+    missing = target_stations - available
     if missing:
         preview = sorted(missing)[:5]
         raise ValueError(
-            f"{len(missing)} stations missing from CSV: "
+            f"{len(missing)} network/station identities missing from CSV: "
             f"{preview}{'...' if len(missing) > 5 else ''}"
         )
-    return frame[frame["station"].isin(target_stations)].to_dict("records")
+    wanted = frame.apply(
+        lambda row: (str(row["network"]), str(row["station"])) in target_stations,
+        axis=1,
+    )
+    return frame.loc[wanted].to_dict("records")
 
 
 def filter_events(

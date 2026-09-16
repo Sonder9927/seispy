@@ -7,11 +7,10 @@ description: Deconvolve SAC files with StationXML while preserving source data.
 
 ## Interface
 
-`deconvolution.remove_instrument_response(net_dir, resp, ...)`
+`deconvolution.deconvolve_waveforms(source_dir, inventory, ...)`
 
-**Input:** one network directory plus response-level StationXML.<br>
-**Output:** SAC waveforms in physical units under a separate network directory
-by default.
+**Input:** a waveform directory tree plus response-level StationXML.<br>
+**Output:** a separate, non-overlapping SAC directory tree in physical units.
 
 ### Prerequisite
 
@@ -23,13 +22,12 @@ and recording interval. See [Station metadata](download-inventory.md).
 ```python
 from seispy import deconvolution
 
-summary = deconvolution.remove_instrument_response(
+summary = deconvolution.deconvolve_waveforms(
     "data/sac/NZ",
     "data/metadata/stations.xml",
     backend="obspy",
     pattern="*.sac",
     output_dir="data/deconvolved/NZ",
-    remove_original=False,
     max_workers=2,
 )
 
@@ -37,8 +35,8 @@ print(f"Processed: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
 ```
 
-Reports and logs are enabled by default, track every station, and flush progress
-periodically. See [Batch reports and logs](batch-reports.md).
+Reports and logs are enabled by default under `output_dir/logs` and flush batch
+progress periodically. See [Batch reports and logs](batch-reports.md).
 
 By default, response removal does not change the sampling rate. To decimate as
 part of this workflow, pass `decimate_factors=[5, 5, 4]`, for example, to change
@@ -53,19 +51,17 @@ frequency.
 The ObsPy backend also accepts MiniSEED by selecting it with, for example,
 `pattern="*.mseed"`. Output is always SAC: a single trace keeps the input stem
 with a `.sac` suffix, while a multi-trace MiniSEED file produces one uniquely
-named SAC file per trace. With `remove_original=True`, the MiniSEED source is
-removed only after every trace has been written and validated successfully.
-The SAC backend rejects MiniSEED input before processing; use `backend="obspy"`
-for MiniSEED.
+named SAC file per trace. Source files are always preserved. The SAC backend
+rejects MiniSEED input before processing; use `backend="obspy"` for MiniSEED.
 
 The default pre-filter is `(0.004, 0.006, 4.0, 5.0)` Hz. Both backends taper
 at most 5% from each edge and cap each edge at 150 seconds for daily records.
-Only gaps of one second or less are interpolated; longer gaps fail explicitly.
-Before processing, inventories with overlapping response epochs trigger a
-lightweight header preflight. `summary.response_conflicts` reports how many
-waveform files do not have one unambiguous response covering the complete
-trace. Those files fail safely; the remaining files continue and no response
-is selected arbitrarily.
+Continuous and sample-identical overlapping segments merge without changing
+samples; gaps and conflicting overlaps remain separate. Inventory safety is
+checked once before processing. Each trace must still fit completely within a
+single response epoch; mismatches fail without choosing a response arbitrarily.
+The SAC backend exports the complete inventory once as one annotated combined
+PZ file, which SAC uses to match network, station, location, channel, and time.
 
 ## Why these processing defaults are used
 
@@ -115,13 +111,11 @@ for issue in summary.issue_samples:
 
 !!! note "SAC backend"
 
-    `backend="sac"` uses the same StationXML input and selects the response by
-    network, station, location, channel, and recording time. Matching temporary
-    pole-zero files are cached by response epoch. The SAC backend processes at
-    most 100 files per SAC process by default, so two years of daily data does
-    not create one oversized session. Set `sac_batch_size` to tune the balance
-    between startup overhead and failure isolation. If a SAC process fails,
-    its batch is split recursively until the individual bad file is isolated;
-    valid neighbors are retained without slowing down successful batches.
+    `backend="sac"` exports the safe StationXML once as one annotated combined
+    PZ file. SAC matches each waveform by network, station, location, channel,
+    and recording time. File batches contain at most 32 inputs by default;
+    set `batch_size` to tune startup overhead versus failure isolation. If a
+    SAC process fails, its batch is split recursively until the individual bad
+    file is isolated. The combined PZ is removed when the run finishes.
 
-[See all parameters →](../api/deconvolution.md#remove-instrument-responses)
+[See all parameters →](../api/deconvolution.md)

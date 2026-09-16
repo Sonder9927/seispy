@@ -70,7 +70,6 @@ archive_summary = waveform.archive_waveforms(
     output_format="mseed",
     inventory="data/metadata/stations.xml",
     max_workers=5,
-    remove_original=False,
 )
 ```
 
@@ -100,16 +99,13 @@ This replaces “download SAC directly”: an FDSN dataselect response is normal
 MiniSEED, so SAC creation belongs to local validation and archival rather than
 network transport.
 
-## Original-file policy and damaged records
+## Source-file policy and damaged records
 
-`remove_original=False` is the safe default. With `remove_original=True`, a raw
-response is removed only after every output derived from it has been validated
-and committed. Failed sources remain in staging.
-
-By default, an integrity warning triggers record-level recovery. Independently
-valid MiniSEED records may still be archived, but the damaged original is
-always retained as evidence—even when `remove_original=True`. Set
-`discard_corrupt_records=False` to reject the whole response instead.
+Archival never deletes or modifies staged responses. By default, an integrity
+warning triggers record-level recovery. Independently valid MiniSEED records
+may still be archived, while the damaged original remains available as
+evidence. Set `discard_corrupt_records=False` to reject the whole response
+instead.
 
 ## Restricted data
 

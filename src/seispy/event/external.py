@@ -7,6 +7,8 @@ from pathlib import Path
 import obspy
 from tqdm import tqdm
 
+from seispy.workflow import resolve_separate_directory_trees
+
 
 def _bundled_command(command: str, bin_path: str = "bin") -> Path:
     """Resolve one command from the event-cutting toolchain."""
@@ -33,6 +35,7 @@ def cut_events_binary(
         max_workers: Maximum number of station worker processes.
 
     Raises:
+        ValueError: If the input and output directory trees overlap.
         subprocess.CalledProcessError: If an external command fails.
 
     Examples:
@@ -43,7 +46,8 @@ def cut_events_binary(
         )
         ```
     """
-    stations = sorted(path for path in Path(net_dir).iterdir() if path.is_dir())
+    network_dir, output_dir = resolve_separate_directory_trees(net_dir, dest_dir)
+    stations = sorted(path for path in network_dir.iterdir() if path.is_dir())
     mktraceiodb = _bundled_command("mktraceiodb")
     cutevent = _bundled_command("cutevent")
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -56,7 +60,7 @@ def cut_events_binary(
                 cutevent,
                 event_file,
                 time_window,
-                dest_dir,
+                output_dir,
             )
             for index, station in enumerate(stations)
         }

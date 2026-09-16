@@ -7,7 +7,7 @@ description: Combine compatible SAC segments into one channel-day waveform.
 
 ## Interface
 
-`waveform.merge_waveforms_by_day(src, ...)`
+`waveform.merge_waveforms_by_day(source_dir, output_dir, ...)`
 
 **Input:** a canonical SAC archive containing one or more segments per
 network, station, location, channel, and UTC day.<br>
@@ -20,8 +20,8 @@ from seispy import waveform
 
 waveform.merge_waveforms_by_day(
     "data/sac",
+    "data/sac-merged",
     pattern="*.sac",
-    remove_src=False,
 )
 ```
 
@@ -29,10 +29,8 @@ The function reads headers, groups compatible traces, sorts them, and merges
 gaps of at most one second by interpolation. Longer gaps fail explicitly
 instead of being filled with synthetic data.
 
-!!! warning "Protect source segments"
-
-    The interface defaults to `remove_src=True`. Use `remove_src=False` while
-    learning or validating a new archive.
+Merged files are written under `data/sac-merged`. The source segments remain
+unchanged.
 
 ## Next step
 

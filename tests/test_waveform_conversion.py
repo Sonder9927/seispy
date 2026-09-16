@@ -38,31 +38,30 @@ class _Stream(list):
         return self
 
 
-def test_conversion_writes_sac_and_can_remove_source(tmp_path):
+def test_conversion_writes_sac_and_preserves_source(tmp_path):
     source = tmp_path / "input.miniseed"
     source.write_bytes(b"mseed")
     with patch.object(module.obspy, "read", return_value=_Stream([_Trace()])):
-        result = module._convert_file(source, tmp_path / "output", True, 1)
+        result = module._convert_file(source, tmp_path / "output", 1)
     assert result.succeeded == 1
     assert result.traces_written == 1
-    assert not source.exists()
+    assert source.read_bytes() == b"mseed"
     destination = (
         tmp_path / "output" / "NZ" / "AAA" / "2026" / "NZ.AAA..BHZ.2026.008.010203.sac"
     )
     assert destination.read_bytes() == b"sac"
 
 
-def test_conflict_does_not_overwrite_or_remove_source(tmp_path):
+def test_conflict_does_not_overwrite_output(tmp_path):
     source = tmp_path / "input.miniseed"
     source.write_bytes(b"mseed")
     destination = module._trace_destination(_Trace(), tmp_path / "output")
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"existing")
     with patch.object(module.obspy, "read", return_value=_Stream([_Trace()])):
-        result = module._convert_file(source, tmp_path / "output", True, 1)
+        result = module._convert_file(source, tmp_path / "output", 1)
     assert result.failed == 1
     assert result.conflicts == 1
-    assert source.exists()
     assert destination.read_bytes() == b"existing"
 
 
@@ -74,7 +73,6 @@ def test_partial_conversion_is_rolled_back(tmp_path):
     second.stats.channel = "BHN"
     second.write = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad"))
     with patch.object(module.obspy, "read", return_value=_Stream([_Trace(), second])):
-        result = module._convert_file(source, tmp_path / "output", True, 1)
+        result = module._convert_file(source, tmp_path / "output", 1)
     assert result.failed == 1
-    assert source.exists()
     assert not list((tmp_path / "output").rglob("*.sac"))

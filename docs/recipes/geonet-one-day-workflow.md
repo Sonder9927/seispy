@@ -106,7 +106,6 @@ waveforms = waveform.archive_waveforms(
     output_format="mseed",
     inventory=inventory,
     max_workers=5,
-    remove_original=False,
 )
 require_ok("MiniSEED archive", waveforms)
 ```
@@ -139,19 +138,17 @@ converted = waveform.convert_mseed_to_sac(
     SAC_COUNTS_100HZ,
     pattern="*.mseed",
     max_workers=2,
-    remove_original=False,
     save_report=True,
 )
 require_ok("MiniSEED-to-SAC conversion", converted)
 
 # 2. Remove the response without changing the 100 Hz sampling rate.
-deconvolved = deconvolution.remove_instrument_response(
+deconvolved = deconvolution.deconvolve_waveforms(
     SAC_COUNTS_100HZ / NETWORK,
     STATIONXML,
     backend="obspy",
     pattern="*.sac",
     output_dir=SAC_DISP_100HZ / NETWORK,
-    remove_original=False,
     max_workers=2,
     pre_filt=[0.004, 0.006, 4, 5],
     save_report=True,
@@ -165,7 +162,6 @@ resampled = waveform.decimate_waveforms(
     backend="scipy",
     pattern="*.sac",
     output_dir=SAC_DISP_1HZ / NETWORK,
-    remove_original=False,
     max_workers=2,
     save_report=True,
 )
@@ -202,13 +198,12 @@ Append this code to the shared download script instead of Part 1:
 ```python
 SAC_DISP_25HZ = ROOT / "02_sac_displacement_nm_25hz"
 
-deconvolved = deconvolution.remove_instrument_response(
+deconvolved = deconvolution.deconvolve_waveforms(
     MSEED / NETWORK,
     STATIONXML,
     backend="obspy",
     pattern="*.mseed",
     output_dir=SAC_DISP_25HZ / NETWORK,
-    remove_original=False,
     max_workers=2,
     decimate_factors=4,
     pre_filt=[0.004, 0.006, 4, 5],

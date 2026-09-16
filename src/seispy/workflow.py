@@ -17,6 +17,17 @@ from types import TracebackType
 from typing import Any, Literal, Self
 
 
+def resolve_separate_directory_trees(
+    source_dir: str | Path, output_dir: str | Path
+) -> tuple[Path, Path]:
+    """Resolve and require two non-overlapping directory trees."""
+    source = Path(source_dir).expanduser().resolve()
+    output = Path(output_dir).expanduser().resolve()
+    if output == source or source in output.parents or output in source.parents:
+        raise ValueError("source_dir and output_dir must be separate directory trees")
+    return source, output
+
+
 def temporary_output_path(destination: str | Path) -> Path:
     """Reserve a unique temporary name beside its final destination."""
     destination = Path(destination)

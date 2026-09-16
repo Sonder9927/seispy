@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from obspy import UTCDateTime
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
-from obspy.core.inventory.response import InstrumentSensitivity, Response
+from obspy.core.inventory.response import Response
 
 from seispy.inventory import analyze_inventory
 
@@ -13,8 +13,13 @@ def _channel(
 ):
     metadata = None
     if response:
-        metadata = Response(
-            instrument_sensitivity=InstrumentSensitivity(1.0, 1.0, "M/S", "COUNTS")
+        metadata = Response.from_paz(
+            zeros=[0j],
+            poles=[-1 + 0j],
+            stage_gain=1.0,
+            stage_gain_frequency=1.0,
+            input_units="M",
+            output_units="COUNTS",
         )
     return Channel(
         code=code,
@@ -67,6 +72,20 @@ def test_missing_response_only_blocks_response_removal():
     assert report.response_suitability.status == "unsafe"
     assert report.response_suitability.issues[0].code == "MISSING_RESPONSE"
     with pytest.raises(ValueError, match="MISSING_RESPONSE"):
+        report.response_suitability.require_safe("response removal")
+
+
+def test_sensitivity_without_response_stages_blocks_response_removal():
+    inventory = _inventory(_channel())
+    inventory[0][0][0].response.response_stages = []
+
+    report = analyze_inventory(inventory)
+
+    assert any(
+        issue.code == "MISSING_RESPONSE_STAGES"
+        for issue in report.response_suitability.issues
+    )
+    with pytest.raises(ValueError, match="MISSING_RESPONSE_STAGES"):
         report.response_suitability.require_safe("response removal")
 
 

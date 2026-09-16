@@ -24,15 +24,13 @@ summary = waveform.archive_waveforms(
     output_format="sac",
     pattern="*.sac",
     max_workers=5,
-    remove_original=False,
 )
 
 print(summary.succeeded, summary.failed)
 ```
 
 SAC headers, not source filenames, determine the canonical destination. Each
-output is validated and committed atomically. Keep `remove_original=False`
-until the archive has been checked.
+output is validated and committed atomically. Source files are always kept.
 
 ## Output layout
 

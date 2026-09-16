@@ -1,3 +1,4 @@
+import inspect
 import os
 import subprocess
 import sys
@@ -61,3 +62,17 @@ def test_domain_public_apis_use_canonical_names():
     assert callable(waveform.waveform_coverage)
     assert not hasattr(download, "download_status")
     assert not hasattr(waveform, "decimate_by_station")
+
+
+def test_waveform_interfaces_cannot_delete_or_replace_sources():
+    from seispy import waveform
+
+    for function in (
+        waveform.archive_waveforms,
+        waveform.convert_mseed_to_sac,
+        waveform.decimate_waveforms,
+        waveform.merge_waveforms_by_day,
+    ):
+        parameters = inspect.signature(function).parameters
+        assert "remove_original" not in parameters
+        assert "remove_src" not in parameters

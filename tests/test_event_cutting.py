@@ -23,7 +23,10 @@ def _event():
 
 def test_no_data_is_counted_with_one_sample(tmp_path):
     result = module.cut_event_station(
-        _event(), {"station": "AAA"}, tmp_path, tmp_path / "output"
+        _event(),
+        {"network": "NZ", "station": "AAA"},
+        tmp_path / "output",
+        archive_index=SimpleNamespace(overlapping=lambda *args: ()),
     )
     assert result.failed == 1
     assert result.no_data == 1
@@ -38,8 +41,7 @@ def test_read_failures_are_compact(tmp_path):
     with patch.object(module.obspy, "read", side_effect=RuntimeError("bad SAC")):
         result = module.cut_event_station(
             _event(),
-            {"station": "AAA"},
-            tmp_path,
+            {"network": "NZ", "station": "AAA"},
             tmp_path / "output",
             archive_index=index,
             max_error_samples=1,

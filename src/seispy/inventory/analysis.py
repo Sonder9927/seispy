@@ -85,6 +85,7 @@ _EPOCH_COLUMNS = [
     "endtime",
     "has_response",
     "has_sensitivity",
+    "has_response_stages",
 ]
 
 
@@ -195,6 +196,9 @@ def _epoch_table(inventory, window_start, window_end) -> pd.DataFrame:
                         "has_sensitivity": bool(
                             response is not None
                             and response.instrument_sensitivity is not None
+                        ),
+                        "has_response_stages": bool(
+                            response is not None and response.response_stages
                         ),
                     }
                 )
@@ -331,6 +335,19 @@ def _audit_epochs(table: pd.DataFrame) -> tuple[InventoryIssue, ...]:
                         "response",
                         f"instrument sensitivity is missing for {'.'.join(key)}",
                         "Verify that the response stages can still be evaluated.",
+                        *key,
+                        row.starttime,
+                        row.endtime,
+                    )
+                )
+            if row.has_response and not row.has_response_stages:
+                issues.append(
+                    InventoryIssue(
+                        "MISSING_RESPONSE_STAGES",
+                        "error",
+                        "response",
+                        f"response stages are missing for {'.'.join(key)}",
+                        "Use response-level StationXML before removing response.",
                         *key,
                         row.starttime,
                         row.endtime,

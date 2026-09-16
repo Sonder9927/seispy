@@ -1,4 +1,3 @@
-import inspect
 from pathlib import Path
 
 import numpy as np
@@ -36,13 +35,6 @@ def _unsorted_sac(root):
     return path
 
 
-def test_archive_defaults_are_safe():
-    parameters = inspect.signature(waveform.archive_waveforms).parameters
-
-    assert parameters["max_workers"].default == 5
-    assert parameters["remove_original"].default is False
-
-
 def test_mseed_archive_preserves_valid_source_bytes(tmp_path):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
@@ -58,16 +50,12 @@ def test_mseed_archive_preserves_valid_source_bytes(tmp_path):
     assert summary.failed == 0
 
 
-def test_remove_original_happens_after_successful_archive(tmp_path):
+def test_archive_requires_separate_source_and_output_trees(tmp_path):
     source = tmp_path / "raw"
-    raw = _raw_mseed(source)
+    _raw_mseed(source)
 
-    summary = waveform.archive_waveforms(
-        source, tmp_path / "archive", max_workers=1, remove_original=True
-    )
-
-    assert not raw.exists()
-    assert summary.originals_removed == 1
+    with np.testing.assert_raises_regex(ValueError, "separate directory trees"):
+        waveform.archive_waveforms(source, source / "archive", max_workers=1)
 
 
 def test_sac_archive_writes_one_valid_file_per_trace(tmp_path):
@@ -123,7 +111,7 @@ def test_sac_source_cannot_be_archived_as_mseed(tmp_path):
     assert original.is_file()
 
 
-def test_invalid_source_is_reported_and_retained(tmp_path):
+def test_invalid_source_is_reported(tmp_path):
     source = tmp_path / "raw"
     raw = source / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed.raw"
     raw.parent.mkdir(parents=True)
@@ -133,13 +121,10 @@ def test_invalid_source_is_reported_and_retained(tmp_path):
         source,
         tmp_path / "archive",
         max_workers=1,
-        remove_original=True,
         discard_corrupt_records=False,
     )
 
     assert summary.failed == 1
-    assert summary.originals_retained == 1
-    assert raw.exists()
 
 
 def test_existing_valid_archive_is_skipped(tmp_path):
@@ -155,7 +140,7 @@ def test_existing_valid_archive_is_skipped(tmp_path):
     assert second.succeeded == 0
 
 
-def test_worker_result_does_not_delete_failed_source(tmp_path):
+def test_worker_rejects_a_path_that_disagrees_with_headers(tmp_path):
     raw = _raw_mseed(tmp_path / "raw")
     mismatched = raw.with_name("NZ.WRONG.10.HHZ.2026.001.mseed.raw")
     raw.rename(mismatched)
@@ -164,10 +149,9 @@ def test_worker_result_does_not_delete_failed_source(tmp_path):
         str(tmp_path / "raw"),
         str(tmp_path / "archive"),
         "mseed",
-        True,
         False,
         False,
     )
 
     assert result.failed == 1
-    assert mismatched.exists()
+    assert "do not match intended archive path" in result.issue.error

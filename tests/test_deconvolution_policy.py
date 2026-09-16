@@ -65,7 +65,7 @@ def test_deconvolution_rejects_non_sac_decimation_factors(tmp_path):
     source.mkdir()
     for factors in (0, 1, 8, [5, 1], [2, 8], [2.0]):
         with pytest.raises(ValueError, match="integers from 2 through 7"):
-            remove_response.remove_instrument_response(
+            remove_response.deconvolve_waveforms(
                 source,
                 tmp_path / "stations.xml",
                 output_dir=tmp_path / "output",
@@ -81,7 +81,7 @@ def test_decimation_must_leave_passband_below_nyquist():
 
 
 def test_deconvolution_public_signature():
-    signature = inspect.signature(remove_response.remove_instrument_response)
+    signature = inspect.signature(remove_response.deconvolve_waveforms)
 
     assert signature.parameters["decimate_factors"].default is None
     assert signature.parameters["backend"].default == "obspy"

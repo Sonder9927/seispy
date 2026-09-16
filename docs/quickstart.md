@@ -77,14 +77,13 @@ archived = waveform.archive_waveforms(
     inventory=inventory,
     output_format="mseed",
     max_workers=2,
-    remove_original=False,
 )
 
 print(archived.succeeded, archived.failed)
 ```
 
-Trusted output is written below `data/mseed/NZ/WEL/2025/`. The staging file is
-kept because this learning example uses `remove_original=False`.
+Trusted output is written below `data/mseed/NZ/WEL/2025/`. Staging files are
+always preserved.
 
 ## 4. Measure the result
 

@@ -1,10 +1,11 @@
 """Instrument-response deconvolution workflows."""
 
 import logging
+import math
 import os
 import subprocess
 import tempfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
@@ -24,15 +25,16 @@ from seispy.workflow import (
     BatchSummary,
     commit_output,
     new_run_id,
+    resolve_separate_directory_trees,
     temporary_output_path,
 )
 from seispy.inventory import analyze_inventory
 
 logger = logging.getLogger(__name__)
-IssueStatus = Literal["deconvolution_failed", "original_removal_failed"]
+IssueStatus = Literal["deconvolution_failed"]
 PreFilter = tuple[float, float, float, float]
 DEFAULT_PRE_FILTER: PreFilter = (0.004, 0.006, 4.0, 5.0)
-DEFAULT_SAC_BATCH_SIZE = 100
+MAX_BATCH_SIZE = 32
 TAPER_MAX_SECONDS = 150.0
 
 
@@ -51,7 +53,6 @@ class _WorkerSummary:
     total: int = 0
     succeeded: int = 0
     failed: int = 0
-    removal_failed: int = 0
     issue_samples: tuple[DeconvolutionIssue, ...] = ()
 
 
@@ -59,7 +60,7 @@ class _WorkerSummary:
 class DeconvolutionSummary(BatchSummary):
     """Summarize a batch instrument-response removal run.
 
-    This class is returned by :func:`remove_instrument_response`; applications
+    This class is returned by :func:`deconvolve_waveforms`; applications
     normally do not instantiate it directly.
 
     Attributes:
@@ -67,18 +68,14 @@ class DeconvolutionSummary(BatchSummary):
         total: Number of waveform files considered.
         succeeded: Number processed successfully.
         failed: Number that failed deconvolution.
-        removal_failed: Number of successful outputs whose source removal failed.
-        response_conflicts: Number of input files found during preflight to have
-            no unique response epoch.
-        issue_samples: Bounded sample of processing and removal issues.
-        output_dir: Output root, or ``None`` when replacing source files.
-        remove_original: Whether successful outputs replace their sources.
+        issue_samples: Bounded sample of processing issues.
+        output_dir: Output root.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
 
     Examples:
         ```python
-        summary = remove_instrument_response(...)
+        summary = deconvolve_waveforms(...)
         print(summary.succeeded, summary.failed)
         ```
     """
@@ -86,44 +83,41 @@ class DeconvolutionSummary(BatchSummary):
     total: int
     succeeded: int
     failed: int
-    removal_failed: int
-    response_conflicts: int
     issue_samples: tuple[DeconvolutionIssue, ...]
-    output_dir: Path | None
-    remove_original: bool
+    output_dir: Path
 
     @property
     def has_issues(self) -> bool:
-        return bool(self.failed or self.removal_failed)
+        return bool(self.failed)
 
 
-def remove_instrument_response(
-    net_dir: str | Path,
-    resp: str | Path | Inventory,
+def deconvolve_waveforms(
+    source_dir: str | Path,
+    inventory: str | Path | Inventory,
+    *,
+    output_dir: str | Path | None = None,
     backend: str = "obspy",
     pattern: str = "*.sac",
     max_workers: int = 5,
-    *,
-    output_dir: str | Path | None = None,
-    remove_original: bool = False,
+    batch_size: int | None = None,
     max_error_samples: int = 20,
     save_report: bool | None = True,
     save_log: bool = True,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
-    sac_batch_size: int = DEFAULT_SAC_BATCH_SIZE,
     decimate_factors: int | Sequence[int] | None = None,
 ) -> DeconvolutionSummary:
-    """Remove responses from station-grouped SAC or MiniSEED waveform files.
+    """Deconvolve every matching waveform in a directory tree.
 
     Args:
-        net_dir: One network directory containing one subdirectory per station.
-        resp: StationXML path or ObsPy inventory containing matching responses.
+        source_dir: Input waveform tree. Its directory layout has no semantics.
+        inventory: Safe StationXML path or ObsPy inventory with responses.
+        output_dir: Separate output tree. Defaults to a sibling named with the
+            ``_deconvolved`` suffix. Input and output trees cannot overlap.
         backend: Processing backend, ``"obspy"`` or ``"sac"``.
-        pattern: Recursive file pattern within each station directory. Use a
-            MiniSEED pattern only with ``backend="obspy"``.
-        max_workers: Maximum number of station worker processes.
-        output_dir: Optional output root. A sibling directory is used by default.
-        remove_original: Remove each source only after output commits safely.
+        pattern: Recursive input file pattern. MiniSEED requires ObsPy.
+        max_workers: Maximum number of worker processes.
+        batch_size: Files submitted per task. By default enough batches are
+            created for eight scheduling waves, capped at 32 files each.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
             ``True``. ``None`` retains it only when issues occur.
@@ -131,9 +125,6 @@ def remove_instrument_response(
         pre_filt: Four corner frequencies in hertz. When the upper corners
             exceed Nyquist they are reduced per trace while preserving the
             requested low-frequency corners.
-        sac_batch_size: Maximum files handled by one SAC process. This limits
-            the failure scope while avoiding one process launch per file. Only
-            used when ``backend="sac"``.
         decimate_factors: Optional factor or ordered factors from 2 through 7.
             After detrending and tapering, decimation with anti-alias filtering
             is applied before instrument-response removal. The final Nyquist
@@ -144,7 +135,7 @@ def remove_instrument_response(
         Processing counts, sampled issues, output location, and run duration.
 
     Raises:
-        NotADirectoryError: If ``net_dir`` does not exist.
+        NotADirectoryError: If ``source_dir`` does not exist.
         ValueError: If the backend, limits, or output policy is invalid, or if
             MiniSEED input is selected with the SAC backend.
 
@@ -161,238 +152,254 @@ def remove_instrument_response(
 
     Examples:
         ```python
-        summary = remove_instrument_response(
-            "data/sac/NZ", "data/metadata/stations.xml",
-            output_dir="data/deconvolved/NZ",
-            remove_original=False,
+        summary = deconvolve_waveforms(
+            "data/sac", "data/metadata/stations.xml",
+            output_dir="data/deconvolved",
         )
-        summary.remove_original
-        # => False
+        summary.output_dir.name
+        # => 'deconvolved'
         ```
     """
     run_id = new_run_id()
     backend = backend.lower()
-    src_path = Path(net_dir).expanduser().resolve()
+    src_path = Path(source_dir).expanduser().resolve()
     if not src_path.is_dir():
         raise NotADirectoryError(f"Source directory does not exist: {src_path}")
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
-    if backend == "sac" and sac_batch_size < 1:
-        raise ValueError("sac_batch_size must be at least 1")
+    if batch_size is not None and batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
     pre_filt = _validate_pre_filt(pre_filt)
     factors = _normalize_decimate_factors(decimate_factors)
-    worker = _deconvolution_backend(backend)
-    output_path = _resolve_output_dir(src_path, output_dir, remove_original)
+    _deconvolution_backend(backend)
+    output_path = _resolve_output_dir(src_path, output_dir)
     worker_error_samples = min(max_error_samples, 1)
-    stations = sorted(path for path in src_path.iterdir() if path.is_dir())
+    targets = _input_files(src_path, pattern)
     if backend == "sac":
-        miniseed = _first_miniseed_input(stations, pattern)
+        miniseed = _first_miniseed_input(targets)
         if miniseed is not None:
             raise ValueError(
                 f'backend="sac" does not support MiniSEED input: {miniseed}; '
                 'use backend="obspy"'
             )
-    inv = resp if isinstance(resp, Inventory) else obspy.read_inventory(str(resp))
+    inv = (
+        inventory
+        if isinstance(inventory, Inventory)
+        else obspy.read_inventory(str(inventory))
+    )
     response_analysis = analyze_inventory(inv)
     response_analysis.response_suitability.require_safe("response removal")
-    response_conflicts = _preflight_response_conflicts(stations, pattern, inv)
-    total = sum(len(_input_files(station, pattern)) for station in stations)
-    artifact_root = output_path or src_path
-    with BatchRun(
-        "deconvolution",
-        artifact_root,
-        run_id=run_id,
-        save_report=save_report,
-        save_log=save_log,
-        logger=logger,
-    ) as run:
-        run.start(
-            total=total,
-            succeeded=0,
-            failed=0,
-            removal_failed=0,
-            response_conflicts=response_conflicts,
-            issue_samples=(),
-            output_dir=output_path,
-            remove_original=remove_original,
-        )
-        run.info(
-            "run_id=%s backend=%s net_dir=%s output_dir=%s remove_original=%s "
-            "pattern=%s max_workers=%d decimate_factors=%s",
-            run_id,
-            backend,
-            src_path,
+    total = len(targets)
+    actual_batch_size = _batch_size(total, max_workers, batch_size)
+    with tempfile.TemporaryDirectory(prefix="seispy-deconvolution-") as temp_dir:
+        combined_pz = None
+        if backend == "sac":
+            combined_pz = _write_combined_sacpz(inv, Path(temp_dir) / "responses.pz")
+        with BatchRun(
+            "deconvolution",
             output_path,
-            remove_original,
-            pattern,
-            max_workers,
-            factors,
-        )
-        if response_conflicts:
-            run.warning(
-                "run_id=%s response_preflight_conflicts=%d; affected files will "
-                "fail without choosing a response arbitrarily",
-                run_id,
-                response_conflicts,
-            )
-        compact = _run_deconvolution_batches(
-            stations,
-            pattern,
-            inv,
-            backend,
-            worker,
-            src_path,
-            output_path,
-            remove_original,
-            worker_error_samples,
-            pre_filt,
-            sac_batch_size,
-            factors,
-            max_workers,
-            max_error_samples,
-            response_conflicts,
-            total,
-            run,
-        )
-        summary = run.complete(
-            DeconvolutionSummary(
-                run_id=run_id,
-                total=compact.total,
-                succeeded=compact.succeeded,
-                failed=compact.failed,
-                removal_failed=compact.removal_failed,
-                response_conflicts=response_conflicts,
-                issue_samples=compact.issue_samples,
+            run_id=run_id,
+            save_report=save_report,
+            save_log=save_log,
+            logger=logger,
+        ) as run:
+            run.start(
+                total=total,
+                succeeded=0,
+                failed=0,
+                issue_samples=(),
                 output_dir=output_path,
-                remove_original=remove_original,
-                duration_seconds=0,
             )
-        )
-        for issue in summary.issue_samples:
-            run.error(
-                "run_id=%s status=%s source=%s destination=%s error=%s",
+            run.info(
+                "run_id=%s backend=%s source_dir=%s output_dir=%s pattern=%s "
+                "max_workers=%d batch_size=%d decimate_factors=%s",
                 run_id,
-                issue.status,
-                issue.source,
-                issue.destination,
-                issue.error,
+                backend,
+                src_path,
+                output_path,
+                pattern,
+                max_workers,
+                actual_batch_size,
+                factors,
             )
-        issue_total = summary.failed + summary.removal_failed
-        if issue_total > len(summary.issue_samples):
-            run.warning(
-                "run_id=%s issue_samples_truncated shown=%d total_issues=%d",
-                run_id,
-                len(summary.issue_samples),
-                issue_total,
+            compact = _run_deconvolution_batches(
+                targets,
+                inv,
+                backend,
+                combined_pz,
+                src_path,
+                output_path,
+                worker_error_samples,
+                pre_filt,
+                factors,
+                max_workers,
+                actual_batch_size,
+                max_error_samples,
+                total,
+                run,
             )
+            summary = run.complete(
+                DeconvolutionSummary(
+                    run_id=run_id,
+                    total=compact.total,
+                    succeeded=compact.succeeded,
+                    failed=compact.failed,
+                    issue_samples=compact.issue_samples,
+                    output_dir=output_path,
+                    duration_seconds=0,
+                )
+            )
+            for issue in summary.issue_samples:
+                run.error(
+                    "run_id=%s status=%s source=%s destination=%s error=%s",
+                    run_id,
+                    issue.status,
+                    issue.source,
+                    issue.destination,
+                    issue.error,
+                )
+            if summary.failed > len(summary.issue_samples):
+                run.warning(
+                    "run_id=%s issue_samples_truncated shown=%d total_issues=%d",
+                    run_id,
+                    len(summary.issue_samples),
+                    summary.failed,
+                )
     print(
         f"Deconvolution complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed, {summary.removal_failed} originals not removed."
+        f"{summary.failed} failed."
     )
     return summary
 
 
+_WORKER_INVENTORY = None
+_WORKER_BACKEND = None
+_WORKER_COMBINED_PZ = None
+
+
+def _initialize_deconvolution_worker(inventory, backend, combined_pz):
+    global _WORKER_BACKEND, _WORKER_COMBINED_PZ, _WORKER_INVENTORY
+    _WORKER_INVENTORY = inventory
+    _WORKER_BACKEND = backend
+    _WORKER_COMBINED_PZ = combined_pz
+
+
 def _run_deconvolution_batches(
-    stations,
-    pattern,
+    targets,
     inventory,
     backend,
-    worker,
+    combined_pz,
     src_path,
     output_path,
-    remove_original,
     worker_error_samples,
     pre_filt,
-    sac_batch_size,
     factors,
     max_workers,
+    batch_size,
     max_error_samples,
-    response_conflicts,
     total,
     run,
 ):
+    if not targets:
+        return _WorkerSummary()
+    target_batches = iter(_batched(targets, batch_size))
     batches: list[_WorkerSummary] = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_initialize_deconvolution_worker,
+        initargs=(inventory, backend, combined_pz),
+    ) as executor:
         futures = {}
-        for station in stations:
-            try:
-                response = _get_response(backend, inventory, station.name)
-            except Exception as exc:
-                batches.append(
-                    _failed_batch(
-                        _input_files(station, pattern),
+        exhausted = False
+        with tqdm(total=total, desc="Deconvolving waveforms") as bar:
+            while futures or not exhausted:
+                while not exhausted and len(futures) < max_workers * 2:
+                    try:
+                        batch = next(target_batches)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    future = executor.submit(
+                        _process_worker_batch,
+                        batch,
                         src_path,
                         output_path,
-                        remove_original,
-                        exc,
                         worker_error_samples,
+                        pre_filt,
+                        factors,
                     )
-                )
-                continue
-            worker_args = (
-                station,
-                pattern,
-                response,
-                src_path,
-                output_path,
-                remove_original,
-                worker_error_samples,
-                pre_filt,
-            )
-            if backend == "sac":
-                worker_args += (sac_batch_size, factors)
-            else:
-                worker_args += (factors,)
-            futures[executor.submit(worker, *worker_args)] = station
-        initial = _combine_batches(batches, max_error_samples)
-        if initial.total:
-            _checkpoint_deconvolution(
-                run, initial, total, response_conflicts, output_path, remove_original
-            )
-        with tqdm(total=len(futures), desc="Processing stations") as pbar:
-            for future in as_completed(futures):
-                station = futures[future]
-                try:
-                    batches.append(future.result())
-                except Exception as exc:
-                    batches.append(
-                        _failed_batch(
-                            _input_files(station, pattern),
+                    futures[future] = batch
+                if not futures:
+                    continue
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    batch = futures.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = _failed_batch(
+                            batch,
                             src_path,
                             output_path,
-                            remove_original,
                             exc,
                             worker_error_samples,
                         )
-                    )
+                    batches.append(result)
+                    bar.update(result.total)
                 compact = _combine_batches(batches, max_error_samples)
-                _checkpoint_deconvolution(
-                    run,
-                    compact,
-                    total,
-                    response_conflicts,
-                    output_path,
-                    remove_original,
-                )
-                pbar.update(1)
+                _checkpoint_deconvolution(run, compact, total, output_path)
     return _combine_batches(batches, max_error_samples)
 
 
-def _checkpoint_deconvolution(
-    run, compact, total, response_conflicts, output_path, remove_original
-):
+def _process_worker_batch(targets, src_path, output_path, limit, pre_filt, factors):
+    if _WORKER_BACKEND == "obspy":
+        return _process_obspy_targets(
+            targets,
+            _WORKER_INVENTORY,
+            src_path,
+            output_path,
+            limit,
+            pre_filt,
+            factors,
+        )
+    if _WORKER_BACKEND == "sac":
+        environment = os.environ.copy()
+        environment["SAC_DISPLAY_COPYRIGHT"] = "0"
+        return _process_sac_batch(
+            targets,
+            _WORKER_INVENTORY,
+            Path(_WORKER_COMBINED_PZ),
+            src_path,
+            output_path,
+            limit,
+            pre_filt,
+            environment,
+            factors,
+        )
+    raise ValueError(f"Unknown backend: {_WORKER_BACKEND}")
+
+
+def _batch_size(total, max_workers, requested):
+    if requested is not None:
+        return requested
+    return max(1, min(MAX_BATCH_SIZE, math.ceil(total / (max_workers * 8))))
+
+
+def _batched(targets, size):
+    for start in range(0, len(targets), size):
+        yield tuple(targets[start : start + size])
+
+
+def _checkpoint_deconvolution(run, compact, total, output_path):
     run.checkpoint(
         completed=compact.total,
         total=total,
         succeeded=compact.succeeded,
         failed=compact.failed,
-        removal_failed=compact.removal_failed,
-        response_conflicts=response_conflicts,
         issue_samples=compact.issue_samples,
         output_dir=output_path,
-        remove_original=remove_original,
     )
 
 
@@ -404,17 +411,16 @@ def _combine_batches(batches, limit: int) -> _WorkerSummary:
         sum(x.total for x in batches),
         sum(x.succeeded for x in batches),
         sum(x.failed for x in batches),
-        sum(x.removal_failed for x in batches),
         tuple(samples),
     )
 
 
-def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
+def _failed_batch(targets, src_root, output_dir, exc, limit):
     error = f"{type(exc).__name__}: {exc}"
     samples = tuple(
         DeconvolutionIssue(
             target,
-            _destination_for(target, src_root, output_dir, remove_original),
+            _destination_for(target, src_root, output_dir),
             "deconvolution_failed",
             error,
         )
@@ -425,44 +431,26 @@ def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
     )
 
 
-def _resolve_output_dir(src_path, output_dir, remove_original):
-    if remove_original:
-        if output_dir is not None:
-            raise ValueError("output_dir cannot be used when remove_original=True")
-        return None
+def _resolve_output_dir(src_path, output_dir):
     destination = (
-        Path(output_dir).expanduser().resolve()
+        output_dir
         if output_dir is not None
-        else src_path.with_name(f"{src_path.name}_deconv")
+        else src_path.with_name(f"{src_path.name}_deconvolved")
     )
-    if destination == src_path or src_path in destination.parents:
-        raise ValueError("output_dir must be outside src_dir")
+    _, destination = resolve_separate_directory_trees(src_path, destination)
     destination.mkdir(parents=True, exist_ok=True)
     return destination
 
 
-def _get_response(backend, resp, station):
-    if backend in {"obspy", "sac"}:
-        inv = resp.select(station=station)
-        if len(inv):
-            return inv
-        raise ValueError(f"station={station!r} not found in the inventory")
-    raise ValueError(f"Unknown backend: {backend}")
-
-
 def _deconvolution_backend(backend) -> Callable:
     if backend == "obspy":
-        return obspy_deconv
+        return _process_obspy_targets
     if backend == "sac":
-        return sac_deconv
+        return _process_sac_batch
     raise ValueError(f"Unknown backend: {backend}")
 
 
-def _destination_for(target, src_root, output_dir, remove_original):
-    if remove_original:
-        return target.with_suffix(".deconv.sac")
-    if output_dir is None:
-        raise ValueError("output_dir is required when remove_original=False")
+def _destination_for(target, src_root, output_dir):
     destination = output_dir / target.relative_to(src_root)
     return (
         destination
@@ -472,52 +460,77 @@ def _destination_for(target, src_root, output_dir, remove_original):
 
 
 def _input_files(directory, pattern):
-    return sorted(
-        target
-        for target in directory.rglob(pattern)
-        if not target.name.lower().endswith(".deconv.sac")
+    return tuple(
+        sorted(target for target in directory.rglob(pattern) if target.is_file())
     )
 
 
-def _first_miniseed_input(stations, pattern):
-    for station in stations:
-        for target in _input_files(station, pattern):
-            if target.suffix.lower() in {".mseed", ".miniseed", ".msd", ".seed"}:
-                return target
-            # Unknown extensions are inspected so format, rather than naming,
-            # remains authoritative without penalizing normal SAC collections.
-            if target.suffix.lower() == ".sac":
-                continue
-            try:
-                trace = obspy.read(target, headonly=True)[0]
-            except Exception:
-                continue
-            if getattr(trace.stats, "_format", "").upper() == "MSEED":
-                return target
+def _first_miniseed_input(targets):
+    for target in targets:
+        if target.suffix.lower() in {".mseed", ".miniseed", ".msd", ".seed"}:
+            return target
+        if target.suffix.lower() == ".sac":
+            continue
+        try:
+            trace = obspy.read(target, headonly=True)[0]
+        except Exception:
+            continue
+        if getattr(trace.stats, "_format", "").upper() == "MSEED":
+            return target
     return None
 
 
-def obspy_deconv(
-    directory,
-    pattern,
-    inv,
-    src_root,
-    output_dir,
-    remove_original,
-    max_error_samples,
-    pre_filt=DEFAULT_PRE_FILTER,
-    decimate_factors=(),
-):
-    return _process_obspy_targets(
-        _input_files(directory, pattern),
-        inv,
-        src_root,
-        output_dir,
-        remove_original,
-        max_error_samples,
-        pre_filt,
-        decimate_factors,
+def _write_combined_sacpz(inventory, destination):
+    destination = Path(destination)
+    export_inventory = inventory.copy()
+    _normalize_sacpz_uncertainties(export_inventory)
+    export_inventory.write(str(destination), format="SACPZ")
+    contents = destination.read_text(encoding="utf-8")
+    lines = contents.splitlines()
+    blocks = sum(line.strip().startswith("ZEROS ") for line in lines)
+    expected = sum(
+        len(station.channels) for network in inventory for station in network
     )
+    if blocks < 1:
+        raise ValueError("inventory contains no response that can be exported as SACPZ")
+    if blocks != expected:
+        raise ValueError(
+            f"SACPZ export contains {blocks} response blocks for {expected} "
+            "channel epochs"
+        )
+    for field in ("NETWORK", "STATION", "LOCATION", "CHANNEL", "START", "END"):
+        count = sum(line.lstrip().startswith(f"* {field}") for line in lines)
+        if count != blocks:
+            raise ValueError(f"SACPZ response blocks require annotated {field} fields")
+    units = [
+        line.partition(":")[2].strip().upper()
+        for line in lines
+        if line.lstrip().startswith("* INPUT UNIT")
+    ]
+    if len(units) != blocks or any(unit != "M" for unit in units):
+        raise ValueError(
+            "all SACPZ response blocks must use displacement input units (M)"
+        )
+    return destination
+
+
+def _normalize_sacpz_uncertainties(inventory):
+    """Make optional GeoNet uncertainty fields acceptable to ObsPy's writer."""
+    for network in inventory:
+        for station in network:
+            for channel in station:
+                response = channel.response
+                if response is None:
+                    continue
+                for stage in response.response_stages:
+                    for value in (
+                        *getattr(stage, "poles", ()),
+                        *getattr(stage, "zeros", ()),
+                    ):
+                        if getattr(value, "lower_uncertainty", None) is None:
+                            value.lower_uncertainty = 0.0
+                        if getattr(value, "upper_uncertainty", None) is None:
+                            value.upper_uncertainty = 0.0
 
 
 def _process_obspy_targets(
@@ -525,31 +538,24 @@ def _process_obspy_targets(
     inv,
     src_root,
     output_dir,
-    remove_original,
     limit,
     pre_filt,
     decimate_factors,
 ):
-    succeeded = failed = removal_failed = 0
+    succeeded = failed = 0
     samples = []
     for target in targets:
-        base_destination = _destination_for(
-            target, src_root, output_dir, remove_original
-        )
+        base_destination = _destination_for(target, src_root, output_dir)
         temporary_outputs = []
         committed_outputs = []
         try:
-            # Call through the compatibility name so existing test and plugin
-            # seams that patch it continue to affect the workflow.
             stream = remove_response_from_file(
                 target,
                 inv,
                 pre_filt=pre_filt,
                 decimate_factors=decimate_factors,
             )
-            destinations = _obspy_destinations(
-                target, stream, src_root, output_dir, remove_original
-            )
+            destinations = _obspy_destinations(target, stream, src_root, output_dir)
             for trace, destination in zip(stream, destinations, strict=True):
                 temporary = temporary_output_path(destination)
                 temporary_outputs.append((temporary, destination))
@@ -575,40 +581,22 @@ def _process_obspy_targets(
                 )
             continue
         succeeded += 1
-        if remove_original:
-            try:
-                target.unlink()
-            except OSError as exc:
-                removal_failed += 1
-                if len(samples) < limit:
-                    samples.append(
-                        DeconvolutionIssue(
-                            target,
-                            base_destination,
-                            "original_removal_failed",
-                            f"{type(exc).__name__}: {exc}",
-                        )
-                    )
-    return _WorkerSummary(
-        len(targets), succeeded, failed, removal_failed, tuple(samples)
-    )
+    return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))
 
 
-def _obspy_destinations(target, stream, src_root, output_dir, remove_original):
-    base = _destination_for(target, src_root, output_dir, remove_original)
+def _obspy_destinations(target, stream, src_root, output_dir):
+    base = _destination_for(target, src_root, output_dir)
     if len(stream) == 1:
         return [base]
     destinations = []
     for index, trace in enumerate(stream, start=1):
-        destinations.append(
-            base.with_name(_segment_sac_name(target, trace, index, remove_original))
-        )
+        destinations.append(base.with_name(_segment_sac_name(target, trace, index)))
     if len(set(destinations)) != len(destinations):
         raise ValueError(f"MiniSEED traces produce duplicate output names: {target}")
     return destinations
 
 
-def _segment_sac_name(target, trace, index, remove_original):
+def _segment_sac_name(target, trace, index):
     """Return a compact, unique name for one continuous output segment."""
     stats = trace.stats
     codes = (
@@ -627,64 +615,22 @@ def _segment_sac_name(target, trace, index, remove_original):
         timestamp = f"T{time_of_day}"
     else:
         timestamp = f".{stats.starttime.strftime('%Y%j')}T{time_of_day}"
-    marker = ".deconv" if remove_original else ""
-    return f"{stem}{timestamp}{marker}.sac"
-
-
-def sac_deconv(
-    directory,
-    pattern,
-    inv,
-    src_root,
-    output_dir,
-    remove_original,
-    max_error_samples,
-    pre_filt=DEFAULT_PRE_FILTER,
-    batch_size=DEFAULT_SAC_BATCH_SIZE,
-    decimate_factors=(),
-):
-    if batch_size < 1:
-        raise ValueError("batch_size must be at least 1")
-    decimate_factors = _normalize_decimate_factors(decimate_factors)
-    targets = _input_files(directory, pattern)
-    environment = os.environ.copy()
-    environment["SAC_DISPLAY_COPYRIGHT"] = "0"
-    with tempfile.TemporaryDirectory(prefix="seispy-sac-pz-") as cache_dir:
-        response_cache = {}
-        summaries = [
-            _process_sac_batch(
-                targets[start : start + batch_size],
-                inv,
-                Path(cache_dir),
-                response_cache,
-                src_root,
-                output_dir,
-                remove_original,
-                max_error_samples,
-                pre_filt,
-                environment,
-                decimate_factors,
-            )
-            for start in range(0, len(targets), batch_size)
-        ]
-    return _combine_batches(summaries, max_error_samples)
+    return f"{stem}{timestamp}.sac"
 
 
 def _process_sac_batch(
     targets,
     inv,
-    cache_dir,
-    response_cache,
+    combined_pz,
     src_root,
     output_dir,
-    remove_original,
     limit,
     pre_filt,
     environment,
     decimate_factors,
 ):
     """Run a bounded group of files in one SAC process."""
-    failed = removal_failed = 0
+    failed = 0
     samples = []
     prepared = []
 
@@ -701,7 +647,7 @@ def _process_sac_batch(
 
     commands = ["readerr badfile fatal"]
     for target in targets:
-        destination = _destination_for(target, src_root, output_dir, remove_original)
+        destination = _destination_for(target, src_root, output_dir)
         temporary = temporary_output_path(destination)
         try:
             trace = obspy.read(target, headonly=True)[0]
@@ -709,14 +655,14 @@ def _process_sac_batch(
                 trace.stats.sampling_rate, decimate_factors, pre_filt
             )
             f1, f2, f3, f4 = _effective_pre_filt(pre_filt, final_rate)
-            pzs = _sac_pz_for_trace(inv, trace, cache_dir, response_cache)
+            _response_epoch_for_trace(inv, trace)
             taper_width = _sac_taper_width(trace)
         except Exception as exc:
             temporary.unlink(missing_ok=True)
             failed += 1
             record(target, destination, "deconvolution_failed", exc)
             continue
-        prepared.append((target, destination, temporary))
+        prepared.append((target, destination, temporary, trace))
         commands.extend(
             (
                 f"r {target}",
@@ -726,7 +672,8 @@ def _process_sac_batch(
         commands.extend(f"decimate {factor}" for factor in decimate_factors)
         commands.extend(
             (
-                f"trans from pol s {pzs} to none freq {f1:g} {f2:g} {f3:g} {f4:g}",
+                f"trans from pol s {combined_pz} to none freq "
+                f"{f1:g} {f2:g} {f3:g} {f4:g}",
                 "mul 1.0e9",
                 f"w {temporary}",
             )
@@ -753,18 +700,16 @@ def _process_sac_batch(
                 )
 
         if process_error is not None and len(prepared) > 1:
-            for _, _, temporary in prepared:
+            for _, _, temporary, _ in prepared:
                 temporary.unlink(missing_ok=True)
             middle = len(prepared) // 2
             retried = [
                 _process_sac_batch(
                     [item[0] for item in group],
                     inv,
-                    cache_dir,
-                    response_cache,
+                    combined_pz,
                     src_root,
                     output_dir,
-                    remove_original,
                     limit,
                     pre_filt,
                     environment,
@@ -780,12 +725,14 @@ def _process_sac_batch(
             return _combine_batches([initial, *retried], limit)
 
         succeeded = 0
-        for target, destination, temporary in prepared:
+        for target, destination, temporary, expected in prepared:
             try:
                 if process_error is not None:
                     raise process_error
                 _validate_deconvolved_file(
-                    target, temporary, decimate_factors=decimate_factors
+                    temporary,
+                    expected=expected,
+                    decimate_factors=decimate_factors,
                 )
                 commit_output(temporary, destination, overwrite=True)
             except Exception as exc:
@@ -794,48 +741,10 @@ def _process_sac_batch(
                 record(target, destination, "deconvolution_failed", exc)
                 continue
             succeeded += 1
-            if remove_original:
-                try:
-                    target.unlink()
-                except OSError as exc:
-                    removal_failed += 1
-                    record(target, destination, "original_removal_failed", exc)
     else:
         succeeded = 0
 
-    return _WorkerSummary(
-        len(targets), succeeded, failed, removal_failed, tuple(samples)
-    )
-
-
-def _sac_pz_for_trace(inv, trace, cache_dir, cache):
-    """Return one cached SACPZ file selected by trace ID, time, and epoch."""
-    selected, channel = _response_epoch_for_trace(inv, trace)
-    key = (trace.id, str(channel.start_date), str(channel.end_date))
-    cached = cache.get(key)
-    if cached is not None:
-        return cached
-
-    destination = cache_dir / f"response-{len(cache):04d}.pz"
-    selected.write(str(destination), format="SACPZ")
-    contents = destination.read_text(encoding="utf-8")
-    response_blocks = sum(
-        line.strip().startswith("ZEROS ") for line in contents.splitlines()
-    )
-    input_units = [
-        line.partition(":")[2].strip().upper()
-        for line in contents.splitlines()
-        if line.lstrip().startswith("* INPUT UNIT")
-    ]
-    if response_blocks != 1:
-        destination.unlink(missing_ok=True)
-        raise ValueError(f"SACPZ export contains {response_blocks} response blocks")
-    if input_units != ["M"]:
-        destination.unlink(missing_ok=True)
-        unit = input_units[0] if input_units else "unknown"
-        raise ValueError(f"SACPZ input unit must be displacement (M), got {unit}")
-    cache[key] = destination
-    return destination
+    return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))
 
 
 def _response_epoch_for_trace(inv, trace):
@@ -879,68 +788,12 @@ def _response_epoch_for_trace(inv, trace):
     return selected, channel
 
 
-def _preflight_response_conflicts(stations, pattern, inv) -> int:
-    """Count affected files only when the inventory contains overlapping epochs."""
-    if not _inventory_has_overlapping_epochs(inv):
-        return 0
-    conflicts = 0
-    for station in stations:
-        station_inventory = inv.select(station=station.name)
-        for target in _input_files(station, pattern):
-            try:
-                stream = obspy.read(target, headonly=True)
-            except Exception:
-                continue
-            if any(
-                _trace_has_response_conflict(station_inventory, trace)
-                for trace in stream
-            ):
-                conflicts += 1
-    return conflicts
-
-
-def _trace_has_response_conflict(inv, trace) -> bool:
-    try:
-        _response_epoch_for_trace(inv, trace)
-    except Exception:
-        return True
-    return False
-
-
-def _inventory_has_overlapping_epochs(inv) -> bool:
-    groups = {}
-    for network in inv:
-        for station in network:
-            for channel in station:
-                key = (
-                    network.code,
-                    station.code,
-                    channel.location_code or "",
-                    channel.code,
-                )
-                groups.setdefault(key, []).append(channel)
-    for epochs in groups.values():
-        ordered = sorted(
-            epochs,
-            key=lambda item: (
-                float("-inf") if item.start_date is None else item.start_date.timestamp
-            ),
-        )
-        for previous, current in zip(ordered, ordered[1:], strict=False):
-            if previous.end_date is None or current.start_date is None:
-                return True
-            if current.start_date <= previous.end_date:
-                return True
-    return False
-
-
 def _validate_deconvolved_file(
-    source, output, processed=None, decimate_factors=()
+    output, *, expected, processed=None, decimate_factors=()
 ) -> None:
     """Validate output using headers and, when available, in-memory samples."""
-    source_trace = obspy.read(source, headonly=True)[0]
     output_trace = obspy.read(output, headonly=True)[0]
-    _validate_trace_headers(source_trace, output_trace, decimate_factors)
+    _validate_trace_headers(expected, output_trace, decimate_factors)
     if processed is not None:
         for trace in processed:
             _validate_sample_values(trace.data)

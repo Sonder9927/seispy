@@ -71,7 +71,6 @@ summary = waveform.convert_mseed_to_sac(
     "data/mseed",
     "data/sac",
     pattern="*.mseed",
-    remove_original=False,
 )
 
 print(summary.succeeded, summary.failed)

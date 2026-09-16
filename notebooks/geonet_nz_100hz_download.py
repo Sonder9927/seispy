@@ -18,7 +18,7 @@ def _(mo):
 
     本 notebook 完成以下工作：
 
-    1. 从 GeoNet 下载原始 StationXML；
+    1. 从 GeoNet 下载包含完整仪器响应的原始 StationXML；
     2. 分析原始 XML 中的台站、通道、采样率和 location；
     3. 固定选择 `NZ` 台网与经纬度区域 `[170, 180, -43.5, -34]`；
     4. 保留 100 Hz 地震通道，排除压力通道 `HDF`；
@@ -57,7 +57,7 @@ def _(Path, UTCDateTime):
 
     ROOT = Path("data/geonet_nz_100hz_170_180_20100101_20260101").resolve()
     METADATA_DIR = ROOT / "metadata"
-    RAW_XML = METADATA_DIR / "geonet_nz_all_channels_raw.xml"
+    RAW_XML = METADATA_DIR / "geonet_nz_response_raw.xml"
     SELECTED_XML = METADATA_DIR / "geonet_nz_100hz_selected.xml"
     RAW_DIR = ROOT / "waveform_staging"
     MSEED_DIR = ROOT / "mseed"
@@ -117,7 +117,10 @@ def _(
 @app.cell
 def _(mo):
     mo.md("""
-    ## 1. 下载原始 StationXML
+    ## 1. 下载 response 级原始 StationXML
+
+    这里必须使用 `level="response"`；`level="channel"` 只提供通道属性，
+    不包含去仪器响应所需的 poles/zeros 和响应阶段。
     """)
     return
 
@@ -152,7 +155,7 @@ def _(
             channel="*",
             starttime=START,
             endtime=END,
-            level="channel",
+            level="response",
         )
         xml_status = mo.callout(f"原始 StationXML 已写入 `{RAW_XML}`。", kind="success")
     elif RAW_XML.is_file():
@@ -502,6 +505,20 @@ def _(END, LOCATION_WINDOWS, START, copy):
 @app.cell
 def _(SELECTED_XML, apply_location_policy, pd, preliminary):
     selected_inventory = apply_location_policy(preliminary)
+    missing_responses = [
+        f"{network.code}.{station.code}.{channel.location_code}.{channel.code}"
+        for network in selected_inventory
+        for station in network
+        for channel in station
+        if channel.response is None or not channel.response.response_stages
+    ]
+    if missing_responses:
+        examples = ", ".join(missing_responses[:5])
+        raise ValueError(
+            "Selected StationXML lacks complete instrument responses for "
+            f"{len(missing_responses)} channel epochs (examples: {examples}). "
+            "Delete or refresh the cached raw XML with level='response'."
+        )
     SELECTED_XML.parent.mkdir(parents=True, exist_ok=True)
     selected_inventory.write(str(SELECTED_XML), format="STATIONXML")
 
@@ -620,7 +637,6 @@ def _(
             MSEED_DIR,
             inventory=selected_inventory,
             max_workers=MAX_WORKERS,
-            remove_original=False,
         )
         download_status = mo.callout(
             f"下载任务：{download_summary.total:,}；成功："

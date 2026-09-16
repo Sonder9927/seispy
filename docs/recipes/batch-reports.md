@@ -13,7 +13,7 @@ report and a human-readable text log by default:
 - `convert_mseed_to_sac`
 - `format_sac_headers`
 - `decimate_waveforms`
-- `remove_instrument_response`
+- `deconvolve_waveforms`
 - `cut_event_waveforms`
 - `correct_clock_drift`
 - `correct_orientation`

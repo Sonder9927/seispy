@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 from obspy import Trace, UTCDateTime
+from obspy.core.inventory import Inventory
 
 remove_response = import_module("seispy.deconvolution.removal")
 
@@ -39,14 +40,14 @@ def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
-        results = remove_response.obspy_deconv(
-            source_root / "STA",
-            "*.sac",
+        results = remove_response._process_obspy_targets(
+            [source],
             object(),
             source_root,
             output_root,
-            False,
             20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
         )
 
     destination = output_root / "STA" / "2026" / "001" / "trace.sac"
@@ -71,14 +72,14 @@ def test_obspy_deconv_accepts_miniseed_and_writes_sac_extension(tmp_path):
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
-        result = remove_response.obspy_deconv(
-            station,
-            "*.mseed",
+        result = remove_response._process_obspy_targets(
+            [source],
             object(),
             source_root,
             output_root,
-            False,
             20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
         )
 
     assert result.succeeded == 1
@@ -97,7 +98,7 @@ def test_sac_backend_rejects_miniseed_before_reading_inventory(tmp_path):
         patch.object(remove_response.obspy, "read_inventory") as read_inventory,
         pytest.raises(ValueError, match='backend="sac" does not support MiniSEED'),
     ):
-        remove_response.remove_instrument_response(
+        remove_response.deconvolve_waveforms(
             source_root,
             tmp_path / "stations.xml",
             backend="sac",
@@ -130,7 +131,6 @@ def test_multitrace_miniseed_gets_one_unique_sac_name_per_trace(tmp_path):
         [trace("BHZ"), trace("BHN")],
         source_root,
         output_root,
-        False,
     )
 
     assert len(set(destinations)) == 2
@@ -164,7 +164,6 @@ def test_daily_nslc_segment_names_do_not_repeat_identity(tmp_path):
         ],
         source_root,
         output_root,
-        False,
     )
 
     assert [path.name for path in destinations] == [
@@ -174,7 +173,7 @@ def test_daily_nslc_segment_names_do_not_repeat_identity(tmp_path):
     ]
 
 
-def test_remove_original_failure_preserves_source_and_is_reported(tmp_path):
+def test_failure_preserves_source_and_is_reported(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA"
     station.mkdir(parents=True)
@@ -185,19 +184,28 @@ def test_remove_original_failure_preserves_source_and_is_reported(tmp_path):
         raise RuntimeError("response unavailable")
 
     with patch.object(remove_response, "remove_response_from_file", side_effect=fail):
-        results = remove_response.obspy_deconv(
-            station, "*.sac", object(), source_root, None, True, 20
+        results = remove_response._process_obspy_targets(
+            [source],
+            object(),
+            source_root,
+            tmp_path / "output",
+            20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
         )
 
     assert source.read_bytes() == b"original"
-    assert not source.with_suffix(".deconv.sac").exists()
+    assert not (tmp_path / "output" / "STA" / "trace.sac").exists()
     assert results.failed == 1
     assert results.succeeded == 0
-    assert results.issue_samples[0].destination == source.with_suffix(".deconv.sac")
+    assert (
+        results.issue_samples[0].destination
+        == tmp_path / "output" / "STA" / "trace.sac"
+    )
     assert results.issue_samples[0].error == "RuntimeError: response unavailable"
 
 
-def test_remove_original_success_creates_deconv_and_removes_source(tmp_path):
+def test_success_writes_output_and_preserves_source(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA"
     station.mkdir(parents=True)
@@ -209,47 +217,62 @@ def test_remove_original_success_creates_deconv_and_removes_source(tmp_path):
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
-        results = remove_response.obspy_deconv(
-            station, "*.sac", object(), source_root, None, True, 20
+        results = remove_response._process_obspy_targets(
+            [source],
+            object(),
+            source_root,
+            tmp_path / "output",
+            20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
         )
 
-    assert not source.exists()
-    assert source.with_suffix(".deconv.sac").read_bytes() == b"processed"
+    assert source.read_bytes() == b"original"
+    assert (tmp_path / "output" / "STA" / "trace.sac").read_bytes() == b"processed"
     assert results.succeeded == 1
     assert results.failed == 0
-    assert results.removal_failed == 0
 
 
-def test_remove_original_rejects_output_directory(tmp_path):
-    try:
-        remove_response._resolve_output_dir(
-            tmp_path / "source", tmp_path / "output", True
-        )
-    except ValueError as exc:
-        assert "output_dir" in str(exc)
-    else:
-        raise AssertionError("ValueError was not raised")
+def test_output_directory_must_not_overlap_source(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    with pytest.raises(ValueError, match="separate directory trees"):
+        remove_response._resolve_output_dir(source, source / "output")
+    with pytest.raises(ValueError, match="separate directory trees"):
+        remove_response._resolve_output_dir(source, tmp_path)
 
 
-def test_previous_deconv_result_is_not_processed_again(tmp_path):
+def test_input_files_are_discovered_recursively_once(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA"
     station.mkdir(parents=True)
     source = station / "trace.sac"
-    previous = station / "trace.deconv.sac"
     source.write_bytes(b"original")
-    previous.write_bytes(b"previous")
-    output_root = tmp_path / "processed"
+    assert remove_response._input_files(source_root, "*.sac") == (source,)
+
+
+def test_public_workflow_keeps_logs_under_output_directory(tmp_path):
+    source = tmp_path / "waveforms"
+    source.mkdir()
+    suitability = SimpleNamespace(require_safe=Mock())
 
     with (
         patch.object(
-            remove_response, "remove_response_from_file", return_value=_WritableStream()
+            remove_response,
+            "analyze_inventory",
+            return_value=SimpleNamespace(response_suitability=suitability),
         ),
-        patch.object(remove_response, "_validate_output_trace"),
+        patch.object(remove_response, "_input_files", return_value=()) as discover,
     ):
-        results = remove_response.obspy_deconv(
-            station, "*.sac", object(), source_root, output_root, False, 20
+        summary = remove_response.deconvolve_waveforms(
+            source,
+            Inventory(networks=[], source="test"),
+            output_dir=tmp_path / "deconvolved",
         )
 
-    assert results.total == 1
-    assert previous.read_bytes() == b"previous"
+    discover.assert_called_once_with(source.resolve(), "*.sac")
+    assert summary.total == 0
+    log_root = tmp_path / "deconvolved" / "logs"
+    assert len(list(log_root.glob("deconvolution-*.log"))) == 1
+    assert len(list((log_root / "reports").glob("deconvolution-*.json"))) == 1
+    assert not (source / "logs").exists()

@@ -1,7 +1,9 @@
 """Cut event windows from a continuous waveform archive."""
 
 import logging
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from os import cpu_count
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +18,7 @@ from seispy.workflow import (
 )
 from tqdm import tqdm
 
-from seispy.waveform.integrity import merge_short_gaps
+from seispy.waveform.integrity import merge_contiguous_segments
 from seispy.event.archive_index import WaveformArchiveIndex, WaveformReader
 from seispy.event.catalog import load_events, load_stations
 
@@ -28,6 +30,7 @@ class CutEventIssue:
     """A sampled event/station processing issue."""
 
     event: str
+    network: str
     station: str
     status: str
     error: str
@@ -85,12 +88,14 @@ class CutEventSummary(BatchSummary):
 
 
 def cut_event_waveforms(
-    net_dir: str | Path,
-    dest_dir: str | Path,
+    source_dir: str | Path,
     event_csv: str | Path,
+    *,
+    output_dir: str | Path | None = None,
     station_csv: str | Path | None = None,
     time_window: float = 10800,
-    *,
+    pattern: str = "*.sac",
+    max_workers: int | None = None,
     max_error_samples: int = 20,
     save_report: bool | None = True,
     save_log: bool = True,
@@ -98,11 +103,16 @@ def cut_event_waveforms(
     """Cut event windows from continuous SAC data.
 
     Args:
-        net_dir: One network directory containing station/year SAC archives.
-        dest_dir: Destination root for event waveform files.
+        source_dir: Any directory tree containing SAC waveforms. Directory names
+            do not need to encode network, station, or date metadata.
         event_csv: Event table consumed by :func:`load_events`.
-        station_csv: Optional station table. Directory names are used if omitted.
+        output_dir: Destination root. Defaults to a sibling named
+            ``<source_dir.name>_events`` and must not be inside ``source_dir``.
+        station_csv: Optional station table keyed by network and station.
         time_window: Window length after each event origin, in seconds.
+        pattern: Recursive source filename pattern.
+        max_workers: Station workers. Defaults to the smaller of 5 and the CPU
+            count. Each worker reuses waveform reads across chronological events.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
             ``True``. ``None`` retains it only when issues occur.
@@ -112,12 +122,12 @@ def cut_event_waveforms(
         Task counts, written output count, sampled issues, and run duration.
 
     Raises:
-        ValueError: If error sampling or input metadata is invalid.
+        ValueError: If paths, concurrency, error sampling, or metadata are invalid.
 
     Examples:
         ```python
         summary = cut_event_waveforms(
-            "data/continuous", "data/events", "events.csv",
+            "data/continuous", "events.csv", output_dir="data/events",
             station_csv="stations.csv", time_window=10_800,
         )
         summary.total >= summary.succeeded
@@ -127,28 +137,42 @@ def cut_event_waveforms(
     run_id = new_run_id()
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
+    if time_window <= 0:
+        raise ValueError("time_window must be positive")
+    workers = min(5, cpu_count() or 1) if max_workers is None else max_workers
+    if workers < 1:
+        raise ValueError("max_workers must be at least 1")
+
+    source = Path(source_dir).expanduser().resolve()
+    if not source.is_dir():
+        raise NotADirectoryError(f"Source directory does not exist: {source}")
+    artifact_root = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None
+        else source.with_name(f"{source.name}_events")
+    )
+    if artifact_root == source or source in artifact_root.parents:
+        raise ValueError("output_dir must not be source_dir or one of its descendants")
 
     events = load_events(event_csv, time_window)
-    stations = load_stations(net_dir, station_csv)
-    archive_index = WaveformArchiveIndex.build(
-        net_dir, stations={item["station"] for item in stations}
-    )
-    waveform_reader = WaveformReader()
     events.sort(key=lambda item: item["start"])
+    archive_index = WaveformArchiveIndex.build(source, pattern=pattern)
+    stations = load_stations(set(archive_index.station_keys), station_csv)
+    workers = min(workers, max(1, len(stations)))
     total = len(events) * len(stations)
     tasks_done = succeeded = failed = outputs = no_data = 0
     read_failed = len(archive_index.issues)
     samples = [
         CutEventIssue(
             "",
-            issue.path.parent.parent.name,
+            "",
+            "",
             "archive_index_failed",
             issue.error,
             issue.path,
         )
         for issue in archive_index.issues[:max_error_samples]
     ]
-    artifact_root = Path(dest_dir).expanduser().resolve()
     with BatchRun(
         "cut-events",
         artifact_root,
@@ -168,47 +192,53 @@ def cut_event_waveforms(
             issue_samples=tuple(samples),
         )
         run.info(
-            "run_id=%s net_dir=%s dest=%s stations=%d events=%d time_window=%s",
+            "run_id=%s source=%s output=%s stations=%d events=%d time_window=%s workers=%d",
             run_id,
-            net_dir,
-            dest_dir,
+            source,
+            artifact_root,
             len(stations),
             len(events),
             time_window,
+            workers,
         )
         with tqdm(total=total, desc="Processing...") as pbar:
-            for station in stations:
-                for event in events:
-                    result = cut_event_station(
-                        event,
-                        station,
-                        net_dir,
-                        dest_dir,
-                        archive_index=archive_index,
-                        waveform_reader=waveform_reader,
-                        max_error_samples=min(max_error_samples, 1),
-                    )
-                    tasks_done += result.tasks
-                    succeeded += result.succeeded
-                    failed += result.failed
-                    outputs += result.outputs
-                    read_failed += result.read_failed
-                    no_data += result.no_data
-                    samples.extend(
-                        result.samples[: max(0, max_error_samples - len(samples))]
-                    )
-                    run.checkpoint(
-                        completed=tasks_done,
-                        total=total,
-                        tasks_completed=tasks_done,
-                        succeeded=succeeded,
-                        failed=failed,
-                        outputs_written=outputs,
-                        input_read_failed=read_failed,
-                        no_data=no_data,
-                        issue_samples=tuple(samples),
-                    )
-                    pbar.update(1)
+            station_tasks = (
+                (
+                    station,
+                    archive_index.records_for_station(
+                        str(station["network"]), str(station["station"])
+                    ),
+                )
+                for station in stations
+            )
+            for result in _station_results(
+                station_tasks,
+                events,
+                artifact_root,
+                max_error_samples,
+                workers,
+            ):
+                tasks_done += result.tasks
+                succeeded += result.succeeded
+                failed += result.failed
+                outputs += result.outputs
+                read_failed += result.read_failed
+                no_data += result.no_data
+                samples.extend(
+                    result.samples[: max(0, max_error_samples - len(samples))]
+                )
+                pbar.update(result.tasks)
+                run.checkpoint(
+                    completed=tasks_done,
+                    total=total,
+                    tasks_completed=tasks_done,
+                    succeeded=succeeded,
+                    failed=failed,
+                    outputs_written=outputs,
+                    input_read_failed=read_failed,
+                    no_data=no_data,
+                    issue_samples=tuple(samples),
+                )
         summary = run.complete(
             CutEventSummary(
                 run_id=run_id,
@@ -224,10 +254,11 @@ def cut_event_waveforms(
         )
         for item in summary.issue_samples:
             run.error(
-                "run_id=%s status=%s event=%s station=%s source=%s error=%s",
+                "run_id=%s status=%s event=%s network=%s station=%s source=%s error=%s",
                 run_id,
                 item.status,
                 item.event,
+                item.network,
                 item.station,
                 item.source,
                 item.error,
@@ -247,29 +278,89 @@ def cut_event_waveforms(
     return summary
 
 
+_WORKER_EVENTS = ()
+_WORKER_OUTPUT_DIR = None
+_WORKER_MAX_ERROR_SAMPLES = 0
+
+
+def _station_results(tasks, events, output_dir, max_error_samples, max_workers):
+    if max_workers == 1:
+        _initialize_cut_worker(events, output_dir, max_error_samples)
+        for task in tasks:
+            yield _cut_station_events(*task)
+        return
+
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_initialize_cut_worker,
+        initargs=(events, output_dir, max_error_samples),
+    ) as executor:
+        pending = set()
+        for task in tasks:
+            pending.add(executor.submit(_cut_station_events, *task))
+            if len(pending) < max_workers * 2:
+                continue
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                yield future.result()
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                yield future.result()
+
+
+def _initialize_cut_worker(events, output_dir, max_error_samples):
+    global _WORKER_EVENTS, _WORKER_OUTPUT_DIR, _WORKER_MAX_ERROR_SAMPLES
+    _WORKER_EVENTS = events
+    _WORKER_OUTPUT_DIR = output_dir
+    _WORKER_MAX_ERROR_SAMPLES = max_error_samples
+
+
+def _cut_station_events(station, records):
+    index = WaveformArchiveIndex.from_records(records)
+    reader = WaveformReader()
+    results = []
+    for event in _WORKER_EVENTS:
+        remaining = max(
+            0,
+            _WORKER_MAX_ERROR_SAMPLES - sum(len(result.samples) for result in results),
+        )
+        results.append(
+            cut_event_station(
+                event,
+                station,
+                _WORKER_OUTPUT_DIR,
+                archive_index=index,
+                waveform_reader=reader,
+                max_error_samples=remaining,
+            )
+        )
+    return _combine_cut_counts(results, _WORKER_MAX_ERROR_SAMPLES)
+
+
 def cut_event_station(
     event,
     station,
-    src_dir,
     dest_dir,
     *,
-    archive_index=None,
+    archive_index,
     waveform_reader=None,
     max_error_samples=1,
 ) -> _CutCounts:
     """Cut one event-station window using a reusable header index."""
-    station_name = station["station"]
-    event_name = event["start"].strftime("%Y%m%d%H%M%S")
-    index = archive_index or WaveformArchiveIndex.build(
-        src_dir, stations={station_name}
+    network = str(station["network"])
+    station_name = str(station["station"])
+    event_name = _event_name(event["start"])
+    records = archive_index.overlapping(
+        network, station_name, event["start"], event["end"]
     )
-    records = index.overlapping(station_name, event["start"], event["end"])
     if not records:
         samples = ()
         if max_error_samples:
             samples = (
                 CutEventIssue(
                     event_name,
+                    network,
                     station_name,
                     "no_data",
                     "no matching SAC files found",
@@ -292,7 +383,7 @@ def cut_event_station(
                 raise ValueError("SAC file must contain exactly one trace")
             tr = st[0]
             identity = WaveformIdentity.from_trace(tr)
-            if identity.day_key != record.identity.day_key:
+            if identity != record.identity:
                 raise ValueError("SAC identity changed after archive indexing")
             key = (
                 identity.network,
@@ -311,6 +402,7 @@ def cut_event_station(
                 samples.append(
                     CutEventIssue(
                         event_name,
+                        network,
                         station_name,
                         "input_read_failed",
                         f"{type(exc).__name__}: {exc}",
@@ -320,35 +412,44 @@ def cut_event_station(
 
     outputs = 0
     if waveform_data:
-        event_dir = Path(dest_dir) / event_name
+        event_dir = Path(dest_dir) / event_name / network / station_name
         event_dir.mkdir(parents=True, exist_ok=True)
-        channel_counts = {}
-        for key in waveform_data:
-            channel_counts[key[3]] = channel_counts.get(key[3], 0) + 1
         for identity_key, stream in waveform_data.items():
-            temporary = None
             try:
-                merged_tr = merge_short_gaps(stream)[0]
-                trimed_tr = _trimmed_trace(merged_tr, event, station)
-                out_name = _event_output_name(
-                    event_name, identity_key, channel_counts[identity_key[3]]
-                )
-                destination = event_dir / out_name
-                if destination.exists():
-                    raise FileExistsError(destination)
-                temporary = temporary_output_path(destination)
-                trimed_tr.write(str(temporary), format="SAC")
-                commit_output(temporary, destination)
-                temporary = None
-                outputs += 1
+                merged = merge_contiguous_segments(stream)
+                segments = [
+                    trace
+                    for trace in merged
+                    if trace.stats.starttime <= event["end"]
+                    and trace.stats.endtime >= event["start"]
+                ]
+                for index, segment in enumerate(segments):
+                    temporary = None
+                    try:
+                        trimmed_trace = _trimmed_trace(segment, event, station)
+                        out_name = _event_output_name(
+                            identity_key,
+                            trimmed_trace.stats.starttime,
+                            index if len(segments) > 1 else None,
+                        )
+                        destination = event_dir / out_name
+                        if destination.exists():
+                            raise FileExistsError(destination)
+                        temporary = temporary_output_path(destination)
+                        trimmed_trace.write(str(temporary), format="SAC")
+                        commit_output(temporary, destination)
+                        temporary = None
+                        outputs += 1
+                    finally:
+                        if temporary is not None:
+                            temporary.unlink(missing_ok=True)
             except Exception as exc:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
                 had_issue = True
                 if len(samples) < max_error_samples:
                     samples.append(
                         CutEventIssue(
                             event_name,
+                            network,
                             station_name,
                             "output_failed",
                             f"{type(exc).__name__}: {exc}",
@@ -360,6 +461,7 @@ def cut_event_station(
             samples.append(
                 CutEventIssue(
                     event_name,
+                    network,
                     station_name,
                     "no_output",
                     "no event channel was written",
@@ -375,12 +477,18 @@ def cut_event_station(
     )
 
 
-def _event_output_name(event_name, identity_key, same_channel_count):
+def _event_name(starttime):
+    return starttime.strftime("%Y%m%dT%H%M%S%f")[:-3]
+
+
+def _event_output_name(identity_key, starttime, segment_index):
     network, station, location, channel = identity_key
-    if same_channel_count == 1:
-        return f"{event_name}.{station}.{channel}.sac"
     location = location or "--"
-    return f"{event_name}.{network}.{station}.{location}.{channel}.sac"
+    identity = f"{network}.{station}.{location}.{channel}"
+    if segment_index is None:
+        return f"{identity}.sac"
+    timestamp = starttime.strftime("%Y%m%dT%H%M%S%f")[:-3]
+    return f"{identity}.T{timestamp}.S{segment_index + 1:03d}.sac"
 
 
 def _combine_cut_counts(items, limit):
@@ -411,9 +519,6 @@ def _trimmed_trace(merged_tr, event, station):
     start = trimed_tr.stats.starttime
     time_offset = start - event["start"]
 
-    # update header
-    if not trimed_tr.stats.location:
-        trimed_tr.stats.location = "10"  # khole
     header_updates = {
         "delta": delta,
         "b": float(time_offset),
@@ -433,14 +538,17 @@ def _trimmed_trace(merged_tr, event, station):
         "evdp": event["depth"],
         "mag": event["mag"],
         "lcalda": 1,
-        # optional info of station
-        "stla": station.get("latitude", -12345),
-        "stlo": station.get("longitude", -12345),
-        "stel": station.get("elevation", -12345),
-        "stdp": station.get("depth", -12345),
-        # 参考时间 o 等
-        # "o": 0.0,
     }
+    optional_station_headers = {
+        "stla": "latitude",
+        "stlo": "longitude",
+        "stel": "elevation",
+        "stdp": "depth",
+    }
+    for sac_name, metadata_name in optional_station_headers.items():
+        value = station.get(metadata_name)
+        if value is not None and value == value:
+            header_updates[sac_name] = value
 
     trimed_tr.stats.sac.update(header_updates)
     return trimed_tr

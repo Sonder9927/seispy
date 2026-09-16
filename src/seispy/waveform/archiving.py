@@ -21,6 +21,7 @@ from seispy.workflow import (
     cleanup_outputs,
     commit_output,
     new_run_id,
+    resolve_separate_directory_trees,
     temporary_output_path,
 )
 
@@ -42,8 +43,6 @@ class _ArchiveResult:
     recovered: int = 0
     failed: int = 0
     files_written: int = 0
-    originals_removed: int = 0
-    originals_retained: int = 0
     issue: WaveformArchiveIssue | None = None
 
 
@@ -57,17 +56,14 @@ class WaveformArchiveSummary(BatchSummary):
     recovered: int
     failed: int
     files_written: int
-    originals_removed: int
-    originals_retained: int
     issue_samples: tuple[WaveformArchiveIssue, ...]
     source_dir: Path
     output_dir: Path
     output_format: Literal["mseed", "sac"]
-    remove_original: bool
 
     @property
     def has_issues(self) -> bool:
-        return bool(self.failed or self.recovered or self.originals_retained)
+        return bool(self.failed or self.recovered)
 
 
 def archive_waveforms(
@@ -78,7 +74,6 @@ def archive_waveforms(
     inventory: str | Path | Inventory | None = None,
     pattern: str = "*.mseed.raw",
     max_workers: int = 5,
-    remove_original: bool = False,
     overwrite: bool = False,
     discard_corrupt_records: bool = True,
     max_error_samples: int = 20,
@@ -90,9 +85,7 @@ def archive_waveforms(
     Raw MiniSEED responses can be archived as MiniSEED or converted to SAC.
     Existing SAC files can be reorganized into canonical SAC paths by selecting
     them with ``pattern`` and ``output_format="sac"``. Native waveform reads run
-    in isolated worker processes. A source is removed only after every output
-    for that source commits successfully. Sources that required MiniSEED record
-    recovery are retained as forensic evidence.
+    in isolated worker processes. Source files are never modified or removed.
 
     Args:
         source_dir: Root containing raw MiniSEED responses or SAC files.
@@ -103,8 +96,6 @@ def archive_waveforms(
         pattern: Recursive source filename pattern. Use, for example,
             ``"*.sac"`` to organize existing SAC files.
         max_workers: Number of isolated validation/archive processes.
-        remove_original: Remove a fully valid raw source after all outputs
-            commit. Recovered sources are retained.
         overwrite: Replace existing archive outputs.
         discard_corrupt_records: Recover independently valid records when full
             MiniSEED validation reports an integrity failure.
@@ -119,8 +110,7 @@ def archive_waveforms(
     output_format = output_format.lower()
     if output_format not in {"mseed", "sac"}:
         raise ValueError("output_format must be 'mseed' or 'sac'")
-    source = Path(source_dir).expanduser().resolve()
-    output = Path(output_dir).expanduser().resolve()
+    source, output = resolve_separate_directory_trees(source_dir, output_dir)
     if not source.is_dir():
         raise NotADirectoryError(source)
     output.mkdir(parents=True, exist_ok=True)
@@ -138,8 +128,6 @@ def archive_waveforms(
             "recovered",
             "failed",
             "files_written",
-            "originals_removed",
-            "originals_retained",
         ),
         0,
     )
@@ -158,16 +146,14 @@ def archive_waveforms(
             source_dir=source,
             output_dir=output,
             output_format=output_format,
-            remove_original=remove_original,
         )
         run.info(
-            "run_id=%s source=%s output=%s format=%s max_workers=%d remove_original=%s",
+            "run_id=%s source=%s output=%s format=%s max_workers=%d",
             run_id,
             source,
             output,
             output_format,
             max_workers,
-            remove_original,
         )
         tasks = iter(files)
         pending = {}
@@ -188,12 +174,11 @@ def archive_waveforms(
                                 str(source),
                                 str(output),
                                 output_format,
-                                remove_original,
                                 overwrite,
                                 discard_corrupt_records,
                             )
                         except Exception as exc:
-                            result = _failed_result(path, exc, remove_original)
+                            result = _failed_result(path, exc)
                             _record_result(result, counters, issues, max_error_samples)
                             _log_issue(run, result)
                             bar.update(1)
@@ -205,7 +190,6 @@ def archive_waveforms(
                                 source,
                                 output,
                                 output_format,
-                                remove_original,
                             )
                             continue
                         pending[future] = path
@@ -217,7 +201,7 @@ def archive_waveforms(
                         try:
                             result = future.result()
                         except Exception as exc:
-                            result = _failed_result(path, exc, remove_original)
+                            result = _failed_result(path, exc)
                         _record_result(result, counters, issues, max_error_samples)
                         _log_issue(run, result)
                         bar.update(1)
@@ -229,7 +213,6 @@ def archive_waveforms(
                             source,
                             output,
                             output_format,
-                            remove_original,
                         )
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
@@ -242,7 +225,6 @@ def archive_waveforms(
                 source_dir=source,
                 output_dir=output,
                 output_format=output_format,
-                remove_original=remove_original,
                 duration_seconds=0,
             )
         )
@@ -257,10 +239,9 @@ def _archive_executor(workers, inventory):
     )
 
 
-def _failed_result(path, exc, remove_original):
+def _failed_result(path, exc):
     return _ArchiveResult(
         failed=1,
-        originals_retained=int(remove_original),
         issue=WaveformArchiveIssue(path, f"{type(exc).__name__}: {exc}"),
     )
 
@@ -289,7 +270,6 @@ def _checkpoint_archive(
     source,
     output,
     output_format,
-    remove_original,
 ):
     completed = sum(counters[name] for name in ("succeeded", "skipped", "failed"))
     run.checkpoint(
@@ -300,7 +280,6 @@ def _checkpoint_archive(
         source_dir=source,
         output_dir=output,
         output_format=output_format,
-        remove_original=remove_original,
     )
 
 
@@ -314,7 +293,6 @@ def _archive_one(
     source_root,
     output_root,
     output_format,
-    remove_original,
     overwrite,
     discard_corrupt_records,
 ):
@@ -335,7 +313,8 @@ def _archive_one(
             except InternalMSEEDWarning:
                 if not discard_corrupt_records:
                     raise
-                filtered = temporary_output_path(source)
+                recovery_target = Path(output_root) / f"{source.name}.recovered"
+                filtered = temporary_output_path(recovery_target)
                 filter_valid_mseed_records(
                     source,
                     filtered,
@@ -359,25 +338,15 @@ def _archive_one(
             )
         else:
             written, skipped = _archive_sac(stream, Path(output_root), overwrite)
-        removed = 0
-        retained = 0
-        if remove_original and not recovered:
-            source.unlink()
-            removed = 1
-        elif remove_original:
-            retained = 1
         return _ArchiveResult(
             succeeded=int(not skipped),
             skipped=int(skipped),
             recovered=int(recovered),
             files_written=written,
-            originals_removed=removed,
-            originals_retained=retained,
         )
     except Exception as exc:
         return _ArchiveResult(
             failed=1,
-            originals_retained=int(remove_original),
             issue=WaveformArchiveIssue(source, f"{type(exc).__name__}: {exc}"),
         )
     finally:

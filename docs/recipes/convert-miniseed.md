@@ -22,7 +22,6 @@ summary = waveform.convert_mseed_to_sac(
     "data/sac",
     pattern="*.mseed",
     max_workers=2,
-    remove_original=False,
 )
 
 print(f"Inputs: {summary.total}")
@@ -31,10 +30,8 @@ print(f"SAC traces: {summary.traces_written}")
 print(f"Failed: {summary.failed}")
 ```
 
-!!! warning "Keep the input while learning"
-
-    `remove_original=False` is intentional. Set it to `True` only after the SAC
-    output has been inspected.
+MiniSEED inputs are always preserved. Conversion output must use a separate
+directory tree.
 
 ## Handle failures
 

@@ -42,10 +42,12 @@ def test_merge_groups_flat_archive_by_header_channel_and_day(tmp_path):
     assert not errors
     assert sorted(len(files) for files in groups.values()) == [1, 2]
     bhz = next(files for key, files in groups.items() if key[3] == "BHZ")
-    assert _merge_targets(bhz, root, remove_src=False) is None
-    merged = WaveformIdentity.from_trace(first_trace).sac_path(root, merged=True)
+    output = tmp_path / "merged"
+    assert _merge_targets(bhz, output) is None
+    merged = WaveformIdentity.from_trace(first_trace).sac_path(output, merged=True)
     assert merged.is_file()
     assert len(read(merged)) == 1
+    assert all(path.is_file() for path in bhz)
 
 
 def test_merge_rejects_path_that_disagrees_with_header(tmp_path):

@@ -57,14 +57,14 @@ For a complete example rather than individual steps, use the
 | --- | --- | --- |
 | Convert MiniSEED to SAC | MiniSEED file or directory | [`waveform.convert_mseed_to_sac`](convert-miniseed.md) |
 | Merge same-day SAC segments | canonical SAC archive | [`waveform.merge_waveforms_by_day`](merge-sac.md) |
-| Remove instrument response | one network directory plus StationXML | [`deconvolution.remove_instrument_response`](remove-response.md) |
+| Deconvolve waveforms | waveform source tree plus StationXML | [`deconvolution.deconvolve_waveforms`](remove-response.md) |
 | Reduce sampling rate | waveform directory and factor sequence | [`waveform.decimate_waveforms`](decimate.md) |
 
 ## 4. Prepare events and station corrections
 
 | Outcome | Start with | Primary interface |
 | --- | --- | --- |
-| Cut event windows | continuous network directory plus event CSV | [`event.cut_event_waveforms`](cut-events.md) |
+| Cut event windows | SAC source tree plus event CSV | [`event.cut_event_waveforms`](cut-events.md) |
 | Add event and station SAC headers | event tree plus two metadata tables | [`waveform.format_sac_headers`](format-headers.md) |
 | Correct station timestamps | network directory plus drift CSV | [`correct.correct_clock_drift`](correct-clock-drift.md) |
 | Correct horizontal orientation | three-component network directory plus orientation CSV | [`correct.correct_orientation`](correct-orientation.md) |

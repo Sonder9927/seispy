@@ -71,10 +71,10 @@ Download daily MiniSEED or SAC files by station.
     [decimation](recipes/decimate.md), and use the returned summary objects to
     understand what each batch operation changed.
 
-!!! warning "Protect source data"
+!!! note "Source data is immutable"
 
-    Keep `remove_original=False` or `remove_src=False` while learning. Enable
-    deletion only after validating output on representative files.
+    Waveform processing functions always write to a separate output directory.
+    They never delete or replace their inputs.
 
 ## Look up exact parameters
 
@@ -85,5 +85,5 @@ without opening this site:
 ```python
 from seispy import deconvolution
 
-help(deconvolution.remove_instrument_response)
+help(deconvolution.deconvolve_waveforms)
 ```

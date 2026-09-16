@@ -11,7 +11,7 @@ def test_public_batch_functions_persist_reports_and_logs_by_default():
         waveform.convert_mseed_to_sac,
         waveform.format_sac_headers,
         waveform.decimate_waveforms,
-        deconvolution.remove_instrument_response,
+        deconvolution.deconvolve_waveforms,
         event.cut_event_waveforms,
         correct.correct_clock_drift,
         correct.correct_orientation,

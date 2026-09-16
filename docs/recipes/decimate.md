@@ -26,7 +26,6 @@ summary = waveform.decimate_waveforms(
     factors=[5, 5, 4],
     backend="scipy",
     output_dir="data/decimated",
-    remove_original=False,
     max_workers=2,
     batch_size=100,
 )
@@ -58,13 +57,12 @@ summary = waveform.decimate_waveforms(
     factors=[2, 2, 5],
     backend="sac",
     output_dir="data/decimated",
-    remove_original=False,
     batch_size=100,
 )
 ```
 
-SAC processes files in bounded batches. A failed batch is not committed and
-the original files remain unchanged.
+Both backends require a separate output tree. Source files are never replaced
+or removed; a failed batch commits no output for the affected files.
 
 !!! warning "Factor order matters"
 

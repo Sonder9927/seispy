@@ -132,8 +132,16 @@ def _filter_channel_epochs_by_query_time(
 
 def _channel_epoch_intersects(channel, *, start, end) -> bool:
     return not (
-        (start is not None and channel.end_date is not None and channel.end_date < start)
-        or (end is not None and channel.start_date is not None and channel.start_date >= end)
+        (
+            start is not None
+            and channel.end_date is not None
+            and channel.end_date < start
+        )
+        or (
+            end is not None
+            and channel.start_date is not None
+            and channel.start_date >= end
+        )
     )
 
 

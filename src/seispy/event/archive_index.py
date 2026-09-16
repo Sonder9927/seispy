@@ -28,7 +28,7 @@ class ArchiveIndexIssue:
 
 
 class WaveformArchiveIndex:
-    """Immutable station/day index built with one header read per SAC file."""
+    """Immutable NS/day index built with one header read per waveform file."""
 
     def __init__(self, buckets, issues=()):
         self._buckets = buckets
@@ -37,53 +37,63 @@ class WaveformArchiveIndex:
     @classmethod
     def build(
         cls,
-        network_root: str | Path,
+        source_dir: str | Path,
         *,
-        stations: set[str] | None = None,
+        stations: set[tuple[str, str]] | None = None,
         pattern: str = "*.sac",
     ) -> "WaveformArchiveIndex":
-        root = Path(network_root)
-        archive_root = root.parent
+        root = Path(source_dir).expanduser().resolve()
+        if not root.is_dir():
+            raise NotADirectoryError(f"Source directory does not exist: {root}")
         buckets = defaultdict(list)
         issues = []
-        station_dirs = sorted(path for path in root.iterdir() if path.is_dir())
-        for station_dir in station_dirs:
-            if stations is not None and station_dir.name not in stations:
-                continue
-            for path in sorted(station_dir.glob(f"*/{pattern}")):
-                try:
-                    stream = obspy.read(path, headonly=True)
-                    if len(stream) != 1:
-                        raise ValueError("SAC file must contain exactly one trace")
-                    trace = stream[0]
-                    identity = WaveformIdentity.from_trace(trace)
-                    if not identity.matches_sac_path(path, archive_root):
-                        raise ValueError(
-                            "filename or directory does not match the SAC header"
-                        )
-                    if identity.station != station_dir.name:
-                        raise ValueError(
-                            "station directory does not match the SAC header"
-                        )
-                    record = WaveformRecord(
-                        path, identity, trace.stats.starttime, trace.stats.endtime
-                    )
-                    for day in _covered_days(record.starttime, record.endtime):
-                        buckets[(identity.station, day)].append(record)
-                except Exception as exc:
-                    issues.append(
-                        ArchiveIndexIssue(path, f"{type(exc).__name__}: {exc}")
-                    )
+        for path in sorted(item for item in root.rglob(pattern) if item.is_file()):
+            try:
+                stream = obspy.read(path, headonly=True)
+                if len(stream) != 1:
+                    raise ValueError("SAC file must contain exactly one trace")
+                trace = stream[0]
+                identity = WaveformIdentity.from_trace(trace)
+                station_key = (identity.network, identity.station)
+                if stations is not None and station_key not in stations:
+                    continue
+                record = WaveformRecord(
+                    path, identity, trace.stats.starttime, trace.stats.endtime
+                )
+                for day in _covered_days(record.starttime, record.endtime):
+                    buckets[(*station_key, day)].append(record)
+            except Exception as exc:
+                issues.append(ArchiveIndexIssue(path, f"{type(exc).__name__}: {exc}"))
         frozen = {key: tuple(records) for key, records in buckets.items()}
         return cls(frozen, issues)
 
+    @classmethod
+    def from_records(cls, records) -> "WaveformArchiveIndex":
+        buckets = defaultdict(list)
+        for record in records:
+            key = (record.identity.network, record.identity.station)
+            for day in _covered_days(record.starttime, record.endtime):
+                buckets[(*key, day)].append(record)
+        return cls({key: tuple(items) for key, items in buckets.items()})
+
+    @property
+    def station_keys(self) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted({key[:2] for key in self._buckets}))
+
+    def records_for_station(self, network, station) -> tuple[WaveformRecord, ...]:
+        records = {}
+        for key, items in self._buckets.items():
+            if key[:2] == (network, station):
+                records.update((item.path, item) for item in items)
+        return tuple(sorted(records.values(), key=lambda item: item.path))
+
     def overlapping(
-        self, station: str, starttime, endtime
+        self, network: str, station: str, starttime, endtime
     ) -> tuple[WaveformRecord, ...]:
         """Return records whose header time spans intersect the requested window."""
         unique = {}
         for day in _covered_days(starttime, endtime):
-            for record in self._buckets.get((station, day), ()):
+            for record in self._buckets.get((network, station, day), ()):
                 if intervals_overlap(
                     record.starttime, record.endtime, starttime, endtime
                 ):

@@ -9,6 +9,7 @@ from seispy.workflow import (
     BatchRun,
     BatchSummary,
     commit_output,
+    resolve_separate_directory_trees,
     temporary_output_path,
 )
 
@@ -23,6 +24,28 @@ class _Issue:
 class _Summary(BatchSummary):
     value: Path
     has_issues: bool = False
+
+
+def test_separate_directory_trees_are_resolved(tmp_path):
+    source, output = resolve_separate_directory_trees(
+        tmp_path / "raw" / ".." / "mseed",
+        tmp_path / "sac",
+    )
+
+    assert source == tmp_path / "mseed"
+    assert output == tmp_path / "sac"
+
+
+def test_overlapping_directory_trees_are_rejected(tmp_path):
+    source = tmp_path / "mseed"
+
+    for output in (source, source / "processed", tmp_path):
+        try:
+            resolve_separate_directory_trees(source, output)
+        except ValueError as error:
+            assert "separate directory trees" in str(error)
+        else:
+            raise AssertionError(f"overlapping output accepted: {output}")
 
 
 def test_commit_output_does_not_overwrite_by_default(tmp_path):

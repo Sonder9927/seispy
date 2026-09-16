@@ -3,9 +3,9 @@
 from importlib import import_module
 
 _EXPORTS = {
-    "remove_instrument_response": (
+    "deconvolve_waveforms": (
         "seispy.deconvolution.removal",
-        "remove_instrument_response",
+        "deconvolve_waveforms",
     ),
     "remove_response_from_file": (
         "seispy.deconvolution.removal",

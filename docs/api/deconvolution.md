@@ -19,7 +19,7 @@ to the separate [Inventory interface](inventory.md).
     lowering guarantees a valid taper, but does not guarantee that the adjusted
     band still covers the user's scientific target.
 
-::: seispy.deconvolution.removal.remove_instrument_response
+::: seispy.deconvolution.removal.deconvolve_waveforms
 
 ### Process one stream
 

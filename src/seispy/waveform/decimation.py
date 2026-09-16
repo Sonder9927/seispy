@@ -16,6 +16,7 @@ from seispy.workflow import (
     BatchSummary,
     commit_output,
     new_run_id,
+    resolve_separate_directory_trees,
     temporary_output_path,
 )
 from scipy.signal import resample_poly
@@ -55,8 +56,7 @@ class DecimationSummary(BatchSummary):
         succeeded: Number of files decimated successfully.
         failed: Number of files that failed processing.
         issue_samples: Bounded sample of decimation failures.
-        output_dir: Output root, or ``None`` when replacing source files.
-        remove_original: Whether successful outputs replaced their sources.
+        output_dir: Separate root containing decimated waveform files.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
 
@@ -71,8 +71,7 @@ class DecimationSummary(BatchSummary):
     succeeded: int
     failed: int
     issue_samples: tuple[DecimationIssue, ...]
-    output_dir: Path | None
-    remove_original: bool
+    output_dir: Path
 
     @property
     def has_issues(self) -> bool:
@@ -87,7 +86,6 @@ def decimate_waveforms(
     max_workers: int = 5,
     *,
     output_dir: str | Path | None = None,
-    remove_original: bool = False,
     max_error_samples: int = 20,
     save_report: bool | None = True,
     save_log: bool = True,
@@ -98,9 +96,9 @@ def decimate_waveforms(
     Both adapters accept the same ordered sequence of SAC-compatible integer
     factors. The SciPy adapter applies SAC's symmetric FIR filters with
     delay-compensated polyphase filtering; the SAC adapter invokes ``DECIMATE``.
-    By default files keep their names under a sibling ``<src_dir>_decimated``
-    directory. ``remove_original=True`` safely replaces
-    each source only after a non-empty temporary result has been written.
+    Files keep their relative names under a separate output tree. By default,
+    that tree is the sibling directory ``<src_dir>_decimated``. Source files
+    are never modified or removed.
 
     Args:
         src_dir: Root directory searched recursively for waveform files.
@@ -111,7 +109,6 @@ def decimate_waveforms(
         pattern: Recursive file pattern below ``src_dir``.
         max_workers: Maximum number of file-batch worker processes.
         output_dir: Optional output root. A sibling directory is used by default.
-        remove_original: Safely replace source files instead of writing a copy.
         max_error_samples: Maximum number of failures retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
             ``True``. ``None`` retains it only when issues occur.
@@ -130,10 +127,9 @@ def decimate_waveforms(
         ```python
         summary = decimate_waveforms(
             "data/sac", [5, 5, 4], output_dir="data/decimated",
-            remove_original=False,
         )
-        summary.remove_original
-        # => False
+        summary.output_dir.name
+        # => 'decimated'
         ```
     """
     run_id = new_run_id()
@@ -149,15 +145,14 @@ def decimate_waveforms(
         raise ValueError("batch_size must be at least 1")
     values = _normalize_factors(factors)
     worker = _decimation_backend(backend)
-    output_path = _resolve_output_dir(src_path, output_dir, remove_original)
+    output_path = _resolve_output_dir(src_path, output_dir)
     worker_sample_limit = min(max_error_samples, 1)
 
     targets = _input_files(src_path, pattern)
     target_batches = tuple(_batched(targets, batch_size))
-    artifact_root = output_path or src_path
     with BatchRun(
         "decimate",
-        artifact_root,
+        output_path,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,
@@ -169,16 +164,14 @@ def decimate_waveforms(
             failed=0,
             issue_samples=(),
             output_dir=output_path,
-            remove_original=remove_original,
         )
         run.info(
-            "run_id=%s backend=%s src_dir=%s output_dir=%s remove_original=%s "
+            "run_id=%s backend=%s src_dir=%s output_dir=%s "
             "factors=%s pattern=%s max_workers=%d batch_size=%d",
             run_id,
             backend,
             src_path,
             output_path,
-            remove_original,
             values,
             pattern,
             max_workers,
@@ -190,7 +183,6 @@ def decimate_waveforms(
             values,
             src_path,
             output_path,
-            remove_original,
             worker_sample_limit,
             max_workers,
             max_error_samples,
@@ -204,7 +196,6 @@ def decimate_waveforms(
                 failed=compact.failed,
                 issue_samples=compact.issue_samples,
                 output_dir=output_path,
-                remove_original=remove_original,
                 duration_seconds=0,
             )
         )
@@ -236,7 +227,6 @@ def _run_decimation_batches(
     values,
     src_path,
     output_path,
-    remove_original,
     worker_sample_limit,
     max_workers,
     max_error_samples,
@@ -252,7 +242,6 @@ def _run_decimation_batches(
                 values,
                 src_path,
                 output_path,
-                remove_original,
                 worker_sample_limit,
             )
             futures[executor.submit(worker, *args)] = batch
@@ -267,7 +256,6 @@ def _run_decimation_batches(
                             batch,
                             src_path,
                             output_path,
-                            remove_original,
                             exc,
                             worker_sample_limit,
                         )
@@ -280,7 +268,6 @@ def _run_decimation_batches(
                     failed=compact.failed,
                     issue_samples=compact.issue_samples,
                     output_dir=output_path,
-                    remove_original=remove_original,
                 )
                 pbar.update(1)
     return _combine_batches(results, max_error_samples)
@@ -304,27 +291,18 @@ def _decimation_backend(backend) -> Callable:
     raise ValueError(f"Unknown backend: {backend}")
 
 
-def _resolve_output_dir(src_path, output_dir, remove_original):
-    if remove_original:
-        if output_dir is not None:
-            raise ValueError("output_dir cannot be used when remove_original=True")
-        return None
+def _resolve_output_dir(src_path, output_dir):
     destination = (
-        Path(output_dir).expanduser().resolve()
+        output_dir
         if output_dir is not None
         else src_path.with_name(f"{src_path.name}_decimated")
     )
-    if destination == src_path or src_path in destination.parents:
-        raise ValueError("output_dir must be outside src_dir")
+    _, destination = resolve_separate_directory_trees(src_path, destination)
     destination.mkdir(parents=True, exist_ok=True)
     return destination
 
 
-def _destination_for(target, src_root, output_dir, remove_original):
-    if remove_original:
-        return target
-    if output_dir is None:
-        raise ValueError("output_dir is required when remove_original=False")
+def _destination_for(target, src_root, output_dir):
     return output_dir / target.relative_to(src_root)
 
 
@@ -349,12 +327,12 @@ def _combine_batches(batches, limit):
     )
 
 
-def _failed_batch(targets, src_root, output_dir, remove_original, exc, limit):
+def _failed_batch(targets, src_root, output_dir, exc, limit):
     error = f"{type(exc).__name__}: {exc}"
     samples = tuple(
         DecimationIssue(
             target,
-            _destination_for(target, src_root, output_dir, remove_original),
+            _destination_for(target, src_root, output_dir),
             error,
         )
         for target in targets[:limit]
@@ -367,13 +345,12 @@ def _scipy_decimate_batch(
     factors,
     src_root,
     output_dir,
-    remove_original,
     max_error_samples,
 ):
     succeeded = failed = 0
     samples = []
     for target in targets:
-        destination = _destination_for(target, src_root, output_dir, remove_original)
+        destination = _destination_for(target, src_root, output_dir)
         temporary = temporary_output_path(destination)
         try:
             stream = obspy.read(target)
@@ -433,13 +410,13 @@ def _sac_compatible_decimate_trace(trace, factors):
     trace.data = np.asarray(data, dtype=np.float32)
 
 
-def _sac_decimate_batch(targets, factors, src_root, output_dir, remove_original, limit):
+def _sac_decimate_batch(targets, factors, src_root, output_dir, limit):
     environment = os.environ.copy()
     environment["SAC_DISPLAY_COPYRIGHT"] = "0"
     jobs = []
     commands = ["readerr badfile fatal"]
     for target in targets:
-        destination = _destination_for(target, src_root, output_dir, remove_original)
+        destination = _destination_for(target, src_root, output_dir)
         temporary = temporary_output_path(destination)
         jobs.append((target, destination, temporary))
         commands.append(f"r {target}")
