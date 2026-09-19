@@ -1,54 +1,38 @@
-"""Orchestrate MCMC grid preparation."""
+"""Orchestrate serial MCMC grid preparation."""
 
-from concurrent.futures import ProcessPoolExecutor
-from itertools import repeat
 from pathlib import Path
 
-from seispy.progress import call_with_warnings, progress_iter, resolve_worker_call
-
-from seispy.mcmc.configuration import Config, load_config
-from seispy.mcmc.models import MCMCGrid, VsModelLibrary, make_mcmc_grid
-from seispy.mcmc.spatial import (
-    PhaseCube,
-    PhaseCurve,
-    GridData,
-    build_phase_cube,
-    build_spatial_grid,
-)
+from seispy.mcmc.configuration import load_config
+from seispy.mcmc.models import VsModelLibrary, make_mcmc_grid
+from seispy.mcmc.spatial import build_phase_cube, build_spatial_grid
 from seispy.mcmc.writer import GridWriter
+from seispy.progress import progress_iter
 
 
-def build_tasks(
-    cfg: Config, grid_data: GridData, phase_cube: PhaseCube, vs_library: VsModelLibrary
-):
-    tasks = []
-    for k, (lon, lat, topo, sediment, moho) in enumerate(grid_data.flat_values()):
-        phase = phase_cube.curve_at_flat_index(k)
-        vs_profile = vs_library.nearest_profile(float(lon), float(lat))
-        tasks.append((lon, lat, topo, sediment, moho, phase, vs_profile, cfg))
-    return tasks
-
-
-def process_point(args) -> tuple[MCMCGrid, PhaseCurve]:
-    lon, lat, topo, sediment, moho, phase, vs_profile, cfg = args
-    grid = make_mcmc_grid(lon, lat, topo, sediment, moho, vs_profile, cfg)
-    return grid, phase
-
-
-def init_grids(config_path: str | Path, max_workers: int = 1) -> None:
+def init_grids(config_path: str | Path) -> None:
     """Generate per-point MCMC inputs from a JSON configuration.
 
-    Args:
-        config_path: JSON file matching :class:`Config`.
-        max_workers: Maximum number of model-building worker processes.
+    Grid initialization is intentionally serial. Typical studies contain only
+    a few hundred to roughly one thousand inversion points, while each point
+    performs lightweight array lookup, prior construction, and small-file I/O.
+    Avoiding multiprocessing removes process-startup and pickling overhead and
+    makes failures directly traceable to the current grid coordinate.
 
-    Raises:
-        ValueError: If configuration or source data fail validation.
+    The reference Vs model may be CSV or Parquet. It must use the same lon/lat
+    grid as the inversion, use positive depth, and cover the full interval from
+    0 km through ``zmax_Bs``.
 
-    Examples:
-        ```python
-        init_grids("config/mcmc.json", max_workers=4)
-        ```
+    Parameters
+    ----------
+    config_path
+        JSON file matching :class:`seispy.mcmc.configuration.Config`.
+
+    Raises
+    ------
+    ValueError
+        If configuration or source data fail validation.
+    KeyError
+        If an inversion-grid coordinate is missing from the Vs reference model.
     """
     cfg = load_config(config_path)
     base_dir = Path(cfg.paths.output_dir)
@@ -56,30 +40,32 @@ def init_grids(config_path: str | Path, max_workers: int = 1) -> None:
 
     grid_data = build_spatial_grid(cfg)
     phase_cube = build_phase_cube(cfg, grid_data)
-    vs_library = VsModelLibrary.from_csv(cfg.paths.vs_model_csv)
-    tasks = build_tasks(cfg, grid_data, phase_cube, vs_library)
+
+    vs_library = VsModelLibrary.from_file(cfg.paths.vs_model_file)
 
     writer = GridWriter(base_dir, cfg)
+    written = 0
 
-    if max_workers > 1:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            iterator = executor.map(call_with_warnings, repeat(process_point), tasks)
-            written = 0
-            for result in progress_iter(
-                iterator, total=len(tasks), desc="Preparing MCMC", unit="grid"
-            ):
-                grid, phase = resolve_worker_call(result)
-                written += int(writer.write(grid, phase))
-    else:
-        written = 0
-        for task in progress_iter(
-            tasks, total=len(tasks), desc="Preparing MCMC", unit="grid"
-        ):
-            grid, phase = process_point(task)
-            written += int(writer.write(grid, phase))
+    iterator = enumerate(grid_data.flat_values())
+    for k, values in progress_iter(
+        iterator, total=grid_data.size, desc="Preparing MCMC", unit="grid"
+    ):
+        lon, lat, topo, sediment, moho = values
+        phase = phase_cube.curve_at_flat_index(k)
+        vs_profile = vs_library.profile_at(float(lon), float(lat))
+        grid = make_mcmc_grid(
+            lon=lon,
+            lat=lat,
+            topo=topo,
+            sediment=sediment,
+            moho=moho,
+            vs_profile=vs_profile,
+            cfg=cfg,
+        )
+        written += int(writer.write(grid, phase))
 
-    print(f"MCMC grids initialized. Written grids: {written}/{len(tasks)}")
+    print(f"MCMC grids initialized. Written grids: {written}/{grid_data.size}")
 
 
 if __name__ == "__main__":
-    init_grids("data/mcmc/config.json", max_workers=4)
+    init_grids("data/mcmc/config.json")

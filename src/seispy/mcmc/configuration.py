@@ -5,31 +5,106 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class Paths:
-    etopo_nc: str
-    sed_xyz: str
-    moho_xyz: str
-    vs_model_csv: str
+    topography_file: str
+    sediment_file: str
+    moho_file: str
+    vs_model_file: str
+    phase_dispersion_file: str
     output_dir: str
-    phase_dispersion_csv: str
+
+
+@dataclass(frozen=True)
+class SearchRadius:
+    """Search radii used when constructing per-grid MCMC priors.
+
+    Depth radii are in km. ``crust_vs`` and ``mantle_vs`` are Vs half-widths
+    in km/s and may be either one scalar shared by all coefficients or one
+    value per coefficient.
+    """
+
+    sediment: float
+    moho: float
+    crust_vs: float | List[float]
+    mantle_vs: float | List[float]
+
+    def __post_init__(self) -> None:
+        for name in ("sediment", "moho"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(
+                    f"search_radius.{name} must be finite and >= 0, got {value}"
+                )
+
+        for name in ("crust_vs", "mantle_vs"):
+            arr = np.asarray(getattr(self, name), dtype=float)
+            if arr.ndim > 1 or arr.size == 0:
+                raise ValueError(
+                    f"search_radius.{name} must be a scalar or 1-D sequence"
+                )
+            if not np.isfinite(arr).all() or np.any(arr < 0):
+                raise ValueError(f"search_radius.{name} values must be finite and >= 0")
+
+
+@dataclass(frozen=True)
+class MCMCParams:
+    """Parameters written to ``input_DRAM_T.dat`` in Fortran input order."""
+
+    mineos_on: int
+    nsimu: int
+    inm: int
+    nc: int
+    adaptint: int
+    imat_fac: float
+    verbo: int
+    dodr: int
+    sigma2: float
+    DRscale: float
+    iresetad: int
+    id_run: int
+    biasfac: float
+    burn_in: int
+    out_best: int
+
+    def ordered_items(self) -> list[tuple[str, int | float]]:
+        names = (
+            "mineos_on",
+            "nsimu",
+            "inm",
+            "nc",
+            "adaptint",
+            "imat_fac",
+            "verbo",
+            "dodr",
+            "sigma2",
+            "DRscale",
+            "iresetad",
+            "id_run",
+            "biasfac",
+            "burn_in",
+            "out_best",
+        )
+        return [(name, getattr(self, name)) for name in names]
 
 
 @dataclass(frozen=True)
 class VsConstraints:
     """Physical constraints for Vs-related search bounds in para.inp.
 
-    Values are in km/s, except ``deep_vs_gradient`` which is in
-    (km/s)/km and is used only when the reference Vs model is shallower
-    than the requested B-spline representative depth.
+    Values are in km/s. The reference Vs model is required to cover the full
+    MCMC inversion depth, so deep extrapolation is not used during bound
+    construction.
 
-    ``*_soft_max`` and ``*_hard_max`` define a two-level upper-bound
-    strategy.  If the reference Vs center is below the soft maximum, the
-    normal search interval is used.  If it lies between the soft and hard
-    maxima, the upper bound is clipped at the hard maximum.  If it exceeds
-    the hard maximum, the search window is shifted below the hard maximum
-    so that the original search width is largely preserved.
+    ``*_soft_max`` and ``*_hard_max`` define a two-level upper-bound strategy.
+    If the reference Vs center is below the soft maximum, the normal search
+    interval is used. If it lies between the soft and hard maxima, the upper
+    bound is clipped at the hard maximum. If it exceeds the hard maximum, the
+    search window is shifted below the hard maximum so that the original search
+    width is largely preserved.
     """
 
     sediment_max: float = 3.0
@@ -37,7 +112,6 @@ class VsConstraints:
     crust_hard_max: float = 4.0
     mantle_soft_max: float = 4.9
     mantle_hard_max: float = 5.0
-    deep_vs_gradient: float = 0.001
     mantle_not_slower_than_crust: bool = True
     min_vs_bound_width: float = 0.05
 
@@ -54,8 +128,8 @@ class PhaseConstraints:
 class Config:
     region: List[float]
     grid_spacing: float
-    search_radius: dict
-    mcmc_params: dict
+    search_radius: SearchRadius
+    mcmc_params: MCMCParams
     paths: Paths
     water_threshold: float
     sediment_threshold: float
@@ -84,7 +158,8 @@ def load_config(path: str | Path) -> Config:
         raw = json.load(f)
 
     raw["paths"] = Paths(**raw["paths"])
-
+    raw["search_radius"] = SearchRadius(**raw["search_radius"])
+    raw["mcmc_params"] = MCMCParams(**raw["mcmc_params"])
     raw["vs_constraints"] = VsConstraints(**raw.get("vs_constraints", {}))
     raw["phase_constraints"] = PhaseConstraints(**raw.get("phase_constraints", {}))
     return Config(**raw)

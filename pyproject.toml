@@ -18,6 +18,7 @@ plot = ["matplotlib>=3.10"]
 mcmc = [
   "matplotlib>=3.10",
   "netcdf4>=1.7.4",
+  "pyarrow>=25.0.1,<26",
   "pygmt>=0.19.0",
   "xarray>=2025.1",
 ]
@@ -26,6 +27,7 @@ all = [
   "marimo>=0.24.0",
   "matplotlib>=3.10",
   "netcdf4>=1.7.4",
+  "pyarrow>=25.0.1,<26",
   "pygmt>=0.19.0",
   "xarray>=2025.1",
 ]
