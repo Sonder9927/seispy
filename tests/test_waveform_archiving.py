@@ -1,4 +1,5 @@
 from pathlib import Path
+import struct
 
 import numpy as np
 from obspy import Stream, Trace, UTCDateTime, read
@@ -18,6 +19,34 @@ def _raw_mseed(root, *, channel="HHZ"):
     path = root / "NZ" / "AAA" / "2026" / f"NZ.AAA.10.{channel}.2026.001.mseed.raw"
     path.parent.mkdir(parents=True, exist_ok=True)
     Stream([trace]).write(path, format="MSEED")
+    return path
+
+
+def _append_empty_next_day_record(path):
+    contents = path.read_bytes()
+    record_length = 4096
+    record = bytearray(contents[-record_length:])
+    struct.pack_into(">HHBBBBH", record, 20, 2026, 2, 0, 0, 0, 0, 0)
+    struct.pack_into(">H", record, 30, 0)
+    first_blockette = struct.unpack_from(">H", record, 46)[0]
+    record[first_blockette + 4] = 0
+    path.write_bytes(contents + record)
+    return bytes(record)
+
+
+def _multiday_raw_mseed(root):
+    first = Trace(data=np.arange(100, dtype=np.int32))
+    first.stats.network = "NZ"
+    first.stats.station = "AAA"
+    first.stats.location = "10"
+    first.stats.channel = "HHZ"
+    first.stats.starttime = UTCDateTime("2026-01-01T01:00:00")
+    first.stats.sampling_rate = 10
+    second = first.copy()
+    second.stats.starttime = UTCDateTime("2026-01-02T02:00:00")
+    path = root / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Stream([first, second]).write(path, format="MSEED")
     return path
 
 
@@ -48,6 +77,84 @@ def test_mseed_archive_preserves_valid_source_bytes(tmp_path):
     assert raw.is_file()
     assert summary.succeeded == summary.files_written == 1
     assert summary.failed == 0
+
+
+def test_mseed_archive_ignores_empty_next_day_trace_and_preserves_bytes(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    raw = _raw_mseed(source)
+    _append_empty_next_day_record(raw)
+    original = raw.read_bytes()
+
+    summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+    archived = output / "NZ" / "AAA" / "2026" / raw.name.removesuffix(".raw")
+    assert archived.read_bytes() == original
+    assert summary.succeeded == summary.files_written == 1
+    assert summary.failed == 0
+    assert summary.traces_total == 2
+    assert summary.traces_written == 1
+    assert summary.traces_ignored_empty == 1
+
+
+def test_mseed_archive_splits_valid_days_and_succeeds(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    _multiday_raw_mseed(source)
+
+    summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+    outputs = sorted(output.rglob("*.mseed"))
+    assert len(outputs) == 2
+    assert {read(path)[0].stats.starttime.julday for path in outputs} == {1, 2}
+    assert summary.succeeded == summary.recovered == 1
+    assert summary.failed == 0
+    assert summary.files_written == summary.traces_written == 2
+
+
+def test_worker_fails_when_mseed_contains_only_an_empty_trace(tmp_path):
+    source = tmp_path / "raw"
+    raw = _raw_mseed(source)
+    empty_record = _append_empty_next_day_record(raw)
+    raw.write_bytes(empty_record)
+
+    result = archiving._archive_one(
+        str(raw), str(source), str(tmp_path / "archive"), "mseed", False, False
+    )
+
+    assert result.failed == 1
+    assert result.succeeded == result.files_written == 0
+    assert result.traces_total == result.traces_ignored_empty == 1
+    assert "contains no samples" in result.issue.error
+
+
+def test_worker_succeeds_when_only_one_trace_group_can_be_written(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    raw = _multiday_raw_mseed(source)
+    original_write = archiving._write_mseed_group
+    calls = 0
+
+    def fail_second_group(traces, destination, overwrite):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated destination failure")
+        return original_write(traces, destination, overwrite)
+
+    monkeypatch.setattr(archiving, "_write_mseed_group", fail_second_group)
+
+    result = archiving._archive_one(
+        str(raw), str(source), str(output), "mseed", False, False
+    )
+
+    assert result.succeeded == result.recovered == 1
+    assert result.failed == 0
+    assert result.files_written == result.traces_written == 1
+    assert result.traces_failed == 1
+    assert "simulated destination failure" in result.issue.error
 
 
 def test_archive_requires_separate_source_and_output_trees(tmp_path):
@@ -140,7 +247,7 @@ def test_existing_valid_archive_is_skipped(tmp_path):
     assert second.succeeded == 0
 
 
-def test_worker_rejects_a_path_that_disagrees_with_headers(tmp_path):
+def test_worker_salvages_valid_trace_when_source_path_disagrees(tmp_path):
     raw = _raw_mseed(tmp_path / "raw")
     mismatched = raw.with_name("NZ.WRONG.10.HHZ.2026.001.mseed.raw")
     raw.rename(mismatched)
@@ -153,5 +260,14 @@ def test_worker_rejects_a_path_that_disagrees_with_headers(tmp_path):
         False,
     )
 
-    assert result.failed == 1
-    assert "do not match intended archive path" in result.issue.error
+    corrected = (
+        tmp_path
+        / "archive"
+        / "NZ"
+        / "AAA"
+        / "2026"
+        / "NZ.AAA.10.HHZ.2026.001.000000.mseed"
+    )
+    assert corrected.is_file()
+    assert result.succeeded == result.recovered == 1
+    assert result.failed == 0

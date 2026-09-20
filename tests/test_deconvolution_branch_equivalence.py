@@ -101,8 +101,10 @@ def _require_sac_decimation():
 
 @pytest.fixture
 def comparison_path():
-    """Use the short POSIX temporary path supported by SAC and CI runners."""
-    with tempfile.TemporaryDirectory(prefix="seispy-equivalence-", dir="/tmp") as path:
+    """Create an isolated, short path without assuming an OS temp location."""
+    with tempfile.TemporaryDirectory(
+        prefix=".seispy-equivalence-", dir=Path.cwd()
+    ) as path:
         yield Path(path)
 
 

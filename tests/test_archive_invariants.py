@@ -46,6 +46,12 @@ def _trace(identity: WaveformIdentity):
     )
 
 
+def _empty_trace(identity: WaveformIdentity):
+    trace = _trace(identity)
+    trace.stats.npts = 0
+    return trace
+
+
 @st.composite
 def _identities(draw):
     day = draw(_DATE)
@@ -147,6 +153,29 @@ def test_miniseed_identity_rejects_mixed_station_or_day(identity, change_station
 
     with pytest.raises(ValueError, match="multiple stations or start days"):
         stream_day_identity([_trace(identity), _trace(other)])
+
+
+def test_miniseed_identity_ignores_empty_boundary_trace():
+    primary = WaveformIdentity(
+        "NZ", "WEL", "10", "HHZ", UTCDateTime("2025-01-01")
+    )
+    boundary = replace(primary, starttime=primary.starttime + 86_400)
+
+    assert stream_day_identity([_trace(primary), _empty_trace(boundary)]) == (
+        "NZ",
+        "WEL",
+        2025,
+        1,
+    )
+
+
+def test_miniseed_identity_rejects_stream_with_only_empty_traces():
+    identity = WaveformIdentity(
+        "NZ", "WEL", "10", "HHZ", UTCDateTime("2025-01-01")
+    )
+
+    with pytest.raises(ValueError, match="contains no samples"):
+        stream_day_identity([_empty_trace(identity)])
 
 
 @given(

@@ -87,9 +87,16 @@ def stream_day_identity(stream: Iterable[Any]) -> tuple[str, str, int, int]:
     All traces must start on the same UTC day and belong to the same network and
     station.  MiniSEED channel and location diversity is allowed.
     """
-    identities = [WaveformIdentity.from_trace(trace) for trace in stream]
-    if not identities:
+    traces = list(stream)
+    if not traces:
         raise ValueError("waveform stream is empty")
+    identities = [
+        WaveformIdentity.from_trace(trace)
+        for trace in traces
+        if getattr(trace.stats, "npts", None) != 0
+    ]
+    if not identities:
+        raise ValueError("waveform stream contains no samples")
     keys = {(item.network, item.station, item.year, item.julday) for item in identities}
     if len(keys) != 1:
         raise ValueError("waveform stream contains multiple stations or start days")
@@ -167,7 +174,11 @@ def matches_mseed_path(
     candidate = Path(path)
     if candidate == mseed_path(root, traces):
         return True
-    identities = [WaveformIdentity.from_trace(trace) for trace in traces]
+    identities = [
+        WaveformIdentity.from_trace(trace)
+        for trace in traces
+        if getattr(trace.stats, "npts", None) != 0
+    ]
     stream_keys = {
         (item.network, item.station, item.location, item.channel) for item in identities
     }

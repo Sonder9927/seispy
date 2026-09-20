@@ -73,8 +73,12 @@ archive_summary = waveform.archive_waveforms(
 )
 ```
 
-Valid MiniSEED is copied without re-encoding. Headers, archive identity, and—if
-StationXML is supplied—channel epoch and sample rate are checked first.
+Valid single-identity MiniSEED is copied without re-encoding. Zero-sample
+boundary traces do not determine archive identity. When a response contains
+multiple non-empty station-day groups, each valid group is written to its own
+header-derived path; failure in one group does not discard the others. Headers,
+archive identity, and—if StationXML is supplied—channel epoch and sample rate
+are checked first.
 `max_workers` controls isolated archive processes and defaults to 5. A large
 server may raise it independently of the downloader's `network_workers`; for
 example, keep network transfers at 10 and use 40 archive workers if memory and
@@ -101,11 +105,18 @@ network transport.
 
 ## Source-file policy and damaged records
 
-Archival never deletes or modifies staged responses. By default, an integrity
-warning triggers record-level recovery. Independently valid MiniSEED records
-may still be archived, while the damaged original remains available as
-evidence. Set `discard_corrupt_records=False` to reject the whole response
-instead.
+Archival never deletes or modifies staged responses. A source is successful if
+at least one non-empty trace is preserved; it fails only when no usable trace
+can be archived. By default, an integrity warning triggers record-level
+recovery. Independently valid MiniSEED records and trace groups may still be
+archived, while the damaged original remains available as evidence. Set
+`discard_corrupt_records=False` to reject a response whose full read reports an
+integrity warning.
+
+Use `traces_total`, `traces_written`, `traces_existing`,
+`traces_ignored_empty`, and `traces_failed` on the archive summary to audit
+partial recovery. `recovered` counts source files that required filtering,
+splitting, or omission while still preserving at least one trace.
 
 ## Restricted data
 

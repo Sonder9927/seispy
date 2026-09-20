@@ -2,23 +2,22 @@
 
 import shutil
 import warnings
+from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from obspy import read, read_inventory
+from obspy import Stream, read, read_inventory
 from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
-from seispy.archive import WaveformIdentity, matches_mseed_path
-from seispy.waveform.integrity import merge_short_gaps
+from seispy.archive import WaveformIdentity, channel_mseed_path, matches_mseed_path
 from seispy.waveform.mseed_recovery import filter_valid_mseed_records
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
-    cleanup_outputs,
     commit_output,
     new_run_id,
     resolve_separate_directory_trees,
@@ -43,12 +42,24 @@ class _ArchiveResult:
     recovered: int = 0
     failed: int = 0
     files_written: int = 0
+    traces_total: int = 0
+    traces_written: int = 0
+    traces_existing: int = 0
+    traces_ignored_empty: int = 0
+    traces_failed: int = 0
     issue: WaveformArchiveIssue | None = None
 
 
 @dataclass(frozen=True)
 class WaveformArchiveSummary(BatchSummary):
-    """Summarize validation and organization into a trusted archive."""
+    """Summarize validation and organization into a trusted archive.
+
+    Source-file counters are mutually exclusive: a source succeeds when at
+    least one non-empty trace is archived, is skipped when all usable traces
+    already exist, and fails only when no usable trace can be preserved.
+    Trace counters expose partial recovery without turning it into a source
+    failure.
+    """
 
     total: int
     succeeded: int
@@ -56,6 +67,11 @@ class WaveformArchiveSummary(BatchSummary):
     recovered: int
     failed: int
     files_written: int
+    traces_total: int
+    traces_written: int
+    traces_existing: int
+    traces_ignored_empty: int
+    traces_failed: int
     issue_samples: tuple[WaveformArchiveIssue, ...]
     source_dir: Path
     output_dir: Path
@@ -84,8 +100,12 @@ def archive_waveforms(
 
     Raw MiniSEED responses can be archived as MiniSEED or converted to SAC.
     Existing SAC files can be reorganized into canonical SAC paths by selecting
-    them with ``pattern`` and ``output_format="sac"``. Native waveform reads run
-    in isolated worker processes. Source files are never modified or removed.
+    them with ``pattern`` and ``output_format="sac"``. Valid traces are archived
+    independently, so one trace or destination failure does not discard other
+    usable traces from the same source. A source succeeds when at least one
+    trace is preserved. Empty traces do not determine archive identity. Native
+    waveform reads run in isolated worker processes. Source files are never
+    modified or removed.
 
     Args:
         source_dir: Root containing raw MiniSEED responses or SAC files.
@@ -128,6 +148,11 @@ def archive_waveforms(
             "recovered",
             "failed",
             "files_written",
+            "traces_total",
+            "traces_written",
+            "traces_existing",
+            "traces_ignored_empty",
+            "traces_failed",
         ),
         0,
     )
@@ -256,9 +281,12 @@ def _record_result(result, counters, issues, max_error_samples):
 
 def _log_issue(run, result):
     if result.issue is not None:
-        run.error(
-            "source=%s archive_failed error=%s",
+        log = run.error if result.failed else run.warning
+        status = "archive_failed" if result.failed else "archive_partial"
+        log(
+            "source=%s %s error=%s",
             result.issue.source,
+            status,
             result.issue.error,
         )
 
@@ -299,7 +327,7 @@ def _archive_one(
 ):
     source = Path(source_name)
     filtered = None
-    recovered = False
+    record_recovered = False
     try:
         is_sac = source.suffix.lower() == ".sac"
         if is_sac:
@@ -326,28 +354,60 @@ def _archive_one(
                 )
                 stream = _read_full_mseed(filtered)
                 trusted_source = filtered
-                recovered = True
-        _validate_inventory(stream)
+                record_recovered = True
+        valid, empty, validation_errors = _classify_traces(stream)
+        if not valid:
+            detail = "; ".join(validation_errors) or "waveform stream contains no samples"
+            raise ValueError(detail)
         if output_format == "mseed":
-            written, skipped = _archive_mseed(
+            result = _archive_mseed_traces(
                 source,
                 trusted_source,
-                stream,
+                valid,
+                empty,
                 Path(source_root),
                 Path(output_root),
                 overwrite,
+                allow_raw_copy=not validation_errors,
             )
         else:
-            written, skipped = _archive_sac(stream, Path(output_root), overwrite)
+            result = _archive_sac_traces(valid, Path(output_root), overwrite)
+        written, existing, archived_traces, group_errors, transformed = result
+        errors = [*validation_errors, *group_errors]
+        traces_failed = len(stream) - len(empty) - archived_traces
+        archived_any = archived_traces > 0
+        all_existing = archived_any and written == 0 and not errors
+        partial = bool(
+            record_recovered or transformed or empty or errors or traces_failed
+        )
+        issue = None
+        if errors:
+            issue = WaveformArchiveIssue(source, "; ".join(errors))
         return _ArchiveResult(
-            succeeded=int(not skipped),
-            skipped=int(skipped),
-            recovered=int(recovered),
+            succeeded=int(archived_any and not all_existing),
+            skipped=int(all_existing),
+            recovered=int(archived_any and partial),
+            failed=int(not archived_any),
             files_written=written,
+            traces_total=len(stream),
+            traces_written=archived_traces - existing,
+            traces_existing=existing,
+            traces_ignored_empty=len(empty),
+            traces_failed=max(0, traces_failed),
+            issue=issue,
         )
     except Exception as exc:
+        traces_total = len(stream) if "stream" in locals() else 0
+        traces_ignored_empty = (
+            sum(trace.stats.npts == 0 for trace in stream)
+            if "stream" in locals()
+            else 0
+        )
         return _ArchiveResult(
             failed=1,
+            traces_total=traces_total,
+            traces_ignored_empty=traces_ignored_empty,
+            traces_failed=traces_total - traces_ignored_empty,
             issue=WaveformArchiveIssue(source, f"{type(exc).__name__}: {exc}"),
         )
     finally:
@@ -397,6 +457,189 @@ def _validate_inventory(stream):
             )
 
 
+def _classify_traces(stream):
+    valid = []
+    empty = []
+    errors = []
+    for index, trace in enumerate(stream):
+        if trace.stats.npts == 0:
+            empty.append(trace)
+            continue
+        try:
+            _validate_inventory([trace])
+        except Exception as exc:
+            errors.append(f"trace {index} ({trace.id}) failed validation: {exc}")
+            continue
+        valid.append(trace)
+    return valid, empty, errors
+
+
+def _archive_mseed_traces(
+    source,
+    trusted_source,
+    traces,
+    empty_traces,
+    source_root,
+    output_root,
+    overwrite,
+    *,
+    allow_raw_copy,
+):
+    intended = output_root / source.relative_to(source_root).with_name(
+        source.name.removesuffix(".raw")
+    )
+    if (
+        allow_raw_copy
+        and _matches_mseed_path(intended, output_root, traces)
+        and _benign_empty_traces(traces, empty_traces)
+    ):
+        written, skipped = _archive_mseed(
+            source,
+            trusted_source,
+            traces,
+            source_root,
+            output_root,
+            overwrite,
+        )
+        existing = len(traces) if skipped else 0
+        return written, existing, len(traces), (), False
+
+    grouped = defaultdict(list)
+    for trace in traces:
+        grouped[WaveformIdentity.from_trace(trace).day_key].append(trace)
+
+    files_written = 0
+    traces_existing = 0
+    traces_archived = 0
+    errors = []
+    intended_claimed = False
+    for group in grouped.values():
+        if not intended_claimed and _matches_mseed_path(
+            intended, output_root, group
+        ):
+            destination = intended
+            intended_claimed = True
+        else:
+            destination = _recovered_mseed_path(output_root, group)
+        try:
+            written, skipped = _write_mseed_group(group, destination, overwrite)
+        except Exception as exc:
+            errors.append(
+                f"trace group {group[0].id} at "
+                f"{group[0].stats.starttime} failed: {type(exc).__name__}: {exc}"
+            )
+            continue
+        files_written += written
+        traces_archived += len(group)
+        if skipped:
+            traces_existing += len(group)
+
+    if empty_traces and not _benign_empty_traces(traces, empty_traces):
+        errors.append(f"ignored {len(empty_traces)} incompatible empty trace(s)")
+    return files_written, traces_existing, traces_archived, tuple(errors), True
+
+
+def _matches_mseed_path(path, root, traces):
+    try:
+        return matches_mseed_path(path, root, traces)
+    except ValueError:
+        return False
+
+
+def _benign_empty_traces(traces, empty_traces):
+    identities = [WaveformIdentity.from_trace(trace) for trace in traces]
+    valid_nslc = {
+        (item.network, item.station, item.location, item.channel) for item in identities
+    }
+    valid_days = {item.day for item in identities}
+    for trace in empty_traces:
+        identity = WaveformIdentity.from_trace(trace)
+        nslc = (
+            identity.network,
+            identity.station,
+            identity.location,
+            identity.channel,
+        )
+        if nslc not in valid_nslc:
+            return False
+        if identity.day not in valid_days and not any(
+            (identity.day - day).days == 1
+            and trace.stats.starttime.strftime("%H%M%S") == "000000"
+            for day in valid_days
+        ):
+            return False
+    return True
+
+
+def _recovered_mseed_path(output_root, traces):
+    first = min(traces, key=lambda trace: trace.stats.starttime)
+    last = max(traces, key=lambda trace: trace.stats.endtime)
+    endtime = last.stats.endtime + last.stats.delta
+    stats = first.stats
+    return channel_mseed_path(
+        output_root,
+        stats.network,
+        stats.station,
+        stats.location,
+        stats.channel,
+        stats.starttime,
+        endtime,
+    )
+
+
+def _write_mseed_group(traces, destination, overwrite):
+    destination = Path(destination)
+    if destination.exists() and not overwrite:
+        _validate_existing_mseed(destination, destination.parents[3])
+        return 0, True
+    temporary = temporary_output_path(destination)
+    try:
+        Stream(traces=traces).write(str(temporary), format="MSEED")
+        written = _read_full_mseed(temporary)
+        root = destination.parents[3]
+        if not matches_mseed_path(destination, root, written):
+            raise ValueError("written MiniSEED path disagrees with trace headers")
+        commit_output(temporary, destination, overwrite=overwrite)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return 1, False
+
+
+def _archive_sac_traces(traces, output_root, overwrite):
+    files_written = 0
+    traces_existing = 0
+    traces_archived = 0
+    errors = []
+    claimed = set()
+    for trace in traces:
+        destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
+        if destination in claimed:
+            errors.append(f"trace {trace.id} maps to duplicate path {destination}")
+            continue
+        claimed.add(destination)
+        try:
+            if destination.is_file() and not overwrite:
+                _validate_sac_output(destination, trace)
+                traces_existing += 1
+                traces_archived += 1
+                continue
+            temporary = temporary_output_path(destination)
+            try:
+                trace.write(str(temporary), format="SAC")
+                _validate_sac_output(temporary, trace)
+                commit_output(temporary, destination, overwrite=overwrite)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except Exception as exc:
+            errors.append(
+                f"trace {trace.id} failed: {type(exc).__name__}: {exc}"
+            )
+            continue
+        files_written += 1
+        traces_archived += 1
+    return files_written, traces_existing, traces_archived, tuple(errors), False
+
+
 def _archive_mseed(source, trusted_source, stream, source_root, output_root, overwrite):
     relative = source.relative_to(source_root)
     if not relative.name.endswith(".mseed.raw"):
@@ -422,35 +665,6 @@ def _validate_existing_mseed(path, output_root):
     stream = _read_full_mseed(path)
     if not matches_mseed_path(path, output_root, stream):
         raise ValueError(f"existing MiniSEED path disagrees with headers: {path}")
-
-
-def _archive_sac(stream, output_root, overwrite):
-    merge_short_gaps(stream)
-    destinations = [
-        WaveformIdentity.from_trace(trace).sac_path(output_root) for trace in stream
-    ]
-    if len(destinations) != len(set(destinations)):
-        raise ValueError("multiple source traces map to the same SAC archive path")
-    if destinations and all(path.is_file() for path in destinations) and not overwrite:
-        for trace, destination in zip(stream, destinations, strict=True):
-            _validate_sac_output(destination, trace)
-        return 0, True
-    temporary_paths = []
-    try:
-        for trace, destination in zip(stream, destinations, strict=True):
-            temporary = temporary_output_path(destination)
-            temporary_paths.append(temporary)
-            trace.write(str(temporary), format="SAC")
-            _validate_sac_output(temporary, trace)
-        for temporary, destination in zip(
-            tuple(temporary_paths), destinations, strict=True
-        ):
-            commit_output(temporary, destination, overwrite=overwrite)
-            temporary_paths.remove(temporary)
-    except Exception:
-        cleanup_outputs(temporary_paths)
-        raise
-    return len(destinations), False
 
 
 def _validate_sac_output(path, expected):
