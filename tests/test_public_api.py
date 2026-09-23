@@ -39,7 +39,7 @@ def test_domain_packages_do_not_import_their_implementations_eagerly():
             "assert 'seispy.inventory.analysis' not in sys.modules; "
             "assert 'seispy.deconvolution.removal' not in sys.modules; "
             "assert 'seispy.correct.orientation' not in sys.modules; "
-            "assert 'seispy.mcmc.preparation' not in sys.modules",
+            "assert 'seispy.mcmc.workflow' not in sys.modules",
         ],
         check=True,
         env=environment,
@@ -62,6 +62,13 @@ def test_domain_public_apis_use_canonical_names():
     assert callable(waveform.waveform_coverage)
     assert not hasattr(download, "download_status")
     assert not hasattr(waveform, "decimate_by_station")
+
+    from seispy import mcmc
+
+    assert callable(mcmc.init_grids)
+    assert callable(mcmc.collect_results)
+    assert not hasattr(mcmc, "prepare_inversion_grids")
+    assert not hasattr(mcmc, "collect_inversion_results")
 
 
 def test_waveform_interfaces_cannot_delete_or_replace_sources():

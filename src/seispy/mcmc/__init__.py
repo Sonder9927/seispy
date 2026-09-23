@@ -1,10 +1,16 @@
-"""Lazy MCMC preparation and collection interfaces."""
+"""Lazy interfaces for preparing and collecting MCMC inversions."""
 
 from importlib import import_module
 
 _EXPORTS = {
-    "init_grids": ("seispy.mcmc.preparation", "init_grids"),
-    "collect_results": ("seispy.mcmc.results", "collect_results"),
+    "init_grids": (
+        "seispy.mcmc.workflow",
+        "init_grids",
+    ),
+    "collect_results": (
+        "seispy.mcmc.collection",
+        "collect_results",
+    ),
 }
 
 
