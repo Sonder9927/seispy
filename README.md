@@ -98,10 +98,11 @@ you explicitly click its download button.
 
 ## Development
 
-Install development and documentation dependencies:
+Install development and documentation dependencies. The `mcmc` extra is needed
+to run the full test suite, including the Parquet input cases:
 
 ```bash
-uv sync --group dev --group docs
+uv sync --group dev --group docs --extra mcmc
 ```
 
 Run the checks and build the documentation:
