@@ -357,7 +357,9 @@ def _archive_one(
                 record_recovered = True
         valid, empty, validation_errors = _classify_traces(stream)
         if not valid:
-            detail = "; ".join(validation_errors) or "waveform stream contains no samples"
+            detail = (
+                "; ".join(validation_errors) or "waveform stream contains no samples"
+            )
             raise ValueError(detail)
         if output_format == "mseed":
             result = _archive_mseed_traces(
@@ -514,9 +516,7 @@ def _archive_mseed_traces(
     errors = []
     intended_claimed = False
     for group in grouped.values():
-        if not intended_claimed and _matches_mseed_path(
-            intended, output_root, group
-        ):
+        if not intended_claimed and _matches_mseed_path(intended, output_root, group):
             destination = intended
             intended_claimed = True
         else:
@@ -631,9 +631,7 @@ def _archive_sac_traces(traces, output_root, overwrite):
             finally:
                 temporary.unlink(missing_ok=True)
         except Exception as exc:
-            errors.append(
-                f"trace {trace.id} failed: {type(exc).__name__}: {exc}"
-            )
+            errors.append(f"trace {trace.id} failed: {type(exc).__name__}: {exc}")
             continue
         files_written += 1
         traces_archived += 1
