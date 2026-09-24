@@ -2,8 +2,8 @@
 
 The MCMC executable reads prior bounds for ``n_basis`` coefficients per layer
 and evaluates a B-spline basis of its own construction. This module reproduces
-that construction so the prior search centres can be placed at the coefficients'
-Greville depths.
+that construction so prior search centres can be projected into the same
+coefficient space (and so each coefficient keeps its Greville depth label).
 
 The original parameterization uses ``degBs = n_basis - 1`` as the spline order,
 so the polynomial degree is ``p = n_basis - 2`` and the knot vector length is
@@ -125,6 +125,52 @@ def basis_matrix(
     return values
 
 
+def projection_coefficients(
+    n_basis: int,
+    z_top: float,
+    z_bottom: float,
+    factor: float,
+    depths: np.ndarray,
+    values: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Project sampled reference values onto the Fortran coefficient space.
+
+    This is the coefficient-space analogue of sampling the reference at a
+    depth: it returns the coefficient vector that best represents the whole
+    layer, so a prior centred here keeps the reference model representable.
+
+    Args:
+        n_basis: Number of B-spline coefficients.
+        z_top: Top of the layer in km.
+        z_bottom: Bottom of the layer in km.
+        factor: Fortran knot-spacing control.
+        depths: Sample depths in km, strictly inside the layer.
+        values: Sampled reference values at those depths, in km/s for Vs.
+
+    Returns:
+        The least-squares coefficient vector and the largest absolute
+        reconstruction residual, in the units of values.
+
+    Raises:
+        ValueError: If depths and values are not equal-length finite 1-D
+            arrays, or are empty.
+    """
+
+    x = np.asarray(depths, dtype=float)
+    y = np.asarray(values, dtype=float)
+    if x.ndim != 1 or y.ndim != 1 or x.size != y.size:
+        raise ValueError("depths and values must be equal-length 1-D arrays")
+    if x.size == 0:
+        raise ValueError("depths and values must not be empty")
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise ValueError("depths and values must be finite")
+
+    matrix = basis_matrix(n_basis, z_top, z_bottom, factor, x)
+    coefficients, *_ = np.linalg.lstsq(matrix, y, rcond=None)
+    residual = matrix @ coefficients - y
+    return coefficients, float(np.max(np.abs(residual)))
+
+
 def basis_geometry(
     n_basis: int,
     z_top: float,
@@ -156,3 +202,39 @@ def basis_geometry(
     centroid = (values * depths[:, None]).sum(axis=0) * step / mass
     return mass / total, centroid
 
+
+def node_matrix(
+    n_basis: int,
+    z_top: float,
+    z_bottom: float,
+    factor: float,
+    n_nodes: int,
+) -> np.ndarray:
+    """Evaluate the Fortran basis on the forward-model node grid.
+
+    Args:
+        n_basis: Number of B-spline coefficients.
+        z_top: Top of the layer in km.
+        z_bottom: Bottom of the layer in km.
+        factor: Fortran knot-spacing control.
+        n_nodes: Number of forward-model nodes to evaluate.
+
+    Returns:
+        An (n_nodes, n_basis) matrix mapping coefficients to reconstructed
+        node velocities; the clamped endpoint convention makes the first and
+        last node equal the first and last coefficient.
+
+    Raises:
+        ValueError: If n_nodes is smaller than 2.
+    """
+
+    if n_nodes < 2:
+        raise ValueError(f"n_nodes must be >= 2, got {n_nodes}")
+    matrix = basis_matrix(
+        n_basis, z_top, z_bottom, factor, np.linspace(z_top, z_bottom, n_nodes)
+    )
+    matrix[0, :] = 0.0
+    matrix[0, 0] = 1.0
+    matrix[-1, :] = 0.0
+    matrix[-1, -1] = 1.0
+    return matrix

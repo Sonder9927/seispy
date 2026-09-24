@@ -1,20 +1,31 @@
 """Orchestrate serial MCMC grid preparation.
 
-Grid initialization is intentionally serial. Typical studies contain only a few
-hundred to roughly one thousand inversion points, while each point performs
-lightweight array lookup, prior construction, and small-file I/O. Avoiding
-multiprocessing removes process-startup and pickling overhead and makes failures
-directly traceable to the current grid coordinate.
+Preparation is intentionally serial: typical studies contain only a few hundred
+to roughly one thousand inversion points, while each point performs lightweight
+array lookup, prior construction, and small-file I/O. Avoiding multiprocessing
+removes process-startup and pickling overhead and makes failures directly
+traceable to the current grid coordinate.
+
+Preparation and plotting are separate phases. ``prepare_points`` computes and
+filters every point, ``FortranInputWriter`` serializes it, and ``plot_grids``
+redraws ``point.png`` from the written files. A plotting failure therefore
+cannot lose inputs that were already written, and figures can be regenerated
+later without the source grids.
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 from seispy.mcmc.config import Config, load_config
-from seispy.mcmc.dispersion import build_dispersion_grid
+from seispy.mcmc.dispersion import (
+    DispersionGrid,
+    DispersionRow,
+    build_dispersion_grid,
+    valid_dispersion_rows,
+)
 from seispy.mcmc.gridding import TargetGrid
 from seispy.mcmc.inversion import InversionPoint, build_inversion_point
 from seispy.mcmc.priors import (
@@ -27,7 +38,19 @@ from seispy.mcmc.spatial import SpatialFields, build_target_fields
 from seispy.mcmc.velocity import VsModelLibrary
 from seispy.progress import progress_iter
 
-PreparedPoint = tuple[InversionPoint, PointPriorBounds]
+
+class PreparedPoint(NamedTuple):
+    """One accepted inversion point ready to serialize.
+
+    Attributes:
+        point: Validated inversion point.
+        bounds: Final prior bounds.
+        rows: Filtered dispersion rows.
+    """
+
+    point: InversionPoint
+    bounds: PointPriorBounds
+    rows: list[DispersionRow]
 
 
 def _collect_examples(items: Sequence[str], limit: int = 5) -> str:
@@ -39,21 +62,26 @@ def _collect_examples(items: Sequence[str], limit: int = 5) -> str:
 def prepare_points(
     fields: SpatialFields,
     vs_library: VsModelLibrary,
+    dispersion: DispersionGrid,
     cfg: Config,
     settings: PriorSettings,
-) -> list[PreparedPoint]:
-    """Build and validate every inversion point before any output is written.
+) -> tuple[list[PreparedPoint], list[str]]:
+    """Build, validate and dispersion-filter every inversion point.
 
-    Doing the work once here means a bad grid fails before a single directory is
-    created, and the write loop only serializes values that already exist.
+    All geometry is resolved here, before any output directory is created, so a
+    bad grid fails without leaving partial output. Points whose dispersion has
+    too few valid periods are skipped and returned separately instead of being
+    written. Accepted tuples already carry the rows to serialize.
     """
 
     prepared: list[PreparedPoint] = []
+    skipped: list[str] = []
     missing: list[str] = []
     invalid: list[str] = []
     folder_names: dict[str, tuple[float, float]] = {}
+    minimum = int(cfg.phase_constraints.minimum_periods)
 
-    for lon, lat, topo, sediment, moho in fields.flat_points():
+    for index, (lon, lat, topo, sediment, moho) in enumerate(fields.flat_points()):
         lon, lat = float(lon), float(lat)
         folder_name = f"{lon:.2f}_{lat:.2f}"
         previous = folder_names.setdefault(folder_name, (lon, lat))
@@ -86,9 +114,22 @@ def prepare_points(
                 vs_profile=profile,
                 cfg=cfg,
             )
-            prepared.append((point, compute_point_bounds(point, settings)))
+            bounds = compute_point_bounds(point, settings)
         except ValueError as exc:
             invalid.append(f"({lon:.6f}, {lat:.6f}): {exc}")
+            continue
+
+        curve = dispersion.curve_at(index)
+        rows = valid_dispersion_rows(curve, cfg)
+        if rows is None:
+            valid = len(curve.valid_rows(default_sigma=float(cfg.default_phase_std)))
+            print(
+                f"[SKIP] {folder_name}: only {valid} valid dispersion points "
+                f"(< {minimum})"
+            )
+            skipped.append(folder_name)
+            continue
+        prepared.append(PreparedPoint(point, bounds, rows))
 
     if missing:
         raise ValueError(
@@ -100,7 +141,7 @@ def prepare_points(
             f"MCMC preflight failed at {len(invalid)} grid points: "
             f"{_collect_examples(invalid)}"
         )
-    return prepared
+    return prepared, skipped
 
 
 def init_grids(
@@ -149,25 +190,74 @@ def init_grids(
     )
 
     settings = PriorSettings.from_config(cfg)
-    prepared = prepare_points(fields, vs_library, cfg, settings)
+    prepared, skipped = prepare_points(fields, vs_library, dispersion, cfg, settings)
 
     base_dir = Path(cfg.paths.output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
     writer = FortranInputWriter(base_dir, cfg)
 
-    written = 0
-    iterator = enumerate(prepared)
-    for index, (point, bounds) in progress_iter(
-        iterator, total=len(prepared), desc="Preparing MCMC", unit="grid"
+    for prepared_point in progress_iter(
+        prepared, total=len(prepared), desc="Preparing MCMC", unit="grid"
     ):
-        phase = dispersion.curve_at(index)
-        written += int(writer.write_point(point, phase, bounds, plot=plot, dpi=dpi))
+        writer.write_point(
+            prepared_point.point, prepared_point.rows, prepared_point.bounds
+        )
 
-    skipped = len(prepared) - written
+    if plot:
+        plot_grids(
+            base_dir,
+            folder_names=[entry.point.folder_name for entry in prepared],
+            dpi=dpi,
+        )
+
+    written = len(prepared)
     summary = f"MCMC grids initialized. Written grids: {written}/{fields.size}"
     if skipped:
-        summary += f" (skipped {skipped})"
+        summary += f" (skipped {len(skipped)})"
     print(summary)
+
+
+def plot_grids(
+    output_dir: str | Path,
+    *,
+    folder_names: Sequence[str] | None = None,
+    dpi: int = 300,
+) -> int:
+    """Redraw every point.png from its written directory.
+
+    Reads point.json, prior_bounds.csv and phase.input, so no source grids or
+    configuration are needed. Passing folder_names limits the work to those
+    directories; otherwise every directory holding a point.json is redrawn. A
+    per-point failure is printed and does not stop the other points. Returns the
+    number of figures written.
+    """
+
+    from seispy.mcmc.plotting import plot_point_dir
+
+    base = Path(output_dir)
+    if not base.is_dir():
+        raise ValueError(f"Output directory does not exist: {base}")
+    if folder_names is None:
+        candidates = sorted(
+            path.name for path in base.iterdir() if (path / "point.json").is_file()
+        )
+    else:
+        candidates = list(folder_names)
+
+    written = 0
+    for name in progress_iter(
+        candidates, total=len(candidates), desc="Plotting MCMC", unit="grid"
+    ):
+        directory = base / name
+        if not (directory / "point.json").is_file():
+            continue
+        try:
+            plot_point_dir(directory, dpi=dpi)
+        except Exception as exc:
+            print(f"[PLOT] {name}: {exc}")
+            continue
+        written += 1
+    return written
 
 
 def main(argv: Sequence[str] | None = None) -> None:

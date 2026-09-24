@@ -5,12 +5,13 @@ import pandas as pd
 import pytest
 
 from seispy.mcmc.config import load_config
+from seispy.mcmc.dispersion import DispersionGrid
 from seispy.mcmc.gridding import TargetGrid
 from seispy.mcmc.inputs import coordinate_pair_key
 from seispy.mcmc.priors import PriorSettings
 from seispy.mcmc.spatial import SpatialFields
 from seispy.mcmc.velocity import VsModelLibrary, VsProfile
-from seispy.mcmc.workflow import init_grids, prepare_points
+from seispy.mcmc.workflow import init_grids, plot_grids, prepare_points
 
 REGION = [0.0, 1.0, 0.0, 1.0]
 NODES = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
@@ -18,6 +19,15 @@ NODES = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
 
 def _profile(lon, lat, depths=(0.0, 10.0, 300.0), vs=(3.0, 3.4, 4.7)):
     return VsProfile(lon, lat, np.asarray(depths), np.asarray(vs))
+
+
+def _stub_dispersion(target, value=3.5, sigma=0.03):
+    shape = (1,) + target.shape
+    return DispersionGrid(
+        periods=np.array([10.0]),
+        velocities=np.full(shape, value),
+        sigmas=np.full(shape, sigma),
+    )
 
 
 def _write_synthetic_inputs(tmp_path):
@@ -47,7 +57,10 @@ def _write_synthetic_inputs(tmp_path):
         }
     ).to_csv(moho, index=False)
 
-    rows = [(n[0], n[1], z, 3.0 + 0.1 * z) for n in NODES for z in (0.0, 10.0, 300.0)]
+    # Geologically plausible layered profile: upper crust, lower crust and a
+    # Moho step into the uppermost mantle.
+    layers = ((0.0, 3.0), (10.0, 3.4), (40.0, 3.9), (40.1, 4.5), (300.0, 4.6))
+    rows = [(n[0], n[1], z, vs) for n in NODES for z, vs in layers]
     pd.DataFrame(rows, columns=["lon", "lat", "z", "vs"]).to_csv(reference, index=False)
 
     periods = np.arange(5.0, 11.0)
@@ -120,6 +133,7 @@ def test_init_grids_writes_one_directory_per_point(tmp_path):
             "input_DRAM_T.dat",
             "para.inp",
             "phase.input",
+            "point.json",
             "prior_bounds.csv",
         ]
         assert (point_dir / "phase.input").read_text().count("\n2 1 1") == 6
@@ -146,6 +160,30 @@ def test_init_grids_writes_per_point_figure(tmp_path):
     assert figure.is_file() and figure.stat().st_size > 0
 
 
+def test_plot_grids_redraws_from_written_directories(tmp_path):
+    pytest.importorskip("matplotlib")
+    config_path = _write_synthetic_inputs(tmp_path)
+    init_grids(config_path)
+    figure = tmp_path / "grids" / "0.00_0.00" / "point.png"
+    assert not figure.exists()
+
+    assert plot_grids(tmp_path / "grids") == len(NODES)
+    assert figure.is_file() and figure.stat().st_size > 0
+
+
+def test_plot_grids_reports_a_broken_point_without_losing_inputs(tmp_path, monkeypatch):
+    pytest.importorskip("matplotlib")
+    config_path = _write_synthetic_inputs(tmp_path)
+    init_grids(config_path)
+
+    def boom(directory, *, dpi=300):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("seispy.mcmc.plotting.plot_point_dir", boom)
+    assert plot_grids(tmp_path / "grids") == 0
+    assert (tmp_path / "grids" / "0.00_0.00" / "para.inp").is_file()
+
+
 def _stub_fields(target, moho=40.0):
     shape = target.shape
     return SpatialFields(
@@ -170,7 +208,9 @@ def test_prepare_points_reports_colliding_folder_names(write_mcmc_config):
     settings = PriorSettings.from_config(cfg)
 
     with pytest.raises(ValueError, match="collide after two-decimal formatting"):
-        prepare_points(_stub_fields(target), library, cfg, settings)
+        prepare_points(
+            _stub_fields(target), library, _stub_dispersion(target), cfg, settings
+        )
 
 
 def test_prepare_points_reports_missing_profiles(write_mcmc_config):
@@ -182,7 +222,9 @@ def test_prepare_points_reports_missing_profiles(write_mcmc_config):
     settings = PriorSettings.from_config(cfg)
 
     with pytest.raises(ValueError, match="missing 3 inversion-grid profiles"):
-        prepare_points(_stub_fields(target), library, cfg, settings)
+        prepare_points(
+            _stub_fields(target), library, _stub_dispersion(target), cfg, settings
+        )
 
 
 def test_prepare_points_reports_shallow_profiles(write_mcmc_config):
@@ -200,4 +242,6 @@ def test_prepare_points_reports_shallow_profiles(write_mcmc_config):
     settings = PriorSettings.from_config(cfg)
 
     with pytest.raises(ValueError, match="below zmax_Bs"):
-        prepare_points(_stub_fields(target), library, cfg, settings)
+        prepare_points(
+            _stub_fields(target), library, _stub_dispersion(target), cfg, settings
+        )

@@ -471,7 +471,7 @@ def test_vs_library_aligns_to_the_inversion_grid(tmp_path):
     lon = np.arange(0.0, 1.01, 0.25)
     lat = np.arange(0.0, 1.01, 0.25)
     rows = [
-        (lo, la, z, 3.0 + 0.2 * lo + 0.1 * z)
+        (lo, la, z, 3.0 + 0.1 * lo + 0.02 * z)
         for la in lat
         for lo in lon
         for z in (0.0, 10.0, 20.0)
@@ -480,13 +480,13 @@ def test_vs_library_aligns_to_the_inversion_grid(tmp_path):
     pd.DataFrame(rows, columns=["lon", "lat", "z", "vs"]).to_csv(path, index=False)
 
     identity = VsModelLibrary.from_file(path, target=_target(spacing=0.25))
-    np.testing.assert_allclose(identity.profile_at(0.0, 0.0).vs, [3.0, 4.0, 5.0])
+    np.testing.assert_allclose(identity.profile_at(0.0, 0.0).vs, [3.0, 3.2, 3.4])
 
     aligned = VsModelLibrary.from_file(path, target=_target(spacing=0.5))
     assert len(aligned.profiles) == 9
     profile = aligned.profile_at(0.5, 0.5)
     np.testing.assert_allclose(profile.depth, [0.0, 10.0, 20.0])
-    np.testing.assert_allclose(profile.vs, [3.1, 4.1, 5.1])
+    np.testing.assert_allclose(profile.vs, [3.05, 3.25, 3.45])
 
 
 def test_vs_library_profile_at_reports_grid_coordinate(tmp_path):

@@ -148,12 +148,6 @@ def test_sediment_centres_must_increase_at_load(write_mcmc_config):
         load_config(config_path)
 
 
-@pytest.mark.parametrize("cap", [float("nan"), float("inf"), 0.0, 0.5, 5.0])
-def test_invalid_crust_cap_is_rejected(cap):
-    with pytest.raises(ValueError, match="crust_vs_max"):
-        VsConstraints(crust_vs_max=cap)
-
-
 def test_vs_constraints_cannot_relax_fortran_limits():
     assert VsConstraints().global_vs_max == FORTRAN_VS_MAX
     assert VsConstraints().no_shallow_layers_vs_min == FORTRAN_VS_MIN
@@ -166,11 +160,12 @@ def test_vs_constraints_cannot_relax_fortran_limits():
         VsConstraints(deepest_vs_min=3.9)
 
 
-def test_moho_vs_jump_defaults_to_zero_and_is_validated():
+def test_moho_vs_jump_defaults_to_zero_and_is_ignored():
     assert VsConstraints().moho_vs_jump == 0.0
-    for jump in (-0.1, float("nan"), FORTRAN_VS_MAX, 5.0):
-        with pytest.raises(ValueError, match="moho_vs_jump"):
-            VsConstraints(moho_vs_jump=jump)
+    # Deprecated and no longer validated: a nonzero value only warns.
+    with pytest.warns(DeprecationWarning, match="moho_vs_jump"):
+        constraints = VsConstraints(moho_vs_jump=5.0)
+    assert constraints.moho_vs_jump == 5.0
 
 
 def test_mcmc_params_validation(write_mcmc_config):

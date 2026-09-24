@@ -13,7 +13,7 @@ import numpy as np
 
 from seispy.mcmc.dispersion import DispersionCurve
 from seispy.mcmc.inversion import InversionPoint
-from seispy.mcmc.priors import PointPriorBounds
+from seispy.mcmc.priors import PointPriorBounds, reconstruct_initial_model
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -24,6 +24,7 @@ MANTLE_COLOR = "#D55E00"
 SEDIMENT_COLOR = "#009E73"
 WATER_COLOR = "#56B4E9"
 DISPERSION_COLOR = "#0072B2"
+INITIAL_COLOR = "#6A3D9A"
 
 
 def plot_dispersion(
@@ -92,9 +93,13 @@ def plot_model(
     *,
     show_reference: bool = True,
 ) -> Axes:
-    """Plot Greville Vs search intervals against depth for one point.
+    """Plot Vs search intervals against depth for one point.
 
-    ``bounds`` must be the final, clipped bounds from
+    Each coefficient interval is placed at its basis centroid, the depth where
+    its basis function actually carries its weight, rather than at the Greville
+    label; that is where reading a coefficient as a local velocity is
+    meaningful, especially across the Moho. ``bounds`` must be the final,
+    clipped bounds from
     :func:`seispy.mcmc.priors.compute_point_bounds`, so the figure matches the
     numbers written to ``para.inp``.
     """
@@ -110,7 +115,7 @@ def plot_model(
     ):
         if not points:
             continue
-        depth = np.array([bound.representative_depth for bound in points])
+        depth = np.array([bound.basis_centroid for bound in points])
         center = np.array([bound.effective_center_vs for bound in points])
         lower = np.array([bound.lower for bound in points])
         upper = np.array([bound.upper for bound in points])
@@ -161,6 +166,16 @@ def plot_model(
             label="reference",
         )
 
+    model_depth, model_vs = reconstruct_initial_model(point, bounds)
+    ax.plot(
+        model_vs,
+        model_depth,
+        color=INITIAL_COLOR,
+        linewidth=1.2,
+        linestyle="--",
+        label="initial spline",
+    )
+
     if point.water_on:
         ax.axhspan(0.0, point.water_depth, color=WATER_COLOR, alpha=0.20, zorder=0)
         ax.axhline(point.water_depth, color=WATER_COLOR, linewidth=1.0, linestyle="--")
@@ -201,6 +216,25 @@ def plot_model(
     if limits:
         ax.set_xlim(left=0.0, right=1.05 * max(limits))
     ax.invert_yaxis()
+    labels = [
+        f"{section} fit err {diagnostics.projection_max_error:.3f} km/s"
+        for section, diagnostics in (
+            ("crust", bounds.crust_diagnostics),
+            ("mantle", bounds.mantle_diagnostics),
+        )
+        if diagnostics.projection_max_error is not None
+    ]
+    if labels:
+        ax.text(
+            0.02,
+            0.5,
+            " | ".join(labels),
+            transform=ax.transAxes,
+            ha="left",
+            va="center",
+            fontsize=8,
+            color="0.35",
+        )
     ax.set_xlabel("Vs (km/s)")
     ax.set_ylabel("Depth (km)")
     ax.set_title(point.folder_name)
@@ -236,3 +270,37 @@ def plot_point(
     if output_file is not None:
         figure.savefig(output_file, dpi=dpi)
     return figure, (ax_dispersion, ax_model)
+
+
+def plot_point_dir(
+    point_dir: str | Path,
+    *,
+    output_file: str | Path | None = None,
+    dpi: int = 300,
+    default_sigma: float | None = None,
+    log_period: bool = False,
+) -> Path:
+    """Redraw point.png from a written point directory.
+
+    Reads point.json, prior_bounds.csv and phase.input, so no source grids or
+    configuration are needed. Returns the figure path.
+    """
+
+    import matplotlib.pyplot as plt
+
+    from seispy.mcmc.point_io import load_point_plot_data
+
+    directory = Path(point_dir)
+    point, bounds, curve = load_point_plot_data(directory)
+    target = Path(output_file) if output_file is not None else directory / "point.png"
+    figure, _ = plot_point(
+        point,
+        curve,
+        bounds,
+        default_sigma=default_sigma,
+        log_period=log_period,
+        output_file=target,
+        dpi=dpi,
+    )
+    plt.close(figure)
+    return target

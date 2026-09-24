@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,19 +214,17 @@ class VsConstraints:
     extrapolation from the two shallowest reference samples; deep extrapolation
     is never used during bound construction.
 
-    These fields describe executable limits, an optional tighter crustal prior
-    cap, and the extrapolation policy. The crustal cap is an empirical modeling
-    choice, not a universal physical limit. Half-widths remain in search_radius.
+    These fields describe executable limits and the extrapolation policy.
+    Half-widths remain in search_radius.
 
     ``moho_strict_margin`` is only the numerical separation the initial model
-    must respect; ``moho_vs_jump`` is the expected physical Vs contrast across
-    the Moho, split symmetrically between the last crustal and first mantle
-    coefficient. Zero keeps both coefficients centred on the continuous
-    reference value, which is the pre-existing behaviour.
+    must respect. ``moho_vs_jump`` is deprecated and ignored: the least-squares
+    projection centres already reproduce the reference model's own Moho
+    contrast, so no synthetic jump is needed. A nonzero value only emits a
+    DeprecationWarning.
     """
 
     global_vs_max: float = FORTRAN_VS_MAX
-    crust_vs_max: float = 4.3
     no_shallow_layers_vs_min: float = FORTRAN_VS_MIN
     deepest_vs_min: float = FORTRAN_DEEPEST_VS_MIN
     moho_strict_margin: float = 0.001
@@ -236,11 +235,9 @@ class VsConstraints:
     def __post_init__(self) -> None:
         limits = (
             ("global_vs_max", self.global_vs_max),
-            ("crust_vs_max", self.crust_vs_max),
             ("no_shallow_layers_vs_min", self.no_shallow_layers_vs_min),
             ("deepest_vs_min", self.deepest_vs_min),
             ("moho_strict_margin", self.moho_strict_margin),
-            ("moho_vs_jump", self.moho_vs_jump),
         )
         for name, value in limits:
             value = float(value)
@@ -273,11 +270,6 @@ class VsConstraints:
             raise ValueError(
                 "vs_constraints.no_shallow_layers_vs_min must be below global_vs_max"
             )
-        if not self.no_shallow_layers_vs_min < self.crust_vs_max <= FORTRAN_VS_MAX:
-            raise ValueError(
-                "vs_constraints.crust_vs_max must exceed no_shallow_layers_vs_min "
-                f"and cannot exceed the Fortran limit {FORTRAN_VS_MAX}"
-            )
         if self.deepest_vs_min > self.global_vs_max:
             raise ValueError("vs_constraints.deepest_vs_min must be <= global_vs_max")
         if self.deepest_vs_min < FORTRAN_DEEPEST_VS_MIN:
@@ -287,9 +279,14 @@ class VsConstraints:
             )
         if self.moho_strict_margin <= 0:
             raise ValueError("vs_constraints.moho_strict_margin must be > 0")
-        if self.moho_vs_jump >= self.global_vs_max:
-            raise ValueError(
-                "vs_constraints.moho_vs_jump must be smaller than global_vs_max"
+        object.__setattr__(self, "moho_vs_jump", float(self.moho_vs_jump))
+        if self.moho_vs_jump != 0:
+            warnings.warn(
+                "vs_constraints.moho_vs_jump is deprecated and ignored: the "
+                "least-squares projection centres already reproduce the "
+                "reference Moho contrast.",
+                DeprecationWarning,
+                stacklevel=2,
             )
 
 

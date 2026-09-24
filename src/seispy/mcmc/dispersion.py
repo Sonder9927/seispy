@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,20 @@ from seispy.mcmc.inputs import (
 )
 
 
+class DispersionRow(NamedTuple):
+    """One dispersion sample that can be written to phase.input.
+
+    Attributes:
+        period: Surface-wave period in seconds.
+        velocity: Phase velocity in km/s.
+        sigma: One-sigma uncertainty in km/s.
+    """
+
+    period: float
+    velocity: float
+    sigma: float
+
+
 @dataclass(frozen=True)
 class DispersionCurve:
     """Observed phase velocity and one-sigma uncertainty against period."""
@@ -40,11 +55,20 @@ class DispersionCurve:
     def __len__(self) -> int:
         return len(self.periods)
 
-    def valid_rows(self, default_sigma: float) -> list[tuple[float, float, float]]:
-        """Return rows that can be safely written to ``phase.input``.
+    def valid_rows(self, default_sigma: float) -> list[DispersionRow]:
+        """Return rows that can be safely written to phase.input.
 
         A row with a non-finite period or velocity is dropped. A non-finite or
-        non-positive sigma is replaced by ``default_sigma``.
+        non-positive sigma is replaced by default_sigma.
+
+        Args:
+            default_sigma: Replacement uncertainty in km/s; must be positive.
+
+        Returns:
+            Usable dispersion rows in input order.
+
+        Raises:
+            ValueError: If default_sigma is not positive and finite.
         """
 
         if not np.isfinite(default_sigma) or default_sigma <= 0:
@@ -52,7 +76,7 @@ class DispersionCurve:
                 f"default_sigma must be positive and finite, got {default_sigma}"
             )
 
-        valid: list[tuple[float, float, float]] = []
+        valid: list[DispersionRow] = []
         for period, velocity, sigma in zip(
             self.periods, self.velocities, self.sigmas, strict=True
         ):
@@ -60,8 +84,30 @@ class DispersionCurve:
                 continue
             if not np.isfinite(sigma) or sigma <= 0:
                 sigma = default_sigma
-            valid.append((float(period), float(velocity), float(sigma)))
+            valid.append(DispersionRow(float(period), float(velocity), float(sigma)))
         return valid
+
+
+def valid_dispersion_rows(
+    curve: DispersionCurve,
+    cfg: Config,
+) -> list[DispersionRow] | None:
+    """Return the rows to write, or None when the point must be skipped.
+
+    Args:
+        curve: Aligned dispersion curve for one grid point.
+        cfg: Configuration providing the default sigma and phase constraints.
+
+    Returns:
+        The filtered rows, or None when there are too few valid periods and
+        skip_if_insufficient is set.
+    """
+
+    rows = curve.valid_rows(default_sigma=float(cfg.default_phase_std))
+    minimum = int(cfg.phase_constraints.minimum_periods)
+    if cfg.phase_constraints.skip_if_insufficient and len(rows) < minimum:
+        return None
+    return rows
 
 
 @dataclass(frozen=True, eq=False)

@@ -9,21 +9,25 @@ from seispy.mcmc.bspline import (
     basis_matrix,
     fortran_knot_vector,
     greville_depths,
+    node_matrix,
 )
 from seispy.mcmc.config import SearchRadius, VsConstraints, load_config
-from seispy.mcmc.dispersion import DispersionCurve
+from seispy.mcmc.dispersion import DispersionCurve, valid_dispersion_rows
 from seispy.mcmc.inversion import build_inversion_point
 from seispy.mcmc.priors import (
+    LayerSpec,
     PriorBound,
     PriorSettings,
-    _apply_vs_limits,
-    _constrain_deepest,
+    _model_space_window,
+    _projection_centers,
     _repair_moho_jump,
-    _section_limits,
     _sediment_bounds,
     compute_point_bounds,
+    greville_reference_centers,
     minimum_vs,
+    reconstruct_initial_model,
 )
+from seispy.mcmc.plotting import plot_point_dir
 from seispy.mcmc.serialization import FortranInputWriter
 from seispy.mcmc.velocity import VsProfile
 
@@ -45,8 +49,13 @@ def _settings(vc: VsConstraints | None = None, **overrides) -> PriorSettings:
 
 def _write(cfg, point, phase, base, *, plot=False):
     bounds = compute_point_bounds(point, PriorSettings.from_config(cfg))
-    written = FortranInputWriter(base, cfg).write_point(point, phase, bounds, plot=plot)
-    return written, bounds
+    rows = valid_dispersion_rows(phase, cfg)
+    if rows is None:
+        return False, bounds
+    FortranInputWriter(base, cfg).write_point(point, rows, bounds)
+    if plot:
+        plot_point_dir(base / point.folder_name)
+    return True, bounds
 
 
 # =========================
@@ -148,20 +157,24 @@ def test_writer_records_shallow_extrapolated_prior_centers(
         sigmas=np.full(5, 0.03),
     )
 
-    written, _ = _write(cfg, point, phase, tmp_path / "grids")
+    written, point_bounds = _write(cfg, point, phase, tmp_path / "grids")
     assert written
     bounds = pd.read_csv(tmp_path / "grids" / "0.00_0.00" / "prior_bounds.csv")
     crust = bounds[bounds["section"] == "crust"]
     mantle = bounds[bounds["section"] == "mantle"]
+    # The first crustal Greville label sits above the reference coverage.
     assert crust.iloc[0]["shallow_extrapolated"] == 1
     assert crust.iloc[1:]["shallow_extrapolated"].eq(0).all()
     assert mantle["shallow_extrapolated"].eq(0).all()
-    assert bounds["upper_km_s"].le(4.9).all()
+    # The admissible Vs domain is enforced on the reconstructed model, not on
+    # each coefficient, so a coefficient upper bound may pass 4.9.
+    model_depth, model_vs = reconstruct_initial_model(point, point_bounds)
+    assert model_vs.max() <= 4.9 + 1e-9
     assert bounds["lower_km_s"].ge(0.5).all()
     assert mantle.iloc[-1]["lower_km_s"] >= 4.0
     assert (
-        mantle.iloc[0]["effective_center_vs_km_s"]
-        > crust.iloc[-1]["effective_center_vs_km_s"]
+        mantle.iloc[0]["initial_midpoint_vs_km_s"]
+        > crust.iloc[-1]["initial_midpoint_vs_km_s"]
     )
 
 
@@ -214,76 +227,66 @@ def test_writer_writes_one_sediment_parameter_per_interval(
 
 
 @pytest.mark.parametrize(
-    "half_widths,centers,expected_ranges",
+    "crust_vs,mantle_vs,expected",
     [
-        (None, (3.9, 4.0), ((3.600, 4.200), (3.800, 4.200))),
-        (None, (3.9, 4.95), ((3.600, 4.200), (4.750, 4.900))),
-        (None, (4.1, 4.5), ((3.800, 4.300), (4.300, 4.700))),
-        (None, (4.4, 4.5), ((4.100, 4.300), (4.300, 4.700))),
+        (None, None, {"crust": [0.30] * 4, "mantle": [0.20] * 5}),
+        (0.1, 0.1, {"crust": [0.1] * 4, "mantle": [0.1] * 5}),
         (
-            {"crust_vs": 0.1, "mantle_vs": 0.1},
-            (3.9, 4.0),
-            ((3.800, 4.000), (3.900, 4.100)),
+            [0.05, 0.10, 0.15, 0.20],
+            0.1,
+            {"crust": [0.05, 0.10, 0.15, 0.20], "mantle": [0.1] * 5},
         ),
-        (None, (4.85, 4.85), ((3.700, 4.300), (4.650, 4.900))),
     ],
 )
-def test_configured_half_widths_reach_para_and_preserve_reference_centers(
-    tmp_path, write_mcmc_config, half_widths, centers, expected_ranges
+def test_configured_half_widths_reach_para_with_projection_centers(
+    tmp_path, write_mcmc_config, make_profile, crust_vs, mantle_vs, expected
 ):
     config_path = write_mcmc_config()
     raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["search_radius"] = {"sediment": 0.2, "moho": 1.0, **(half_widths or {})}
+    radius = {"sediment": 0.2, "moho": 1.0}
+    if crust_vs is not None:
+        radius["crust_vs"] = crust_vs
+    if mantle_vs is not None:
+        radius["mantle_vs"] = mantle_vs
+    raw["search_radius"] = radius
     config_path.write_text(json.dumps(raw), encoding="utf-8")
     cfg = load_config(config_path)
-    if half_widths is None:
-        assert cfg.search_radius.crust_vs == 0.30
-        assert cfg.search_radius.mantle_vs == 0.20
+    settings = PriorSettings.from_config(cfg)
 
-    depths = np.concatenate(
-        (
-            [0.0],
-            greville_depths(4, 0.0, 40.0, 2.0),
-            greville_depths(5, 40.0, 300.0, 2.0),
-            [300.0],
-        )
-    )
-    profile = VsProfile(
-        lon=0.0,
-        lat=0.0,
-        depth=depths,
-        vs=np.array([3.0, 3.0, 3.3, 3.6, *centers, 4.4, 4.5, 4.6, 4.7, 4.7]),
-    )
-    point = build_inversion_point(0.0, 0.0, 0.0, 0.0, 40.0, profile, cfg)
+    point = build_inversion_point(0.0, 0.0, 0.0, 0.0, 40.0, make_profile(), cfg)
     phase = DispersionCurve(
         np.arange(10.0, 60.0, 10.0), np.full(5, 3.5), np.full(5, 0.03)
     )
     assert _write(cfg, point, phase, tmp_path / "grids")[0]
+    audit = pd.read_csv(tmp_path / "grids" / point.folder_name / "prior_bounds.csv")
 
-    output = tmp_path / "grids" / point.folder_name
-    rows = {
-        tuple(parts[:2]): tuple(map(float, parts[2:]))
-        for line in (output / "para.inp").read_text(encoding="utf-8").splitlines()
-        if len(parts := line.split()) == 4
-    }
-    audit = pd.read_csv(output / "prior_bounds.csv")
-    for key, section, coefficient, reference, expected in zip(
-        [("1", "4"), ("2", "1")],
-        ["crust", "mantle"],
-        [4, 1],
-        centers,
-        expected_ranges,
-        strict=True,
+    for section, z_top, z_bottom in (
+        ("crust", point.crustal_spline_top, point.moho_depth),
+        ("mantle", point.moho_depth, point.max_depth),
     ):
-        np.testing.assert_allclose(rows[key], expected)
-        bound = audit[
-            (audit["section"] == section) & (audit["coefficient"] == coefficient)
-        ].iloc[0]
-        assert bound["reference_vs_km_s"] == pytest.approx(reference)
-        assert bound["effective_center_vs_km_s"] == pytest.approx(sum(expected) / 2)
-        np.testing.assert_allclose(
-            [bound["lower_km_s"], bound["upper_km_s"]], rows[key]
+        rows = audit[audit["section"] == section]
+        np.testing.assert_allclose(rows["search_radius_km_s"], expected[section])
+        independent, _ = _projection_centers(
+            point, settings, settings.layer(section, z_top, z_bottom)
         )
+        # The audit CSV stores six decimals, so compare at that precision.
+        np.testing.assert_allclose(rows["center_vs_km_s"], independent, atol=1e-6)
+
+    para = {}
+    for line in (
+        (tmp_path / "grids" / point.folder_name / "para.inp")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ):
+        parts = line.split()
+        if len(parts) == 4 and parts[0] in {"1", "2"}:
+            para[(parts[0], int(parts[1]))] = (float(parts[2]), float(parts[3]))
+    for section, family in (("crust", "1"), ("mantle", "2")):
+        for _, row in audit[audit["section"] == section].iterrows():
+            assert para[(family, int(row["coefficient"]))] == (
+                pytest.approx(row["lower_km_s"]),
+                pytest.approx(row["upper_km_s"]),
+            )
 
 
 def test_grid_layer_thresholds_and_sediment_priority_reach_para(
@@ -361,7 +364,18 @@ def test_skipped_point_creates_no_folder_or_plot(
 def test_moho_midpoint_repair_keeps_search_space():
     def bound(section, limits):
         center = sum(limits) / 2
-        return PriorBound(section, 1, 40.0, center, center, 0.3, *limits)
+        return PriorBound(
+            section=section,
+            coefficient=1,
+            greville_depth=40.0,
+            basis_centroid=40.0,
+            reference_vs_at_centroid=center,
+            projection_vs=center,
+            center_vs=center,
+            search_radius=0.3,
+            lower=limits[0],
+            upper=limits[1],
+        )
 
     for crust_range, mantle_range, minimum in [
         ((3.6, 4.2), (3.8, 4.2), 0.5),
@@ -384,95 +398,53 @@ def test_moho_midpoint_repair_keeps_search_space():
         for output, original in [(c, crust_range), (m, mantle_range)]:
             assert minimum <= output.lower < output.upper <= 4.9
             assert output.upper - output.lower <= original[1] - original[0] + 1e-12
-            assert output.reference_vs == sum(original) / 2
+            assert output.reference_vs_at_centroid == sum(original) / 2
         if sum(mantle_range) - sum(crust_range) >= 0.002:
             assert (c.lower, c.upper) == crust_range
             assert (m.lower, m.upper) == mantle_range
 
 
-@pytest.mark.parametrize(
-    "center,radius,minimum,expected",
-    [
-        (4.8, 0.2, 0.5, (4.6, 4.9)),
-        (4.9, 0.2, 0.5, (4.7, 4.9)),
-        (4.95, 0.2, 0.5, (4.75, 4.9)),
-        (5.1, 0.2, 0.5, (4.9, 4.9)),
-        (5.2, 0.2, 0.5, (4.5, 4.9)),
-        (0.6, 0.3, 0.5, (0.5, 0.9)),
-        (0.2, 0.3, 0.5, (0.5, 0.5)),
-        (0.4, 0.3, 0.5, (0.5, 0.7)),
-        (0.1, 0.3, 0.5, (0.5, 1.1)),
-        (0.2, 0.1, 0.0, (0.1, 0.3)),
-        (4.1234, 0.2, 0.5, (3.924, 4.323)),
-        (4.7, 0.2, 4.9, (4.9, 4.9)),
-    ],
-)
-def test_vs_windows_respect_inclusive_limits_and_output_precision(
-    center, radius, minimum, expected
-):
-    low, high = _apply_vs_limits(
-        np.array([center]),
-        np.array([radius]),
-        "mantle",
-        VsConstraints(),
-        minimum=minimum,
-        decimals=3,
+def _mantle_layer(half_width: float = 0.2) -> LayerSpec:
+    return LayerSpec(
+        section="mantle",
+        z_top=40.0,
+        z_bottom=300.0,
+        factor=2.0,
+        n_coeff=5,
+        n_nodes=20,
+        half_widths=np.full(5, half_width),
     )
-    np.testing.assert_allclose([low[0], high[0]], expected)
 
 
-@pytest.mark.parametrize(
-    "center,expected",
-    [
-        (4.1, (4.0, 4.3)),
-        (3.7, (4.0, 4.4)),
-        (3.9, (4.0, 4.1)),
-        (3.8, (4.0, 4.0)),
-        (4.95, (4.75, 4.9)),
-        (4.0, (4.0, 4.2)),
-        (4.9, (4.7, 4.9)),
-    ],
-)
-def test_deepest_window_does_not_unnecessarily_raise_upper_bound(center, expected):
-    settings = _settings()
-    low, high = _apply_vs_limits(
-        np.array([center]),
-        np.array([0.2]),
-        "mantle",
-        settings.vs_constraints,
-        minimum=0.5,
-        decimals=3,
+def test_model_space_window_keeps_interior_coefficients_past_the_limit():
+    raw = np.array([4.342, 4.928, 3.545, 4.832, 4.565])
+    layer = _mantle_layer()
+    matrix = node_matrix(5, 40.0, 300.0, 2.0, 20)
+
+    clipped, lower, upper, _, upper_scale = _model_space_window(
+        layer, raw, minimum=0.5, deepest_min=4.0, model_max=4.9
     )
-    bound = PriorBound(
-        "mantle", 5, 300.0, center, (low[0] + high[0]) / 2, 0.2, low[0], high[0]
-    )
-    adjusted = _constrain_deepest((bound,), settings)[0]
-    np.testing.assert_allclose([adjusted.lower, adjusted.upper], expected)
-    assert adjusted.reference_vs == center
+    # An out-of-domain projection is clipped into the admissible domain ...
+    assert clipped[1] == pytest.approx(4.9)
+    # ... while an interior window may still pass the model limit ...
+    assert upper_scale > 0.0
+    assert (upper > 4.9).any()
+    # ... as long as the whole reconstructed box stays inside it.
+    assert float((matrix @ upper).max()) <= 4.9 + 1e-12
+    assert float((matrix @ lower).min()) >= 0.5 - 1e-12
 
 
-@pytest.mark.parametrize(
-    "cap,global_cap,expected",
-    [
-        (4.3, 4.9, (3.8, 4.3)),
-        (4.0, 4.9, (3.8, 4.0)),
-        (4.9, 4.9, (3.8, 4.4)),
-        (4.3, 4.2, (3.8, 4.2)),
-    ],
-)
-def test_crust_cap_is_configurable_and_respects_global_cap(cap, global_cap, expected):
-    constraints = VsConstraints(crust_vs_max=cap, global_vs_max=global_cap)
-    low, high = _apply_vs_limits(
-        np.array([4.1]),
-        np.array([0.3]),
-        "crust",
-        constraints,
-        minimum=0.5,
-        decimals=3,
+def test_model_space_window_scales_an_infeasible_box():
+    centers = np.array([4.739, 4.817, 2.957, 5.448, 4.587])
+    layer = _mantle_layer()
+    matrix = node_matrix(5, 40.0, 300.0, 2.0, 20)
+
+    _, lower, upper, _, upper_scale = _model_space_window(
+        layer, centers, minimum=0.5, deepest_min=4.0, model_max=4.9
     )
-    np.testing.assert_allclose([low[0], high[0]], expected)
-    for section in ("mantle", "sediment"):
-        assert _section_limits(section, constraints)[1] == global_cap
+    assert upper_scale < 1.0
+    assert float((matrix @ upper).max()) <= 4.9 + 1e-12
+    assert float((matrix @ lower).min()) >= 0.5 - 1e-12
 
 
 def test_sediment_intervals_may_overlap_when_centres_increase(write_mcmc_config):
@@ -520,51 +492,115 @@ def _interface_point(cfg, make_profile):
     return build_inversion_point(0.0, 0.0, 0.0, 0.0, 40.0, make_profile(), cfg)
 
 
-def test_moho_vs_jump_separates_the_interface_coefficients(
-    write_mcmc_config, make_profile
-):
-    cfg = _interface_config(write_mcmc_config, 0.3)
-    bounds = compute_point_bounds(
-        _interface_point(cfg, make_profile), PriorSettings.from_config(cfg)
-    )
-
-    # Reference=4.2 at the Moho, so the pair is centred on 4.05 / 4.35.
-    assert bounds.crust[-1].reference_vs == pytest.approx(4.05, abs=1e-9)
-    assert bounds.mantle[0].reference_vs == pytest.approx(4.35, abs=1e-9)
-    assert bounds.moho_contrast == pytest.approx(0.3, abs=1e-6)
-    # The two windows are now genuinely distinct rather than near-duplicates.
-    assert bounds.mantle[0].lower > bounds.crust[-1].lower
-
-
-def test_zero_moho_vs_jump_keeps_the_shared_interface_centre(
-    write_mcmc_config, make_profile
-):
+def test_projection_centers_do_not_invent_a_moho_jump(write_mcmc_config, make_profile):
     cfg = _interface_config(write_mcmc_config, 0.0)
     bounds = compute_point_bounds(
         _interface_point(cfg, make_profile), PriorSettings.from_config(cfg)
     )
-
-    # Both coefficients still sample the continuous reference at the Moho, so
-    # only the numerical strict-jump margin separates their midpoints.
-    assert abs(bounds.mantle[0].reference_vs - bounds.crust[-1].reference_vs) < 0.01
+    # make_profile is continuous across the Moho (4.2 km/s on both sides), so
+    # the projection centres differ only by the strict-margin repair.
+    assert abs(bounds.crust[-1].center_vs - bounds.mantle[0].center_vs) < 0.01
     assert bounds.moho_contrast < 0.01
+
+
+def test_moho_vs_jump_is_deprecated_and_ignored(write_mcmc_config, make_profile):
+    zero = _interface_config(write_mcmc_config, 0.0)
+    with pytest.warns(DeprecationWarning, match="moho_vs_jump"):
+        jumped = _interface_config(write_mcmc_config, 0.3)
+    b_zero = compute_point_bounds(
+        _interface_point(zero, make_profile), PriorSettings.from_config(zero)
+    )
+    b_jump = compute_point_bounds(
+        _interface_point(jumped, make_profile), PriorSettings.from_config(jumped)
+    )
+    assert b_zero.crust == b_jump.crust
+    assert b_zero.mantle == b_jump.mantle
+
+
+def test_greville_reference_centers_is_deprecated(write_mcmc_config, make_profile):
+    cfg = load_config(write_mcmc_config())
+    settings = PriorSettings.from_config(cfg)
+    point = _interface_point(cfg, make_profile)
+    with pytest.warns(DeprecationWarning, match="greville_reference_centers"):
+        depths, centers = greville_reference_centers(
+            point,
+            settings,
+            z_top=point.crustal_spline_top,
+            z_bottom=point.moho_depth,
+            section="crust",
+        )
+    assert depths.shape == centers.shape == (4,)
+
+
+def test_projection_centers_represent_a_sharp_moho_reference(write_mcmc_config):
+    cfg = load_config(write_mcmc_config())
+    depths = np.array([0, 5, 10, 20, 34.9, 35.0, 35.1, 60, 80, 120, 200, 300])
+    vs = np.array([3.0, 3.3, 3.5, 3.6, 3.80, 3.80, 4.47, 4.49, 4.5, 4.5, 4.5, 4.6])
+    profile = VsProfile(0.0, 0.0, depths, vs)
+    point = build_inversion_point(0.0, 0.0, 0.0, 0.0, 35.0, profile, cfg)
+    bounds = compute_point_bounds(point, PriorSettings.from_config(cfg))
+
+    # The mantle-side reference (~4.47) must be inside the first mantle window.
+    # The old Greville centre was ~3.84, drawing a window near [3.64, 4.04] that
+    # excluded it.
+    assert bounds.mantle[0].lower <= 4.47 <= bounds.mantle[0].upper
+    assert bounds.crust[-1].center_vs < bounds.mantle[0].center_vs
+    assert bounds.moho_contrast > 0.5
+
+    model_depth, model_vs = reconstruct_initial_model(point, bounds)
+    assert float(np.interp(40.0, model_depth, model_vs)) > 4.0
+
+
+def test_compute_point_bounds_enforces_the_model_upper_limit(write_mcmc_config):
+    cfg = load_config(write_mcmc_config())
+    depths = np.array([0, 5, 20, 40, 41, 60, 80, 110, 150, 200, 300])
+    vs = np.array([3.0, 3.3, 3.6, 3.8, 4.7, 4.75, 4.6, 4.1, 3.9, 4.6, 4.8])
+    profile = VsProfile(0.0, 0.0, depths, vs)
+    point = build_inversion_point(0.0, 0.0, 0.0, 0.0, 40.0, profile, cfg)
+    settings = PriorSettings.from_config(cfg)
+    bounds = compute_point_bounds(point, settings)
+
+    matrix = node_matrix(
+        len(bounds.mantle),
+        point.moho_depth,
+        point.max_depth,
+        settings.factor,
+        settings.npts_mantle,
+    )
+    upper = np.array([b.upper for b in bounds.mantle])
+    lower = np.array([b.lower for b in bounds.mantle])
+    assert float((matrix @ upper).max()) <= 4.9 + 1e-9
+    assert float((matrix @ lower).min()) >= 0.5 - 1e-9
+    # The low-velocity zone pushes an interior projection past the model limit;
+    # that centre is clipped into the domain, while an interior window may still
+    # pass 4.9 as long as the reconstructed box stays inside it.
+    assert (upper > 4.9).any()
+    assert max(b.center_vs for b in bounds.mantle) <= 4.9 + 1e-9
 
 
 def test_prior_bounds_csv_records_basis_diagnostics(
     tmp_path, write_mcmc_config, make_profile
 ):
-    cfg = _interface_config(write_mcmc_config, 0.3)
+    cfg = _interface_config(write_mcmc_config, 0.0)
     point = _interface_point(cfg, make_profile)
     phase = DispersionCurve(
         np.arange(10.0, 60.0, 10.0), np.full(5, 3.5), np.full(5, 0.03)
     )
-    written, _ = _write(cfg, point, phase, tmp_path / "grids")
+    written, bounds = _write(cfg, point, phase, tmp_path / "grids")
     assert written
 
     audit = pd.read_csv(tmp_path / "grids" / point.folder_name / "prior_bounds.csv")
-    assert {"basis_centroid_km", "basis_mass_fraction", "moho_contrast_km_s"} <= set(
-        audit.columns
-    )
+    assert {
+        "greville_depth_km",
+        "basis_centroid_km",
+        "projection_vs_km_s",
+        "center_vs_km_s",
+        "reference_vs_at_centroid_km_s",
+        "initial_midpoint_vs_km_s",
+        "layer_projection_max_error_km_s",
+        "window_scale",
+        "moho_contrast_km_s",
+    } <= set(audit.columns)
 
     # Only the two interface coefficients carry the realized Moho contrast.
     boundary = audit[audit["moho_contrast_km_s"].notna()]
@@ -572,7 +608,9 @@ def test_prior_bounds_csv_records_basis_diagnostics(
         ("crust", 4),
         ("mantle", 1),
     }
-    np.testing.assert_allclose(boundary["moho_contrast_km_s"], 0.3, atol=1e-6)
+    np.testing.assert_allclose(
+        boundary["moho_contrast_km_s"], bounds.moho_contrast, atol=1e-9
+    )
 
     # Basis mass fractions are normalized per layer.
     for section in ("crust", "mantle"):
@@ -582,3 +620,5 @@ def test_prior_bounds_csv_records_basis_diagnostics(
     crust = audit[audit["section"] == "crust"]
     assert crust.iloc[0]["basis_mass_fraction"] < crust.iloc[1]["basis_mass_fraction"]
     assert crust.iloc[-1]["basis_mass_fraction"] < crust.iloc[-2]["basis_mass_fraction"]
+    # The projection is accurate on this smooth reference.
+    assert audit["layer_projection_max_error_km_s"].max() < 0.05

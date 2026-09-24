@@ -8,6 +8,7 @@ description: Generate per-grid inputs and collect completed inversion outputs.
 ## Interfaces
 
 - `mcmc.init_grids(config_file)` builds per-grid inversion inputs serially.
+- `mcmc.plot_grids(grids_dir)` redraws the per-point figures from the written files.
 - `mcmc.collect_results(src_dir, dest_dir)` collects completed outputs and prints a per-grid diagnostic table.
 
 **Input:** a JSON configuration and its referenced geophysical datasets.<br>
@@ -32,16 +33,22 @@ mcmc.init_grids(
 The workflow reads topography, sediment thickness, Moho depth, reference
 velocity models, and phase-dispersion data, then creates one inversion directory
 per valid grid point. Each directory holds `phase.input`, `para.inp`,
-`input_DRAM_T.dat`, and `prior_bounds.csv`; with `plot=True` it also contains a
-combined dispersion and Vs-model figure.
+`input_DRAM_T.dat`, `prior_bounds.csv`, and `point.json`; with `plot=True` it
+also contains a combined dispersion and Vs-model figure. Writing and plotting
+are separate phases, so a figure failure cannot lose inputs and the figures can
+be regenerated later:
 
-Set `vs_constraints.moho_vs_jump` to the expected Moho Vs contrast so the two
-interface coefficients are centred on a physical jump rather than on the same
-reference value; see
-[the Moho contrast prior](../api/mcmc.md#the-moho-contrast-prior).
+```python
+mcmc.plot_grids("output/grids")  # rebuild point.png from the written files
+```
 
-![Per-point figure at 122.00_33.50 with the Moho contrast prior applied:
-phase dispersion and Vs search intervals](../assets/mcmc-point-example.png)
+Prior centres are the least-squares projection of the reference profile into
+the Fortran coefficient space, so the two interface coefficients already carry
+the reference model's Moho contrast; no synthetic jump is needed. See
+[the Moho discontinuity and the interface coefficients](../api/mcmc.md#the-moho-discontinuity-and-the-interface-coefficients).
+
+![Per-point figure at 122.00_33.50: phase dispersion and Vs search intervals
+with projection centres](../assets/mcmc-point-example.png)
 
 A point with fewer valid dispersion rows than
 `phase_constraints.minimum_periods` is skipped before its directory is created,

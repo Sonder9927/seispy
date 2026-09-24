@@ -11,6 +11,10 @@ _EXPORTS = {
         "seispy.mcmc.collection",
         "collect_results",
     ),
+    "plot_grids": (
+        "seispy.mcmc.workflow",
+        "plot_grids",
+    ),
 }
 
 

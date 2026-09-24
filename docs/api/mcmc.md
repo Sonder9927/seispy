@@ -9,14 +9,16 @@ preparation never launches the external Fortran inversion:
 2. **Spatial fields** - topography, sediment and Moho are aligned to that grid.
 3. **Phase dispersion** - the long table or NetCDF cube is pivoted and aligned.
 4. **Reference Vs** - profiles are aligned, and every target node must have one.
-5. **Preflight** - every inversion point is built and its prior bounds are
-   validated before any output directory is created.
-6. **Write** - each valid point receives `phase.input`, `para.inp`,
-   `input_DRAM_T.dat`, and `prior_bounds.csv` (plus `point.png` when `plot=True`).
+5. **Preflight** - every inversion point is built, its prior bounds are
+   validated, and points with too few valid dispersion rows are skipped before
+   any output directory is created.
+6. **Write** - each accepted point receives `phase.input`, `para.inp`,
+   `input_DRAM_T.dat`, `prior_bounds.csv`, and `point.json`.
+7. **Plot** (optional) - `point.png` is redrawn from the written files, so
+   plotting is a separate phase that can be re-run with `mcmc.plot_grids`.
 
 All five products share one three-case alignment (copy / interpolate /
-aggregate); no external gridding tool is required. A point with too few valid
-dispersion rows is skipped before its directory is created.
+aggregate); no external gridding tool is required.
 
 ## Complete config.json example
 
@@ -52,11 +54,9 @@ working starting template. Unknown keys are rejected, so keep the spelling exact
   },
   "vs_constraints": {
     "global_vs_max": 4.9,
-    "crust_vs_max": 4.1,
     "no_shallow_layers_vs_min": 0.5,
     "deepest_vs_min": 4.0,
     "moho_strict_margin": 0.001,
-    "moho_vs_jump": 0.3,
     "allow_shallow_extrapolation": true,
     "max_shallow_extrapolation_km": 5.0
   },
@@ -113,7 +113,8 @@ Relative paths in `paths` are resolved against the directory containing
 `config.json`. In contrast, `reference_model` and `reference_water_model` are
 written verbatim into `para.inp`: make these Fortran reference files accessible
 from each inversion's working directory, or supply absolute paths. They are
-separate from `paths.vs_model_file`, which supplies the Greville search centers.
+separate from `paths.vs_model_file`, which supplies the reference profiles
+projected into the Fortran coefficient space.
 Input generation does not launch the external Fortran inversion.
 
 ### Top-level settings
@@ -147,7 +148,7 @@ Input generation does not launch the external Fortran inversion.
 | `paths.topography_file`       | Elevation/bathymetry grid (CSV, Parquet, NetCDF or XYZ).                                                                 |
 | `paths.sediment_file`         | Sediment-thickness grid.                                                                                                 |
 | `paths.moho_file`             | Moho-depth grid.                                                                                                         |
-| `paths.vs_model_file`         | Reference Vs model used to build the Greville search centres.                                                            |
+| `paths.vs_model_file`         | Reference Vs model used to build the coefficient-space search centres.                                                   |
 | `paths.phase_dispersion_file` | Phase-dispersion product: a regular lon/lat grid with one row per lon/lat/period, or a NetCDF `(period, lat, lon)` cube. |
 | `paths.output_dir`            | Directory that receives one sub-directory per inversion point.                                                           |
 
@@ -207,23 +208,22 @@ point uses `reference_model`, not `reference_water_model`.
 | --------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search_radius.sediment`                            | km   | Half-width around sediment thickness; the lower endpoint is clipped at zero.                                                                                                                                                                                        |
 | `search_radius.moho`                                | km   | Half-width around Moho depth. Choose it so the searched interface stays below the shallow layers and above the model bottom.                                                                                                                                        |
-| `search_radius.crust_vs`, `search_radius.mantle_vs` | km/s | Half-width around each Greville-interpolated reference Vs, **not a percentage or standard deviation**. Defaults are 0.3 and 0.2. A scalar applies to every coefficient; a list must have one value per coefficient.                                                 |
+| `search_radius.crust_vs`, `search_radius.mantle_vs` | km/s | Half-width around each least-squares-projected reference Vs coefficient, **not a percentage or standard deviation**. Defaults are 0.3 and 0.2. A scalar applies to every coefficient; a list must have one value per coefficient.                              |
 | `sediment_vs`                                       | km/s | Explicit `[lower, upper]` search intervals for the sediment parameters, not half-widths. The intervals may overlap; only their search centres must increase strictly. The example `[[0.2, 2.5], [0.5, 3.0]]` caps sediment Vs at 3 km/s with centres 1.35 and 1.75. |
-| `vs_constraints.global_vs_max`                      | km/s | Fortran upper limit, 4.9, covering crust, mantle and sediment; equality is allowed.                                                                                                                                                                                 |
-| `vs_constraints.crust_vs_max`                       | km/s | Configurable crustal prior cap, 4.3 here; an empirical choice rather than a universal physical bound.                                                                                                                                                               |
-| `vs_constraints.no_shallow_layers_vs_min`           | km/s | Lower bound 0.5 for the crust and mantle, applied only when water, sediment and ice are all disabled. It cannot be set below 0.5.                                                                                                                                   |
-| `vs_constraints.deepest_vs_min`                     | km/s | Lower bound 4.0 for the deepest mantle coefficient only, not the whole mantle; it cannot be set below 4.0.                                                                                                                                                          |
+| `vs_constraints.global_vs_max`                      | km/s | Fortran upper limit on the **reconstructed node velocity**, 4.9, covering crust, mantle and sediment; equality is allowed. Applied to the model, not to each coefficient.                                                                                          |
+| `vs_constraints.no_shallow_layers_vs_min`           | km/s | Lower bound 0.5 on the **reconstructed node velocity** for crust and mantle, applied only when water, sediment and ice are all disabled. It cannot be set below 0.5.                                                                                              |
+| `vs_constraints.deepest_vs_min`                     | km/s | Lower bound 4.0 for the deepest node, which is exactly the deepest mantle coefficient; it cannot be set below 4.0.                                                                                                                                                 |
 | `vs_constraints.moho_strict_margin`                 | km/s | Numerical separation of the first mantle and last crust **initial midpoints**. It does not force disjoint search intervals or prescribe the geological Moho contrast.                                                                                               |
-| `vs_constraints.moho_vs_jump`                       | km/s | Expected physical Vs contrast across the Moho, split symmetrically between the last crustal and first mantle coefficient. `0` keeps both centred on the continuous reference value; the example grid uses `0.3`. See [the Moho contrast prior](#the-moho-contrast-prior). |
+| `vs_constraints.moho_vs_jump`                       | km/s | **Deprecated and ignored.** Least-squares projection already reproduces the reference Moho contrast; a nonzero value only raises a `DeprecationWarning`.                                                                                                        |
 | `vs_constraints.allow_shallow_extrapolation`        | bool | Whether a finite shallow gap in the reference profile is filled by linear extrapolation from the two shallowest samples.                                                                                                                                            |
 | `vs_constraints.max_shallow_extrapolation_km`       | km   | Maximum shallow gap filled when extrapolation is enabled; `null` removes the gap limit.                                                                                                                                                                             |
 
 Bounds intersect the requested interval with the applicable limits; only a
 wholly out-of-domain interval triggers fallback translation. Consequently,
-Fortran's initial midpoint can differ from the reference center. For example,
+Fortran's initial midpoint can differ from the projection centre. For example,
 crust `4.1 +/- 0.3` becomes `[3.8, 4.3]`, while mantle
 `4.95 +/- 0.2` becomes `[4.75, 4.9]`. Inspect
-`prior_bounds.csv` for the original centers, final bounds, and
+`prior_bounds.csv` for the projection centres, final bounds, and
 initialization midpoints. The
 [prior-bound rules](#fortran-compatible-vs-prior-bounds) below explain Moho
 repair and output precision.
@@ -376,22 +376,23 @@ edges.
 | `spatial.py`       | Read and normalize topography, sediment and Moho fields onto the target grid.          |
 | `dispersion.py`    | Read phase dispersion and align it to a `(period, y, x)` cube.                         |
 | `velocity.py`      | Load reference Vs profiles and interpolate them at requested depths.                   |
-| `bspline.py`       | Reproduce the Fortran knot vector and Greville depths.                                 |
+| `bspline.py`       | Reproduce the Fortran knot vector, Greville depths and coefficient-space projection.   |
 | `inversion.py`     | The `InversionPoint` model and its layer/threshold logic.                              |
 | `priors.py`        | Pure computation of the final per-coefficient Vs prior bounds.                         |
-| `serialization.py` | Write `phase.input`, `para.inp`, `prior_bounds.csv` and `input_DRAM_T.dat`.            |
+| `serialization.py` | Write `phase.input`, `para.inp`, `prior_bounds.csv`, `point.json` and `input_DRAM_T.dat`. |
+| `point_io.py`      | Read a written point directory back into point, bounds and dispersion.                  |
 | `plotting.py`      | Diagnostic dispersion and Vs-model figures (needs the `plot` extra).                   |
 | `workflow.py`      | Preflight every point, then write each point serially.                                 |
 | `collection.py`    | Collect completed inversions into summary tables and figures.                          |
 
 The package-level API is intentionally small:
-`mcmc.init_grids(config_path)` and
+`mcmc.init_grids(config_path)`, `mcmc.plot_grids(grids_dir)` and
 `mcmc.collect_results(grids_dir, out_dir)`. Internal modules are
 free to evolve without coupling callers to file-format details.
 
 ## Per-point figures
 
-Three plotting helpers make a single inversion point inspectable. Install the
+Four plotting helpers make a single inversion point inspectable. Install the
 optional extra first with `pip install "seispy[plot]"`.
 
 ```python
@@ -400,7 +401,7 @@ from seispy.mcmc.priors import PriorSettings, compute_point_bounds
 
 bounds = compute_point_bounds(point, PriorSettings.from_config(cfg))
 plot_dispersion(curve, default_sigma=cfg.default_phase_std)  # period vs phase velocity
-plot_model(point, bounds)                                    # depth vs Vs search intervals
+plot_model(point, bounds)  # depth vs Vs search intervals
 figure, axes = plot_point(point, curve, bounds, output_file="point.png")
 ```
 
@@ -408,27 +409,38 @@ figure, axes = plot_point(point, curve, bounds, output_file="point.png")
 the right](../assets/mcmc-point-example.png)
 
 *Real-data example generated with `plot=True` at grid point
-`122.00_33.50` (Moho 32.49 km, `moho_vs_jump = 0.3`). Left: phase dispersion
-with one-sigma bars. Right: Greville Vs coefficients with their final search
-intervals, the reference profile (grey), the sediment layer, the Moho, and the
-model bottom. The last crustal marker (blue) and first mantle marker (orange)
-sit on either side of the Moho line, as described under
-[the Moho contrast prior](#the-moho-contrast-prior).*
+`122.00_33.50` (Moho 32.49 km). Left: phase dispersion with one-sigma bars.
+Right: Vs coefficients with their final search intervals placed at their basis
+centroids, the least-squares reference projection as the dashed initial spline,
+the raw reference profile (grey), the sediment layer, the Moho, and the model
+bottom. The last crustal marker (blue) and first mantle marker (orange) sit on
+either side of the Moho line, as described under
+[the Moho discontinuity and the interface coefficients](#the-moho-discontinuity-and-the-interface-coefficients).
+This reference has a sharp shallow gradient and an uppermost-mantle
+low-velocity zone, so the degree-2 and degree-3 layer splines cannot follow it
+exactly; the annotated layer projection error (0.800 km/s crust, 0.511 km/s
+mantle) is the audit signal for that resolution limit.*
 
 - `plot_dispersion(curve, ...)` draws phase velocity against period with
   one-sigma error bars; non-finite sigmas fall back to `default_sigma`
   when it is given, otherwise those samples are drawn without error bars.
-- `plot_model(point, bounds, ...)` draws one marker per Greville coefficient
-  with a horizontal error bar spanning the final clipped `[lower, upper]`
-  interval, overlays the reference profile, and marks the water or sediment
-  interface (if any), the Moho, and the model bottom. Sediment intervals are
-  placed across the sediment layer and joined to show the linear trend.
+- `plot_model(point, bounds, ...)` places each coefficient interval at its
+  basis centroid (the depth where the basis function carries its weight, which
+  is the meaningful depth for reading a coefficient value), overlays the raw
+  reference profile and the reconstructed initial spline, annotates each
+  layer's projection error, and marks the water or sediment interface (if any),
+  the Moho, and the model bottom. Sediment intervals are placed across the
+  sediment layer and joined to show the linear trend.
 - `compute_point_bounds(point, settings)` is the pure bound
   computation shared by the writer and the plots, so a figure always matches
   `para.inp`.
-- `mcmc.init_grids(config_path, plot=True)` writes the combined figure
-  as `point.png` in each point directory. Skipped points are neither
-  written nor plotted and leave no directory behind.
+- `plot_point_dir(point_dir, ...)` redraws `point.png` from a written
+  directory (`point.json`, `prior_bounds.csv`, `phase.input`), so figures can
+  be regenerated without the source grids or the configuration.
+- `mcmc.init_grids(config_path, plot=True)` writes the combined figure as
+  `point.png` after every input is written, and `mcmc.plot_grids(grids_dir)`
+  redraws them later. Skipped points are neither written nor plotted and leave
+  no directory behind.
 
 ## B-spline parameterization
 
@@ -489,9 +501,9 @@ Because `degBs = K - 1`, the interior-knot count is
 `n_coeff_crust` or `n_coeff_mantle` therefore raises the polynomial degree and
 widens the basis functions; it does not add independent depth resolution. The
 practical consequences for the crust/mantle interface are described under
-[the Moho contrast prior](#the-moho-contrast-prior).
+[the Moho discontinuity and the interface coefficients](#the-moho-discontinuity-and-the-interface-coefficients).
 
-### Greville depths
+### Greville depths and coefficient-space locations
 
 The Greville depth for coefficient `i` is the mean of `p` consecutive knots.
 Using one-based knot indexing, this is
@@ -521,7 +533,63 @@ knots:  [40.000000, 40.002600, 40.005200, 40.007800, 126.666667,
 xi:     [40.005200, 68.893222, 155.555556, 242.217889, 299.994800] km
 ```
 
-### Why use reference Vs at Greville depths as search centers?
+Extending the same example with a reference profile that has a sharp Moho at
+40 km:
+
+```text
+depth (km):   5     10    20    40    40.1   60    80    120   200   300
+Vs (km/s):   3.20  3.35  3.55  3.80  4.47  4.49  4.50  4.50  4.50  4.60
+```
+
+The **basis centroid** `c_bar_j` is the mass-weighted depth of basis function
+`B_j`,
+
+```text
+c_bar_j = ( integral z * B_j(z) dz ) / ( integral B_j(z) dz )
+```
+
+evaluated by midpoint quadrature (see `bspline.basis_geometry`). The
+**projection centre** `c*_j` is the least-squares solution of
+
+```text
+min_c || sum_j c_j * B_j(z) - Vs_reference(z) ||
+```
+
+on the layer, with `z` taken on a fine interior grid (see
+`bspline.projection_coefficients`). For this example:
+
+| Layer  | `j` | Greville `xi_j` (km) | centroid `c_bar_j` (km) | `Vs_reference(c_bar_j)` (km/s) | projection `c*_j` (km/s) |
+| ------ | ----- | ---------------------- | ------------------------- | -------------------------------- | -------------------------- |
+| crust  | 1     | 5.000525               | 7.916741                  | 3.2875                           | 3.1984                     |
+| crust  | 2     | 10.833683              | 16.666721                 | 3.4833                           | 3.3894                     |
+| crust  | 3     | 28.332983              | 25.416600                 | 3.6177                           | 3.6769                     |
+| crust  | 4     | 39.999475              | 34.166629                 | 3.7271                           | 3.7924                     |
+| mantle | 1     | 40.005200              | 57.334124                 | 4.4873                           | 4.4662                     |
+| mantle | 2     | 68.893222              | 109.334499                | 4.5000                           | 4.5134                     |
+| mantle | 3     | 155.555556             | 161.333333                | 4.5000                           | 4.4757                     |
+| mantle | 4     | 242.217889             | 213.332020                | 4.5133                           | 4.5198                     |
+| mantle | 5     | 299.994800             | 265.332938                | 4.5653                           | 4.6074                     |
+
+The maximum reconstruction error
+`max |sum_j c*_j B_j(z) - Vs_reference(z)|` is 0.0115 km/s for the crust and
+0.0096 km/s for the mantle.
+
+A Greville depth is the natural, geometry-derived **label** of a coefficient.
+The Greville abscissae also reproduce linear functions exactly, because
+
+```text
+sum_j xi_j * B_j(z) = z
+```
+
+That identity is why Greville interpolation is accurate whenever the reference
+velocity is locally linear. It is also why it fails at the Moho. In the table
+above the first mantle Greville depth is 40.005 km, only 5 m below the
+interface, where this reference is still on the crustal side of the jump
+(about 3.84 km/s). Its basis centroid is at 57.33 km, where the reference is
+4.49 km/s, and the projection is 4.47 km/s. Using the Greville sample would
+place the whole prior window for the uppermost mantle far too low.
+
+### Why projection centres, and why the basis centroid matters
 
 The coefficients are not point samples of the velocity model. The velocity
 profile is reconstructed as
@@ -530,26 +598,35 @@ profile is reconstructed as
 Vs(z) = sum_j c_j * B_j(z)
 ```
 
-so each coefficient affects a depth range through its basis function. A
-Greville depth is a geometry-derived representative location for that basis
-function. Interpolating the reference profile at these locations and using
+so each coefficient affects a depth range through its basis function. Two
+ways of locating a coefficient follow.
+
+- **Greville depth** is the coefficient's canonical index label. Sampling
+  `Vs_reference(xi_j)` is exact only for linear profiles.
+- **Basis centroid** is where the basis function actually carries its mass:
+  the depth `c_bar_j = integral z * B_j(z) dz / integral B_j(z) dz`. For the
+  first mantle coefficient this is tens of kilometres below the Moho, and the
+  reference velocity there is a far better representative of that coefficient
+  than the Greville sample. `prior_bounds.csv` records both the Greville depth
+  and the centroid, together with the reference velocity at the centroid.
+
+The bound constructor uses neither sample directly. It uses the **coefficient
+space projection**, the vector `c*` that minimises
 
 ```text
-center_j = Vs_reference(xi_j)
+|| sum_j c_j * B_j(z) - Vs_reference(z) ||
 ```
+
+over the layer. That is the coefficient-space analogue of sampling: it returns
+the coefficients that best represent the whole layer, so the reference model
+stays inside the prior box. Its value tracks the basis centroid rather than the
+Greville depth at the interface.
 
 For a reference profile given by depth--velocity pairs `(z_i, V_i)`, the
-center is obtained by linear interpolation on the actual depth coordinates:
-
-```text
-c_j = V_i + (xi_j - z_i) / (z_(i+1) - z_i) * (V_(i+1) - V_i),
-      where z_i <= xi_j <= z_(i+1)
-```
-
-The reference samples do not need to be uniformly spaced. If a profile starts
-at 3 km while a requested Greville depth lies between 0 and 3 km, the intended
-shallow extension is the same straight line defined by the two shallowest
-reference samples:
+projection is evaluated from `V(z)` sampled on a fine interior depth grid; the
+reference samples do not need to be uniformly spaced. If a profile starts at
+3 km while the layer starts at 0 km, the intended shallow extension is the same
+straight line defined by the two shallowest reference samples:
 
 ```text
 V_s(z) = V_1 + (V_2 - V_1) / (z_2 - z_1) * (z - z_1)
@@ -562,113 +639,59 @@ The implementation allows this shallow extrapolation by default up to 5 km.
 The limit and the policy can be changed with
 `vs_constraints.allow_shallow_extrapolation` and
 `vs_constraints.max_shallow_extrapolation_km`. Every prior record stores a
-`shallow_extrapolated` flag so that this assumption remains auditable.
+`shallow_extrapolated` flag so that this assumption remains auditable. The flag
+is recorded per layer: if the layer starts above the reference coverage, every
+coefficient in it depends on the extrapolation.
 
-Using the reference Vs at Greville depths as the MCMC prior center is useful
-because it:
+The old Greville-sampled rule is kept for comparison as the deprecated
+`seispy.mcmc.priors.greville_reference_centers`. It emits a
+`DeprecationWarning` and should not be used for new priors.
 
-- gives one reproducible center for every coefficient without pretending that
-  the coefficient is an exact point velocity;
-- follows the actual knot and basis-function geometry, including different
-  crust and mantle intervals;
-- works with non-uniform reference-model depth samples through direct linear
-  interpolation;
-- keeps the prior centered near the reference Earth model while allowing the
-  inversion to change the whole profile through the B-spline basis;
-- avoids fitting or resampling the reference model onto an unrelated uniform
-  depth grid.
+Projection centres are a stable fit, not an interpolation constraint: the
+reconstructed profile is not required to pass through any particular reference
+value. The selected half-widths still determine the actual search range, and
+the resulting bounds should be checked for physical validity,
+boundary-hugging posteriors, and the ability to represent narrow low-velocity
+structures.
 
-This is a stable center approximation, not an interpolation constraint: the
-reconstructed profile is not required to pass through the reference Vs values
-at the Greville depths. The selected half-widths still determine the actual
-search range, and the resulting bounds should be checked for physical
-validity, boundary-hugging posteriors, and the ability to represent narrow
-low-velocity structures.
+### The Moho discontinuity and the interface coefficients
 
-### The Moho contrast prior
+The Fortran knot rule always produces exactly **one** interior knot, so for any
+coefficient count `K` the spline is clamped at both ends and the first and last
+Greville abscissae sit on the layer boundaries. The crustal spline ends and the
+mantle spline begins at the same Moho depth, so the last crustal and first
+mantle coefficients are the two Moho velocities.
 
-**Why the two interface coefficients coincide.** The Fortran knot rule always
-produces exactly **one** interior knot, so for any coefficient count `K` the
-spline is clamped at both ends and the first and last Greville abscissae sit on
-the layer boundaries. Because the crustal spline ends and the mantle spline
-begins at the same Moho depth, the last crustal and first mantle coefficients
-are *by construction* the two Moho velocities: their Greville depths coincide to
-within a few metres (for the worked example below, about 6 m).
+With Greville sampling those two coefficients were both centred on the
+continuous reference value at the interface, and `moho_vs_jump` was needed to
+separate them. **Least-squares projection removes that need.** The two layers
+are projected independently, so the last crustal coefficient is fit to the
+crustal reference and the first mantle coefficient to the mantle reference; the
+pair automatically carries the reference model's own contrast.
 
-With `moho_vs_jump = 0` both coefficients are centred on the same continuous
-reference value, and `moho_strict_margin` is left to force a purely numerical
-separation of the initial midpoints. That has two costs:
+`moho_strict_margin` remains as a numerical floor. It only fires if clipping or
+a genuinely flat reference leaves the two initial midpoints closer than the
+margin, and it never prescribes a geological contrast. `moho_vs_jump` is
+deprecated and ignored: a nonzero value raises a `DeprecationWarning`.
 
-- the two search windows are near-duplicates, so a large fraction of that pair's
-  joint prior box is rejected by the executable's strict-jump check;
-- the prior says nothing about the expected size of the Moho contrast, even
-  though a positive jump is required.
+This is also why a reference model with a sharp Moho must be sampled finely
+enough around the interface. The projection uses the reference velocities on
+each side of the jump, so a profile that ramps over tens of kilometres will
+produce a correspondingly smooth contrast bias.
 
-**What `moho_vs_jump` changes.** Let `V = Vs_reference(z_moho)`; the two
-interface centres become
-
-```text
-crust_last_center   = V - moho_vs_jump / 2
-mantle_first_center = V + moho_vs_jump / 2
-```
-
-The half-widths are then applied as usual, and `moho_strict_margin` remains a
-numerical floor. No other coefficient is affected.
-
-**Worked example: point `122.00_33.50`.** Sediment is 2.40 km thick and the Moho
-is at 32.49 km, so `V = 3.7495` km/s; the half-widths are 0.3 (crust) and 0.2
-(mantle). Compare `moho_vs_jump = 0` with `0.3`:
-
-| Interface coefficient | `jump = 0` centre | `jump = 0` window | `jump = 0.3` centre | `jump = 0.3` window |
-| --------------------- | ----------------- | ----------------- | ------------------- | ------------------- |
-| last crust (c4)       | 3.7494            | `[3.450, 4.049]`  | 3.5995              | `[3.300, 3.899]`    |
-| first mantle (m1)     | 3.7503            | `[3.551, 3.950]`  | 3.8995              | `[3.700, 4.099]`    |
-| realized contrast     | 0.001             |                   | 0.300               |                     |
-| `P(m1 > c4)`          | 0.502             |                   | 0.918               |                     |
-
-For `jump = 0` the mantle window `[3.551, 3.950]` sits entirely inside the
-crustal window `[3.450, 4.049]` — the two coefficients are effectively
-indistinguishable in the prior. At `jump = 0.3` the windows are shifted apart
-about the reference value and only about 8% of the joint box violates the strict
-jump, against about 50% before. Across the nine points of the example grid the
-average rises from 0.501 to 0.917. The right-hand panel of the
-[per-point figure](#per-point-figures) shows the resulting separation: the last
-crustal marker (blue) and first mantle marker (orange) straddle the Moho line
-instead of overlapping.
-
-**Advantages of setting the jump.**
-
-1. It encodes the *sign and scale* of the Moho contrast that the executable
-   already requires, instead of relying on the 0.001 km/s numerical tick. The
-   initial `oldpar` model is physically valid by construction.
-2. It recovers a large part of the proposal space: the interface pair goes from
-   a coin flip to a strongly biased prior, so fewer proposals are discarded by
-   `goodmodel` before the likelihood is even evaluated.
-3. It puts prior information exactly where the model is otherwise weakest. The
-   basis diagnostics for the same point give mass fractions of 0.22 (c4) and
-   0.08 (m1) and centroids of 27.5 km and 50.3 km, so both coefficients act far
-   from the interface; without an explicit jump prior the pair carries almost no
-   information about the very discontinuity the inversion is meant to resolve.
-4. It does not pin the jump. The windows still overlap, so the contrast remains
-   free over a broad range (5th-95th percentile about `jump ± 0.34` km/s); the
-   executable's `goodmodel` check and the data stay in control.
-5. It is auditable. `prior_bounds.csv` records `basis_centroid_km`,
-   `basis_mass_fraction` and the realized `moho_contrast_km_s` on the two
-   interface rows.
-
-**Choosing the value.** `moho_vs_jump` is a physical assertion, not a tuning
-knob for acceptance alone: the implied contrast keeps a standard deviation of
-about 0.21 km/s set by the half-widths, so larger jumps simply shift the prior
-towards larger contrasts. Take the value from receiver functions, petrology or a
-regional reference; `0.3` km/s is the recommended value for the example grid
-(`V = 3.75` km/s, roughly 8%). Keep `0.0` when the interface contrast should
-stay genuinely uninformative, and remember that the overall acceptance rate
-combines every executable check, of which this pair is one contributor.
+For the worked example point `122.00_33.50`, the crustal projection ends near
+the crustal value below the sediment and the mantle projection starts near the
+mantle value below the Moho, so the two interface windows straddle the
+interface and the initial model has a positive jump. `prior_bounds.csv`
+records the realized `moho_contrast_km_s` on the two interface rows and the
+layer projection error on every row; check them, plus posterior boundary
+accumulation, when tuning priors.
 
 ## Fortran-compatible Vs prior bounds
 
-Search centers are the reference Vs interpolated at each coefficient's Greville
-depth. Configure the half-widths in `config.json` (km/s):
+Search centers are the least-squares projection of the reference profile into
+the Fortran coefficient space, one projection per layer. Configure the
+half-widths in `config.json` (km/s):
 
 ```json
 "search_radius": {
@@ -683,22 +706,22 @@ The Vs defaults are **0.3 for crust** and **0.2 for mantle**; either accepts
 one value per coefficient. Sediment and Moho depth half-widths (km) remain
 explicit. These widths express a chosen search prior, not measured uncertainty.
 
-The writer constructs each requested `[center - radius, center + radius]`:
+The writer starts from each requested `[center - radius, center + radius]`:
 
-- Intersect with the global upper limit **4.9**, inclusive, for both crust and
-  mantle. When water, sediment and ice are all off, also apply **0.5**, inclusive.
-  Otherwise no 0.5 cutoff applies; the writer retains a nonnegative domain.
-- Additionally cap crustal coefficients at **4.3 km/s**, inclusive, using
-  `vs_constraints.crust_vs_max`. This configurable empirical prior is not a
-  universal physical limit. The effective cap is the smaller of this value and
-  `global_vs_max`; mantle and sediment retain the global cap. For a crustal
-  center of 4.1 and radius 0.3, `[3.8, 4.4]` becomes `[3.8, 4.3]`.
-- Apply **4.0**, inclusive, only to the deepest mantle coefficient's lower
-  bound, using the Fortran spline endpoint convention.
-- Only if the entire requested interval lies outside the admissible domain,
-  translate its window to the nearest boundary, keeping the requested width where it fits.
-  An interval touching the boundary is retained as a single value.
-  This fallback is visible in the audit table and deserves reference-model review.
+- The Fortran hard limits are **model-space** limits: the solver rejects a
+  proposal when a reconstructed node velocity exceeds **4.9**, drops below
+  **0.5** (only when water, sediment and ice are all off) or, for the deepest
+  node, falls below **4.0**. The writer enforces the same constraints on the
+  reconstructed box `node_matrix @ upper` and `node_matrix @ lower`, **not on
+  each coefficient**. An interior coefficient window may therefore extend past
+  4.9 (or below 0.5) while every node velocity stays inside the limit; endpoint
+  coefficients are node values (the Fortran basis is clamped), so their caps are
+  exact.
+- A projection centre outside the admissible domain is clipped into it first,
+  and the deepest mantle coefficient is raised to `deepest_vs_min`.
+- If the requested box still reconstructs outside the limits, a common factor
+  scales the upper or lower half-width in until the whole box fits. The tighter
+  factor is written as `window_scale` (1.0 when the request already fits).
 - Round lower bounds upward and upper bounds downward to three decimals.
 - Allow overlapping Moho priors. If the first mantle midpoint already exceeds
   the last crust midpoint by `moho_strict_margin`, leave both intervals alone.
@@ -707,47 +730,50 @@ The writer constructs each requested `[center - radius, center + radius]`:
   If both sides exhaust their translation room, trim only the opposing edges.
   Impossible repairs fail with a diagnostic.
 
-Fortran initializes `oldpar` at each interval midpoint. Thus the repair gives
-this initial Vs model a strict Moho jump without excluding all overlapping
-search ranges. The Fortran `goodmodel` check still rejects proposed models with
-an invalid jump. There is no imposed monotonicity within crust or mantle, and
-no requirement that every mantle coefficient exceed every crust coefficient.
-For enabled sediment, the existing first-three-parameter monotonic bounds remain.
+Fortran initializes `oldpar` at each interval midpoint. Because the projection
+already places the two interface midpoints on the correct sides of the Moho,
+the initial Vs model has a positive jump without a synthetic `moho_vs_jump`.
+The Fortran `goodmodel` check still rejects proposed models with an invalid
+jump. There is no imposed monotonicity within crust or mantle, and no
+requirement that every mantle coefficient exceed every crust coefficient. For
+enabled sediment, the existing first-three-parameter monotonic bounds remain.
 
-| Coefficient  | Reference center | Half-width | Written interval | Initial midpoint |
-| ------------ | ---------------- | ---------- | ---------------- | ---------------- |
-| Last crust   | 3.9              | 0.3        | [3.600, 4.200]   | 3.900            |
-| First mantle | 4.0              | 0.2        | [3.800, 4.200]   | 4.000            |
-
-Both reference centers remain inside these overlapping intervals. A deepest
-reference of 4.1 with radius 0.2 becomes `[4.000, 4.300]`, without raising its
-upper bound. Near a physical boundary, the actual half-width may shrink.
-For example, a mantle reference of 4.95 with radius 0.2 yields
-`[4.750, 4.900]` (initial midpoint 4.825), while 4.9 yields `[4.700, 4.900]`.
-These rules ensure the stated Vs constraints for the midpoint initialization;
-validity of every sampled model and other executable checks remain Fortran's job.
+Near a physical boundary the actual half-width may shrink. A mantle projection
+of 4.95 with radius 0.2 is clipped to 4.9, so the writer scales the upper side in
+until the box fits and records `window_scale < 1`. Because the projection is a
+coefficient-space fit it can sit outside the sampled velocity range; the audit
+table records the raw projection (`projection_vs_km_s`), the clipped centre
+(`center_vs_km_s`), the written interval and the applied scale. These rules
+guarantee the **model** constraints for the box; the midpoint initialization and
+every sampled model are still validated by the executable.
 
 ```json
 "vs_constraints": {
   "global_vs_max": 4.9,
-  "crust_vs_max": 4.3,
   "no_shallow_layers_vs_min": 0.5,
   "deepest_vs_min": 4.0,
-  "moho_strict_margin": 0.001,
-  "moho_vs_jump": 0.3
+  "moho_strict_margin": 0.001
 }
 ```
 
-Limits may be tightened but cannot relax the Fortran constraints. The Moho margin
-is a numerical initialization separation, not a prescribed geological jump; use
-`moho_vs_jump` when a physical contrast prior is wanted. `prior_bounds.csv`
-records the original `reference_vs_km_s`, configured radius, final bounds and
-actual midpoint `effective_center_vs_km_s`; boundary adjustment never overwrites
-the reference value. Check this audit, the basis diagnostics
-(`basis_centroid_km`, `basis_mass_fraction`) and the realized
-`moho_contrast_km_s`, plus posterior boundary accumulation when tuning priors.
-Overlapping ranges can increase Fortran rejection rates compared with fully
-separated intervals, while preserving more search space.
+Limits may be tightened but cannot relax the Fortran constraints. The Moho
+margin is a numerical initialization separation, not a prescribed geological
+jump. `prior_bounds.csv` records, per coefficient, the Greville label
+(`greville_depth_km`), the basis centroid (`basis_centroid_km`), the raw
+projection (`projection_vs_km_s`), the clipped centre actually used
+(`center_vs_km_s`), the reference velocity at the centroid
+(`reference_vs_at_centroid_km_s`), the configured radius, the written
+`lower_km_s`/`upper_km_s`, the initialization midpoint
+(`initial_midpoint_vs_km_s`), the basis mass fraction, and the
+shallow-extrapolation flag. The per-layer projection error
+(`layer_projection_max_error_km_s`) and applied scaling (`window_scale`) are
+repeated on every row of the layer they describe, and the realized
+`moho_contrast_km_s` is attached to the two interface rows. The figure marks
+each coefficient at its basis centroid and annotates each layer's projection
+error. Check the audit for centres outside the reference range (boundary
+adjustment), zero-width intervals, large projection errors, and posterior
+boundary accumulation. Overlapping ranges can increase Fortran rejection rates
+compared with fully separated intervals, while preserving more search space.
 
 ## Common errors
 
@@ -766,6 +792,15 @@ separated intervals, while preserving more search space.
 ### Prepare inversion grids
 
 ::: seispy.mcmc.workflow.init_grids
+
+### Plot inversion grids
+
+::: seispy.mcmc.workflow.plot_grids
+
+`plot_grids` redraws `point.png` for every point directory that holds a
+`point.json`. It reads only the written files, so it can run after an inversion
+or after moving the directory, and a failure at one point is reported without
+stopping the others.
 
 ### Collect inversion results
 

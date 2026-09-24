@@ -1,19 +1,24 @@
-"""Serialize one inversion point into the four Fortran input files.
+"""Serialize one inversion point into its Fortran inputs and plot metadata.
 
 The writer owns file layout and formatting only. Prior bounds are computed by
-:mod:`seispy.mcmc.priors` and passed in, so the numbers written to ``para.inp``
-and to the diagnostic figure come from exactly one computation.
+:mod:`seispy.mcmc.priors` and passed in, so the numbers written to
+`para.inp`, `prior_bounds.csv` and `point.json` come from exactly one
+computation. The same schema encodes and decodes the audit table, so writers and
+readers cannot drift apart.
 """
 
 from __future__ import annotations
 
 import csv
+import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from seispy.mcmc.config import Config
-from seispy.mcmc.dispersion import DispersionCurve
+from seispy.mcmc.dispersion import DispersionRow
 from seispy.mcmc.inversion import CRUST, MANTLE, InversionPoint
-from seispy.mcmc.priors import PointPriorBounds
+from seispy.mcmc.priors import LayerDiagnostics, PointPriorBounds, PriorBound
 
 
 def _format(value: float | None) -> str:
@@ -22,8 +27,160 @@ def _format(value: float | None) -> str:
     return "" if value is None else f"{value:.6f}"
 
 
+def _optional_float(value: str) -> float | None:
+    return float(value) if value not in ("",) else None
+
+
+@dataclass(frozen=True)
+class _RowContext:
+    """Context shared by every row of one layer's audit records."""
+
+    point: InversionPoint
+    diagnostics: LayerDiagnostics
+    on_boundary: bool
+    moho_contrast: float | None
+
+
+@dataclass(frozen=True)
+class _Column:
+    """One audit column: its CSV name, bound field and encode/decode pair."""
+
+    name: str
+    field: str | None
+    encode: Callable[[PriorBound, _RowContext], str]
+    decode: Callable[[str], object]
+
+
+PRIOR_BOUND_COLUMNS: tuple[_Column, ...] = (
+    _Column("section", "section", lambda b, c: b.section, str),
+    _Column("coefficient", "coefficient", lambda b, c: str(b.coefficient), int),
+    _Column(
+        "greville_depth_km",
+        "greville_depth",
+        lambda b, c: f"{b.greville_depth:.6f}",
+        float,
+    ),
+    _Column(
+        "basis_centroid_km",
+        "basis_centroid",
+        lambda b, c: f"{b.basis_centroid:.6f}",
+        float,
+    ),
+    _Column(
+        "projection_vs_km_s",
+        "projection_vs",
+        lambda b, c: f"{b.projection_vs:.6f}",
+        float,
+    ),
+    _Column("center_vs_km_s", "center_vs", lambda b, c: f"{b.center_vs:.6f}", float),
+    _Column(
+        "reference_vs_at_centroid_km_s",
+        "reference_vs_at_centroid",
+        lambda b, c: f"{b.reference_vs_at_centroid:.6f}",
+        float,
+    ),
+    _Column(
+        "search_radius_km_s",
+        "search_radius",
+        lambda b, c: f"{b.search_radius:.6f}",
+        float,
+    ),
+    _Column("lower_km_s", "lower", lambda b, c: f"{b.lower:.6f}", float),
+    _Column("upper_km_s", "upper", lambda b, c: f"{b.upper:.6f}", float),
+    _Column(
+        "initial_midpoint_vs_km_s",
+        None,
+        lambda b, c: f"{b.effective_center_vs:.6f}",
+        float,
+    ),
+    _Column(
+        "basis_mass_fraction",
+        "basis_mass_fraction",
+        lambda b, c: _format(b.basis_mass_fraction),
+        _optional_float,
+    ),
+    _Column(
+        "shallow_extrapolated",
+        "shallow_extrapolated",
+        lambda b, c: str(int(b.shallow_extrapolated)),
+        lambda value: bool(int(value)),
+    ),
+    _Column(
+        "layer_projection_max_error_km_s",
+        None,
+        lambda b, c: _format(c.diagnostics.projection_max_error),
+        _optional_float,
+    ),
+    _Column(
+        "window_scale",
+        None,
+        lambda b, c: f"{c.diagnostics.window_scale:.4f}",
+        _optional_float,
+    ),
+    _Column(
+        "moho_contrast_km_s",
+        None,
+        lambda b, c: _format(c.moho_contrast) if c.on_boundary else "",
+        _optional_float,
+    ),
+    _Column("profile_lon", None, lambda b, c: f"{c.point.vs_profile.lon:.6f}", float),
+    _Column("profile_lat", None, lambda b, c: f"{c.point.vs_profile.lat:.6f}", float),
+)
+
+PRIOR_BOUND_FIELDS: tuple[str, ...] = tuple(
+    column.name for column in PRIOR_BOUND_COLUMNS
+)
+
+
+def prior_bound_rows(
+    bounds: PointPriorBounds,
+    point: InversionPoint,
+) -> list[dict[str, str]]:
+    """Return the audit rows for one point from the shared schema.
+
+    Args:
+        bounds: Final prior bounds for the point.
+        point: The inversion point the rows describe.
+
+    Returns:
+        One CSV-ready mapping per crust and mantle coefficient.
+    """
+
+    boundary = set()
+    if bounds.crust:
+        boundary.add((CRUST, bounds.crust[-1].coefficient))
+    if bounds.mantle:
+        boundary.add((MANTLE, bounds.mantle[0].coefficient))
+
+    rows: list[dict[str, str]] = []
+    layers = (
+        (bounds.crust, bounds.crust_diagnostics),
+        (bounds.mantle, bounds.mantle_diagnostics),
+    )
+    for layer_bounds, diagnostics in layers:
+        for bound in layer_bounds:
+            context = _RowContext(
+                point=point,
+                diagnostics=diagnostics,
+                on_boundary=(bound.section, bound.coefficient) in boundary,
+                moho_contrast=bounds.moho_contrast,
+            )
+            rows.append(
+                {
+                    column.name: column.encode(bound, context)
+                    for column in PRIOR_BOUND_COLUMNS
+                }
+            )
+    return rows
+
+
 class FortranInputWriter:
-    """Write ``phase.input``, ``para.inp``, ``prior_bounds.csv`` and DRAM params."""
+    """Write a point's Fortran inputs, audit table and plot metadata.
+
+    Args:
+        base_dir: Output directory that receives one sub-directory per point.
+        cfg: Validated configuration supplying the DRAM parameters and paths.
+    """
 
     def __init__(self, base_dir: Path, cfg: Config):
         self.base_dir = Path(base_dir)
@@ -32,25 +189,25 @@ class FortranInputWriter:
     def write_point(
         self,
         point: InversionPoint,
-        phase: DispersionCurve,
+        rows: list[DispersionRow],
         bounds: PointPriorBounds,
-        *,
-        plot: bool = False,
-        dpi: int = 300,
-    ) -> bool:
-        """Write the Fortran inputs for one point.
+    ) -> None:
+        """Write the Fortran inputs and plot metadata for one point.
 
-        A point with too few valid dispersion rows is skipped before any
-        directory is created, so skipped points leave no output folder. When
-        ``plot`` is true a combined dispersion and Vs-model figure is written
-        to the point directory as ``point.png``.
+        The caller has already filtered the dispersion rows, so this method only
+        serializes. It never imports matplotlib: the figure is written
+        separately by plot_point_dir, which reads these files back.
+
+        Args:
+            point: Validated inversion point.
+            rows: Usable dispersion rows for the point.
+            bounds: Final prior bounds for the point.
+
+        Raises:
+            ValueError: If the point fails its own validation.
         """
 
         point.validate()
-        rows = self._accepted_rows(point, phase)
-        if rows is None:
-            return False
-
         out = self.base_dir / point.folder_name
         out.mkdir(parents=True, exist_ok=True)
 
@@ -58,31 +215,13 @@ class FortranInputWriter:
         self._write_para(out, point, bounds)
         self._write_prior_bounds(out, point, bounds)
         self._write_dram(out)
-        if plot:
-            self._write_point_plot(out / "point.png", point, phase, bounds, dpi=dpi)
-        return True
+        self._write_point_meta(out, point, bounds)
 
-    def _accepted_rows(
-        self,
-        point: InversionPoint,
-        phase: DispersionCurve,
-    ) -> list[tuple[float, float, float]] | None:
-        """Return usable dispersion rows, or None when the point is skipped."""
-
-        rows = phase.valid_rows(default_sigma=float(self.cfg.default_phase_std))
-        minimum = int(self.cfg.phase_constraints.minimum_periods)
-        if self.cfg.phase_constraints.skip_if_insufficient and len(rows) < minimum:
-            print(
-                f"[SKIP] {point.folder_name}: only {len(rows)} valid dispersion "
-                f"points (< {minimum})"
-            )
-            return None
-        return rows
-
-    def _write_phase(self, out: Path, rows: list[tuple[float, float, float]]) -> None:
+    def _write_phase(self, out: Path, rows: list[DispersionRow]) -> None:
         lines = [f"1 {len(rows)}"]
-        for period, velocity, sigma in rows:
-            lines.append(f"2 1 1 {period:>3g} {velocity:.4f} {sigma:.4f}")
+        lines.extend(
+            f"2 1 1 {row.period:>3g} {row.velocity:.4f} {row.sigma:.4f}" for row in rows
+        )
         lines += ["0", "0"]
         (out / "phase.input").write_text("\n".join(lines), encoding="utf-8")
 
@@ -137,62 +276,10 @@ class FortranInputWriter:
         point: InversionPoint,
         bounds: PointPriorBounds,
     ) -> None:
-        """Write an auditable record of B-spline prior construction.
-
-        Besides the numbers written to ``para.inp`` this records two basis
-        diagnostics per coefficient (where the basis function actually sits and
-        how much of the layer it controls) and the realized Moho contrast, which
-        exposes the structural coincidence of the two interface coefficients.
-        """
-
-        fields = [
-            "section",
-            "coefficient",
-            "representative_depth_km",
-            "reference_vs_km_s",
-            "effective_center_vs_km_s",
-            "search_radius_km_s",
-            "lower_km_s",
-            "upper_km_s",
-            "shallow_extrapolated",
-            "basis_centroid_km",
-            "basis_mass_fraction",
-            "moho_contrast_km_s",
-            "profile_lon",
-            "profile_lat",
-        ]
-
-        boundary: set[tuple[str, int]] = set()
-        if bounds.crust:
-            boundary.add((CRUST, bounds.crust[-1].coefficient))
-        if bounds.mantle:
-            boundary.add((MANTLE, bounds.mantle[0].coefficient))
-
         with (out / "prior_bounds.csv").open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fields)
+            writer = csv.DictWriter(f, fieldnames=list(PRIOR_BOUND_FIELDS))
             writer.writeheader()
-            for bound in [*bounds.crust, *bounds.mantle]:
-                on_boundary = (bound.section, bound.coefficient) in boundary
-                writer.writerow(
-                    {
-                        "section": bound.section,
-                        "coefficient": bound.coefficient,
-                        "representative_depth_km": f"{bound.representative_depth:.6f}",
-                        "reference_vs_km_s": f"{bound.reference_vs:.6f}",
-                        "effective_center_vs_km_s": f"{bound.effective_center_vs:.6f}",
-                        "search_radius_km_s": f"{bound.search_radius:.6f}",
-                        "lower_km_s": f"{bound.lower:.6f}",
-                        "upper_km_s": f"{bound.upper:.6f}",
-                        "shallow_extrapolated": int(bound.shallow_extrapolated),
-                        "basis_centroid_km": _format(bound.basis_centroid),
-                        "basis_mass_fraction": _format(bound.basis_mass_fraction),
-                        "moho_contrast_km_s": (
-                            _format(bounds.moho_contrast) if on_boundary else ""
-                        ),
-                        "profile_lon": f"{point.vs_profile.lon:.6f}",
-                        "profile_lat": f"{point.vs_profile.lat:.6f}",
-                    }
-                )
+            writer.writerows(prior_bound_rows(bounds, point))
 
     def _write_dram(self, out: Path) -> None:
         items = self.cfg.mcmc_params.ordered_items()
@@ -200,25 +287,31 @@ class FortranInputWriter:
         values = " ".join(str(value) for _, value in items)
         (out / "input_DRAM_T.dat").write_text(header + "\n" + values, encoding="utf-8")
 
-    def _write_point_plot(
+    def _write_point_meta(
         self,
-        path: Path,
+        out: Path,
         point: InversionPoint,
-        phase: DispersionCurve,
         bounds: PointPriorBounds,
-        *,
-        dpi: int,
     ) -> None:
-        import matplotlib.pyplot as plt
+        """Write the metadata needed to redraw point.png from disk."""
 
-        from seispy.mcmc.plotting import plot_point
-
-        figure, _ = plot_point(
-            point,
-            phase,
-            bounds,
-            default_sigma=float(self.cfg.default_phase_std),
-            output_file=path,
-            dpi=dpi,
+        profile = point.vs_profile
+        payload = {
+            "lon": float(point.lon),
+            "lat": float(point.lat),
+            "water_depth": float(point.water_depth),
+            "sediment_thickness": float(point.sediment_thickness),
+            "moho_depth": float(point.moho_depth),
+            "max_depth": float(point.max_depth),
+            "water_threshold": float(point.water_threshold),
+            "sediment_threshold": float(point.sediment_threshold),
+            "smooth_on": int(point.smooth_on),
+            "ice_on": int(point.ice_on),
+            "factor": float(bounds.factor),
+            "sediment_bounds": [[float(lo), float(hi)] for lo, hi in bounds.sediment],
+            "reference_depth_km": [float(value) for value in profile.depth],
+            "reference_vs_km_s": [float(value) for value in profile.vs],
+        }
+        (out / "point.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        plt.close(figure)
