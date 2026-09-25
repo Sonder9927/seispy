@@ -1,4 +1,4 @@
-"""Measure and visualize waveform archive coverage from trace headers."""
+"""Measure and visualize waveform coverage from trace headers or layouts."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import pandas as pd
 from obspy import UTCDateTime, read
@@ -66,6 +66,8 @@ def waveform_coverage(
     end_date: str | date | datetime | None = None,
     extensions: Iterable[str] = (".sac", ".mseed"),
     read_mode: Literal["filename", "header"] = "header",
+    layout: str | WaveformLayout = "archive",
+    require_canonical_paths: bool = False,
     station_order: Literal["name", "coverage"] = "name",
     output_figure: str | Path | None = None,
     output_csv: str | Path | None = None,
@@ -77,7 +79,8 @@ def waveform_coverage(
 
     ``read_mode="header"`` measures the union of trace sample intervals,
     clipped to UTC days. ``read_mode="filename"`` avoids waveform reads and
-    estimates each valid canonical station-day filename as fully covered.
+    estimates each station-day filename selected by layout as fully covered.
+    Header mode ignores paths unless require_canonical_paths is enabled.
     """
     coverage = scan_waveform_coverage(
         net_dir,
@@ -85,6 +88,8 @@ def waveform_coverage(
         end_date=end_date,
         extensions=extensions,
         read_mode=read_mode,
+        layout=layout,
+        require_canonical_paths=require_canonical_paths,
     )
     summary = summarize_waveform_coverage(
         coverage, start_date=start_date, end_date=end_date
@@ -134,8 +139,15 @@ def scan_waveform_coverage(
     end_date: str | date | datetime | None = None,
     extensions: Iterable[str] = (".sac", ".mseed"),
     read_mode: Literal["filename", "header"] = "header",
+    layout: str | WaveformLayout = "archive",
+    require_canonical_paths: bool = False,
 ) -> pd.DataFrame:
-    """Return measured or filename-estimated coverage for each station-day."""
+    """Return measured or filename-estimated coverage for each station-day.
+
+    Filename mode derives identity from paths using layout. Header mode derives
+    identity from trace headers and ignores paths unless require_canonical_paths
+    is enabled.
+    """
     root = Path(net_dir).expanduser()
     if not root.is_dir():
         raise FileNotFoundError(f"waveform directory does not exist: {root}")
@@ -143,6 +155,7 @@ def scan_waveform_coverage(
     suffixes = _normalize_extensions(extensions)
     if read_mode not in {"filename", "header"}:
         raise ValueError("read_mode must be 'filename' or 'header'")
+    policy = _resolve_layout(layout)
     archive_root = root.parent
     grouped: dict[tuple[str, str, date], dict[str, object]] = {}
     candidates = (
@@ -156,7 +169,7 @@ def scan_waveform_coverage(
             continue
         try:
             if read_mode == "filename":
-                network, station, observed = _filename_identity(path, archive_root)
+                network, station, observed = policy.identity(path, archive_root)
                 if (start and observed < start) or (end and observed > end):
                     continue
                 day_start = float(UTCDateTime(observed))
@@ -168,7 +181,8 @@ def scan_waveform_coverage(
                 item["intervals"].append((day_start, day_start + _SECONDS_PER_DAY))
                 continue
             stream = read(path, headonly=True)
-            _validate_archive_path(path, archive_root, stream)
+            if require_canonical_paths:
+                policy.validate(path, archive_root, stream)
             for trace in stream:
                 identity = WaveformIdentity.from_trace(trace)
                 for observed, interval in _daily_trace_intervals(trace):
@@ -312,7 +326,161 @@ def plot_waveform_coverage(
     return fig, ax
 
 
-def _validate_archive_path(path, archive_root, stream) -> None:
+class WaveformLayout(Protocol):
+    """Naming policy mapping a waveform file path to the identity it claims.
+
+    Filename-mode scans depend on this directly. Header-mode scans use it only
+    to re-check paths when require_canonical_paths is enabled.
+    """
+
+    def identity(self, path: Path, archive_root: Path) -> tuple[str, str, date]:
+        """Return the (network, station, day) claimed by a file path."""
+
+    def validate(self, path: Path, archive_root: Path, stream) -> None:
+        """Raise when a file path disagrees with a loaded waveform stream."""
+
+
+class CanonicalArchiveLayout:
+    """The strict network/station/year/canonical-name archive layout."""
+
+    def identity(self, path, archive_root):
+        network_dir, station_dir, year_dir, filename = _archive_parts(
+            path, archive_root
+        )
+        network, station, observed = _canonical_name_identity(filename)
+        _require_directory_identity(
+            (network, station, str(observed.year)),
+            (network_dir, station_dir, year_dir),
+        )
+        return network, station, observed
+
+    def validate(self, path, archive_root, stream):
+        _validate_canonical_path(path, archive_root, stream)
+
+
+class DeconvolvedLayout:
+    """Response-removed SAC trees that preserve the source archive stem.
+
+    Single-trace conversions keep the input stem with a .sac suffix; multi-trace
+    conversions append a segment token such as T010000000. Only the leading
+    network and station, the optional location and channel, and the UTC day are
+    interpreted; any segment suffix is ignored.
+    """
+
+    def identity(self, path, archive_root):
+        network_dir, station_dir, year_dir, filename = _archive_parts(
+            path, archive_root
+        )
+        network, station, observed = _deconvolved_name_identity(filename)
+        _require_directory_identity(
+            (network, station, str(observed.year)),
+            (network_dir, station_dir, year_dir),
+        )
+        return network, station, observed
+
+    def validate(self, path, archive_root, stream):
+        claimed = self.identity(path, archive_root)
+        if not len(stream):
+            raise ValueError("waveform stream is empty")
+        for trace in stream:
+            identity = WaveformIdentity.from_trace(trace)
+            if (identity.network, identity.station, identity.day) != claimed:
+                raise ValueError("filename or directory does not match the SAC header")
+
+
+_LAYOUTS = {
+    "archive": CanonicalArchiveLayout(),
+    "deconvolved": DeconvolvedLayout(),
+}
+
+
+def _resolve_layout(layout):
+    if layout is None:
+        return _LAYOUTS["archive"]
+    if isinstance(layout, str):
+        try:
+            return _LAYOUTS[layout]
+        except KeyError:
+            raise ValueError(
+                "layout must be 'archive', 'deconvolved', or a WaveformLayout"
+            ) from None
+    return layout
+
+
+def _archive_parts(path, archive_root):
+    try:
+        relative = Path(path).relative_to(Path(archive_root))
+    except ValueError as exc:
+        raise ValueError("file is outside the waveform archive") from exc
+    if len(relative.parts) != 4:
+        raise ValueError("expected network/station/year/file archive layout")
+    return relative.parts
+
+
+def _require_directory_identity(fields, directories):
+    if fields != directories:
+        raise ValueError("filename or directory identity is inconsistent")
+
+
+def _day_from_fields(year_text, julday_text):
+    try:
+        year = int(year_text)
+        julday = int(julday_text)
+        observed = date(year, 1, 1) + timedelta(days=julday - 1)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("filename contains an invalid UTC day") from exc
+    if not 1 <= julday <= 366 or observed.year != year:
+        raise ValueError("filename contains an invalid UTC day")
+    return observed
+
+
+def _canonical_name_identity(filename):
+    stem = Path(filename).stem
+    fields = stem.split(".")
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".mseed" and len(fields) == 4:
+        network, station, year_text, julday_text = fields
+    elif suffix == ".mseed" and len(fields) >= 6:
+        network, station, _, _, year_text, julday_text, *_ = fields
+    elif suffix == ".sac" and len(fields) == 7:
+        network, station, _, _, year_text, julday_text, _ = fields
+    else:
+        raise ValueError("filename does not match a canonical waveform name")
+    return network, station, _day_from_fields(year_text, julday_text)
+
+
+def _deconvolved_name_identity(filename):
+    path = Path(filename)
+    if path.suffix.lower() != ".sac":
+        raise ValueError("deconvolved source must use the .sac suffix")
+    fields = path.stem.split(".")
+    if len(fields) >= 4:
+        year_text = _year_token(fields[2])
+        julday_text = _julday_token(fields[3])
+        if year_text and julday_text:
+            return fields[0], fields[1], _day_from_fields(year_text, julday_text)
+    if len(fields) >= 6:
+        year_text = _year_token(fields[4])
+        julday_text = _julday_token(fields[5])
+        if year_text and julday_text:
+            return fields[0], fields[1], _day_from_fields(year_text, julday_text)
+    raise ValueError("filename does not match a deconvolved SAC name")
+
+
+def _year_token(value):
+    return value if len(value) == 4 and value.isdigit() else None
+
+
+def _julday_token(value):
+    token, rest = value[:3], value[3:]
+    if token.isdigit() and (
+        rest == "" or (rest.startswith("T") and rest[1:].isdigit())
+    ):
+        return token
+    return None
+
+
+def _validate_canonical_path(path, archive_root, stream) -> None:
     if not len(stream):
         raise ValueError("waveform stream is empty")
     if path.suffix.lower() == ".sac":
@@ -324,38 +492,6 @@ def _validate_archive_path(path, archive_root, stream) -> None:
             raise ValueError("filename or directory does not match the SAC header")
     elif not matches_mseed_path(path, archive_root, stream):
         raise ValueError("filename or directory does not match the MiniSEED header")
-
-
-def _filename_identity(path: Path, archive_root: Path) -> tuple[str, str, date]:
-    try:
-        relative = path.relative_to(archive_root)
-    except ValueError as exc:
-        raise ValueError("file is outside the waveform archive") from exc
-    if len(relative.parts) != 4:
-        raise ValueError("expected network/station/year/file archive layout")
-    network_dir, station_dir, year_dir, filename = relative.parts
-    stem = Path(filename).stem
-    fields = stem.split(".")
-    suffix = path.suffix.lower()
-    if suffix == ".mseed" and len(fields) == 4:
-        network, station, year_text, julday_text = fields
-    elif suffix == ".mseed" and len(fields) >= 6:
-        network, station, _, _, year_text, julday_text, *_ = fields
-    elif suffix == ".sac" and len(fields) == 7:
-        network, station, _, _, year_text, julday_text, _ = fields
-    else:
-        raise ValueError("filename does not match a canonical waveform name")
-    if network != network_dir or station != station_dir or year_text != year_dir:
-        raise ValueError("filename or directory identity is inconsistent")
-    try:
-        year = int(year_text)
-        julday = int(julday_text)
-        observed = date(year, 1, 1) + timedelta(days=julday - 1)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("filename contains an invalid UTC day") from exc
-    if not 1 <= julday <= 366 or observed.year != year:
-        raise ValueError("filename contains an invalid UTC day")
-    return network, station, observed
 
 
 def _daily_trace_intervals(trace):

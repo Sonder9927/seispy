@@ -30,6 +30,12 @@ _EXPORTS = {
         "seispy.waveform.coverage",
         "WaveformCoverageReport",
     ),
+    "WaveformLayout": ("seispy.waveform.coverage", "WaveformLayout"),
+    "CanonicalArchiveLayout": (
+        "seispy.waveform.coverage",
+        "CanonicalArchiveLayout",
+    ),
+    "DeconvolvedLayout": ("seispy.waveform.coverage", "DeconvolvedLayout"),
     "WaveformConversionIssue": (
         "seispy.waveform.conversion",
         "WaveformConversionIssue",

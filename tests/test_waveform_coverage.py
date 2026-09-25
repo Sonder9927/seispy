@@ -61,6 +61,23 @@ def _waveform(
     return path
 
 
+def _deconvolved_sac(
+    root, station, year, julday, name, *, location="10", channel="HHZ"
+):
+    starttime = UTCDateTime(year=year, julday=julday)
+    trace = Trace(data=np.arange(10, dtype=np.float32))
+    trace.stats.network = "NZ"
+    trace.stats.station = station
+    trace.stats.location = location
+    trace.stats.channel = channel
+    trace.stats.starttime = starttime
+    trace.stats.sampling_rate = 1.0
+    path = root / "NZ" / station / str(year) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trace.write(str(path), format="SAC")
+    return path
+
+
 def test_scan_measures_sample_intervals_instead_of_file_presence(tmp_path):
     _waveform(tmp_path, "AAA", 2024, 1, duration_seconds=43_200)
 
@@ -202,3 +219,88 @@ def test_waveform_coverage_exports_figure_and_summary(tmp_path):
     assert figure_path.stat().st_size > 0
     assert csv_path.stat().st_size > 0
     plt.close(report.figure)
+
+
+def test_deconvolved_layout_reads_stem_preserving_names(tmp_path):
+    _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
+    _deconvolved_sac(tmp_path, "BBB", 2026, 1, "NZ.BBB.10.HHZ.2026.001T010000000.sac")
+
+    result = scan_waveform_coverage(
+        tmp_path / "NZ", read_mode="filename", layout="deconvolved"
+    )
+
+    assert list(result["station"]) == ["AAA", "BBB"]
+    assert set(result["read_mode"]) == {"filename"}
+    assert list(result["coverage_percent"]) == [100.0, 100.0]
+
+
+def test_deconvolved_layout_reads_segmented_partial_day_names(tmp_path):
+    _deconvolved_sac(
+        tmp_path,
+        "AAA",
+        2026,
+        1,
+        "NZ.AAA.10.HHZ.2026.001.060000.2026001T010000000.sac",
+    )
+    _deconvolved_sac(
+        tmp_path,
+        "BBB",
+        2026,
+        1,
+        "NZ.BBB.2026.001.NZ.BBB.--.HHZ.2026001T010000000.sac",
+        location="",
+    )
+
+    result = scan_waveform_coverage(
+        tmp_path / "NZ", read_mode="filename", layout="deconvolved"
+    )
+
+    assert list(result["station"]) == ["AAA", "BBB"]
+    assert set(result["coverage_percent"]) == {100.0}
+
+
+def test_deconvolved_layout_rejects_directory_mismatch(tmp_path):
+    path = _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
+    path.rename(path.with_name("NZ.WRONG.10.HHZ.2026.001.sac"))
+
+    result = scan_waveform_coverage(
+        tmp_path / "NZ", read_mode="filename", layout="deconvolved"
+    )
+
+    assert result.empty
+
+
+def test_header_mode_measures_deconvolved_tree_without_path_checks(tmp_path):
+    _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
+
+    result = scan_waveform_coverage(tmp_path / "NZ")
+
+    assert len(result) == 1
+    assert result.loc[0, "station"] == "AAA"
+    assert result.loc[0, "coverage_seconds"] == pytest.approx(10)
+
+
+def test_header_mode_can_still_enforce_canonical_paths(tmp_path):
+    _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
+
+    result = scan_waveform_coverage(tmp_path / "NZ", require_canonical_paths=True)
+
+    assert result.empty
+
+
+def test_deconvolved_layout_can_validate_paths_on_request(tmp_path):
+    _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
+
+    result = scan_waveform_coverage(
+        tmp_path / "NZ", layout="deconvolved", require_canonical_paths=True
+    )
+
+    assert len(result) == 1
+    assert result.loc[0, "station"] == "AAA"
+
+
+def test_unknown_layout_is_rejected(tmp_path):
+    (tmp_path / "NZ").mkdir()
+
+    with pytest.raises(ValueError, match="layout"):
+        scan_waveform_coverage(tmp_path / "NZ", layout="nonsense")
