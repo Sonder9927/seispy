@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 from obspy import Stream, Trace, UTCDateTime
 
-from seispy.waveform.integrity import merge_contiguous_segments, merge_short_gaps
+from seispy.waveform.integrity import (
+    merge_contiguous_segments,
+    merge_short_gaps,
+    unusable_sample_reason,
+)
 
 
 def _segments(gap_samples):
@@ -59,3 +63,15 @@ def test_conflicting_overlap_remains_segmented():
 
     assert len(stream) == 2
     assert stream.get_gaps()[0][6] < 0
+
+
+def test_unusable_sample_reason_classifies_arrays():
+    assert unusable_sample_reason(np.arange(3, dtype=np.int32)) is None
+    assert unusable_sample_reason(np.full(3, 7, dtype=np.int32)) == "is constant"
+    assert (
+        unusable_sample_reason(np.array([1.0, np.nan]))
+        == "contains NaN or infinite samples"
+    )
+    assert (
+        unusable_sample_reason(np.array([], dtype=np.float64)) == "contains no samples"
+    )

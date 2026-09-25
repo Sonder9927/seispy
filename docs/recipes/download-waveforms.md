@@ -78,7 +78,9 @@ boundary traces do not determine archive identity. When a response contains
 multiple non-empty station-day groups, each valid group is written to its own
 header-derived path; failure in one group does not discard the others. Headers,
 archive identity, and—if StationXML is supplied—channel epoch and sample rate
-are checked first.
+are checked first. Constant (flat-line) and non-finite traces are rejected as
+unusable, so a response that decodes cleanly but carries no signal is never
+committed.
 `max_workers` controls isolated archive processes and defaults to 5. A large
 server may raise it independently of the downloader's `network_workers`; for
 example, keep network transfers at 10 and use 40 archive workers if memory and

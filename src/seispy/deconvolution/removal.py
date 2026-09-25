@@ -15,7 +15,10 @@ import numpy as np
 from obspy.core.inventory import Inventory
 
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
-from seispy.waveform.integrity import merge_contiguous_segments
+from seispy.waveform.integrity import (
+    merge_contiguous_segments,
+    unusable_sample_reason,
+)
 from seispy.waveform.decimation import (
     _normalize_factors,
     _sac_compatible_decimate_trace,
@@ -841,12 +844,9 @@ def _validate_sac_extrema(trace) -> None:
 
 
 def _validate_sample_values(data) -> None:
-    if np.size(data) == 0:
-        raise ValueError("deconvolved output contains no samples")
-    if not np.isfinite(data).all():
-        raise ValueError("deconvolved output contains NaN or infinite samples")
-    if np.all(data == data[0]):
-        raise ValueError("deconvolved output is constant")
+    reason = unusable_sample_reason(data)
+    if reason is not None:
+        raise ValueError(f"deconvolved output {reason}")
 
 
 def remove_response_from_file(

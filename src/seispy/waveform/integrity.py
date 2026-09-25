@@ -1,6 +1,24 @@
 """Waveform integrity policies shared by waveform-consuming workflows."""
 
+import numpy as np
+
 DEFAULT_MAX_GAP_SECONDS = 1.0
+
+
+def unusable_sample_reason(data) -> str | None:
+    """Return why a sample array cannot be trusted, or None when usable.
+
+    Empty, non-finite, and constant arrays are rejected: they either carry no
+    samples or no recoverable signal. Callers prefix the reason with their own
+    subject, such as "deconvolved output" or "trace".
+    """
+    if np.size(data) == 0:
+        return "contains no samples"
+    if not np.isfinite(data).all():
+        return "contains NaN or infinite samples"
+    if np.all(data == data[0]):
+        return "is constant"
+    return None
 
 
 def merge_contiguous_segments(stream):

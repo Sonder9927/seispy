@@ -14,6 +14,7 @@ from obspy.io.mseed import InternalMSEEDWarning
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.archive import WaveformIdentity, channel_mseed_path, matches_mseed_path
+from seispy.waveform.integrity import unusable_sample_reason
 from seispy.waveform.mseed_recovery import filter_valid_mseed_records
 from seispy.workflow import (
     BatchRun,
@@ -103,9 +104,10 @@ def archive_waveforms(
     them with ``pattern`` and ``output_format="sac"``. Valid traces are archived
     independently, so one trace or destination failure does not discard other
     usable traces from the same source. A source succeeds when at least one
-    trace is preserved. Empty traces do not determine archive identity. Native
-    waveform reads run in isolated worker processes. Source files are never
-    modified or removed.
+    trace is preserved. Empty traces do not determine archive identity. Constant
+    (flat-line) and non-finite traces are rejected as unusable. Native waveform
+    reads run in isolated worker processes. Source files are never modified or
+    removed.
 
     Args:
         source_dir: Root containing raw MiniSEED responses or SAC files.
@@ -459,6 +461,13 @@ def _validate_inventory(stream):
             )
 
 
+def _validate_trace_samples(trace):
+    """Reject constant or non-finite samples that carry no usable signal."""
+    reason = unusable_sample_reason(trace.data)
+    if reason is not None:
+        raise ValueError(f"trace {reason}")
+
+
 def _classify_traces(stream):
     valid = []
     empty = []
@@ -468,6 +477,7 @@ def _classify_traces(stream):
             empty.append(trace)
             continue
         try:
+            _validate_trace_samples(trace)
             _validate_inventory([trace])
         except Exception as exc:
             errors.append(f"trace {index} ({trace.id}) failed validation: {exc}")

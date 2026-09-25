@@ -22,6 +22,20 @@ def _raw_mseed(root, *, channel="HHZ"):
     return path
 
 
+def _constant_raw_mseed(root, *, value=1):
+    trace = Trace(data=np.full(100, value, dtype=np.int32))
+    trace.stats.network = "YH"
+    trace.stats.station = "LOBS1"
+    trace.stats.location = ""
+    trace.stats.channel = "HHZ"
+    trace.stats.starttime = UTCDateTime("2015-01-01")
+    trace.stats.sampling_rate = 100
+    path = root / "YH" / "LOBS1" / "2015" / "YH.LOBS1.--.HHZ.2015.001.mseed.raw"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Stream([trace]).write(path, format="MSEED")
+    return path
+
+
 def _append_empty_next_day_record(path):
     contents = path.read_bytes()
     record_length = 4096
@@ -271,3 +285,62 @@ def test_worker_salvages_valid_trace_when_source_path_disagrees(tmp_path):
     assert corrected.is_file()
     assert result.succeeded == result.recovered == 1
     assert result.failed == 0
+
+
+def test_constant_raw_response_is_not_archived(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    raw = _constant_raw_mseed(source)
+
+    summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+    assert summary.failed == 1
+    assert summary.succeeded == summary.files_written == 0
+    assert not list(output.rglob("*.mseed"))
+    assert "trace is constant" in summary.issue_samples[0].error
+    assert raw.is_file()
+
+
+def test_worker_keeps_usable_traces_when_a_sibling_is_constant(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    first = Trace(data=np.full(100, 7, dtype=np.int32))
+    first.stats.network = "NZ"
+    first.stats.station = "AAA"
+    first.stats.location = "10"
+    first.stats.channel = "HHZ"
+    first.stats.starttime = UTCDateTime("2026-01-01T01:00:00")
+    first.stats.sampling_rate = 10
+    second = first.copy()
+    second.data = np.arange(100, dtype=np.int32)
+    second.stats.starttime = UTCDateTime("2026-01-02T02:00:00")
+    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Stream([first, second]).write(path, format="MSEED")
+
+    result = archiving._archive_one(
+        str(path), str(source), str(output), "mseed", False, False
+    )
+
+    assert result.succeeded == result.recovered == 1
+    assert result.failed == 0
+    assert result.traces_total == 2
+    assert result.traces_written == 1
+    assert result.traces_failed == 1
+    assert "trace is constant" in result.issue.error
+
+
+def test_classify_traces_rejects_non_finite_samples():
+    trace = Trace(data=np.array([1.0, np.nan, 2.0], dtype=np.float64))
+    trace.stats.network = "NZ"
+    trace.stats.station = "AAA"
+    trace.stats.location = "10"
+    trace.stats.channel = "HHZ"
+    trace.stats.starttime = UTCDateTime("2026-01-01")
+    trace.stats.sampling_rate = 10
+
+    valid, empty, errors = archiving._classify_traces(Stream([trace]))
+
+    assert valid == []
+    assert empty == []
+    assert "NaN or infinite" in errors[0]
