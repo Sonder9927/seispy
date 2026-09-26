@@ -13,8 +13,13 @@ from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
-from seispy.archive import WaveformIdentity, channel_mseed_path, matches_mseed_path
-from seispy.waveform.integrity import unusable_sample_reason
+from seispy.archive import (
+    WaveformIdentity,
+    channel_mseed_path,
+    matches_mseed_path,
+    start_day_token,
+)
+from seispy.waveform.integrity import merge_contiguous_segments, unusable_sample_reason
 from seispy.waveform.mseed_recovery import filter_valid_mseed_records
 from seispy.workflow import (
     BatchRun,
@@ -41,7 +46,9 @@ class _ArchiveResult:
     succeeded: int = 0
     skipped: int = 0
     recovered: int = 0
+    reshaped: int = 0
     failed: int = 0
+    errored: int = 0
     files_written: int = 0
     traces_total: int = 0
     traces_written: int = 0
@@ -58,15 +65,19 @@ class WaveformArchiveSummary(BatchSummary):
     Source-file counters are mutually exclusive: a source succeeds when at
     least one non-empty trace is archived, is skipped when all usable traces
     already exist, and fails only when no usable trace can be preserved.
-    Trace counters expose partial recovery without turning it into a source
-    failure.
+    recovered counts sources that needed record-level repair (corrupt records
+    were filtered); reshaped counts sources whose traces were merged, split, or
+    otherwise rewritten. Neither rescues a source from failure. Trace counters
+    expose partial recovery without turning it into a source failure.
     """
 
     total: int
     succeeded: int
     skipped: int
     recovered: int
+    reshaped: int
     failed: int
+    errored: int
     files_written: int
     traces_total: int
     traces_written: int
@@ -80,7 +91,7 @@ class WaveformArchiveSummary(BatchSummary):
 
     @property
     def has_issues(self) -> bool:
-        return bool(self.failed or self.recovered)
+        return bool(self.failed or self.recovered or self.traces_failed or self.errored)
 
 
 def archive_waveforms(
@@ -148,7 +159,9 @@ def archive_waveforms(
             "succeeded",
             "skipped",
             "recovered",
+            "reshaped",
             "failed",
+            "errored",
             "files_written",
             "traces_total",
             "traces_written",
@@ -376,22 +389,21 @@ def _archive_one(
             )
         else:
             result = _archive_sac_traces(valid, Path(output_root), overwrite)
-        written, existing, archived_traces, group_errors, transformed = result
+        written, existing, archived_traces, group_errors, reshaped = result
         errors = [*validation_errors, *group_errors]
         traces_failed = len(stream) - len(empty) - archived_traces
         archived_any = archived_traces > 0
         all_existing = archived_any and written == 0 and not errors
-        partial = bool(
-            record_recovered or transformed or empty or errors or traces_failed
-        )
         issue = None
         if errors:
             issue = WaveformArchiveIssue(source, "; ".join(errors))
         return _ArchiveResult(
             succeeded=int(archived_any and not all_existing),
             skipped=int(all_existing),
-            recovered=int(archived_any and partial),
+            recovered=int(archived_any and record_recovered),
+            reshaped=int(archived_any and (reshaped or bool(validation_errors))),
             failed=int(not archived_any),
+            errored=int(issue is not None),
             files_written=written,
             traces_total=len(stream),
             traces_written=archived_traces - existing,
@@ -486,6 +498,42 @@ def _classify_traces(stream):
     return valid, empty, errors
 
 
+def _merge_group(group):
+    """Losslessly merge one channel-day group, preserving gaps and conflicts.
+
+    Returns the merged segments and, for each input trace, the index of the
+    merged segment that now archives it.
+    """
+    stream = Stream(traces=list(group))
+    stream.sort()
+    merge_contiguous_segments(stream)
+    segments = list(stream)
+    membership = [
+        _covering_segment(segments, trace.stats.starttime, trace.stats.endtime)
+        for trace in group
+    ]
+    return segments, membership
+
+
+def _short_segment_token(segment):
+    """Return a compact, unambiguous first-sample token for one segment."""
+    stats = segment.stats
+    archive_day = WaveformIdentity.from_trace(segment).archive_day
+    return start_day_token(stats.starttime, archive_day) + stats.starttime.strftime(
+        "%H%M%S"
+    )
+
+
+def _covering_segment(segments, starttime, endtime):
+    for index, segment in enumerate(segments):
+        if segment.stats.starttime <= starttime and endtime <= segment.stats.endtime:
+            return index
+    for index, segment in enumerate(segments):
+        if segment.stats.starttime <= starttime <= segment.stats.endtime:
+            return index
+    return None
+
+
 def _archive_mseed_traces(
     source,
     trusted_source,
@@ -502,6 +550,7 @@ def _archive_mseed_traces(
     )
     if (
         allow_raw_copy
+        and len(traces) == 1
         and _matches_mseed_path(intended, output_root, traces)
         and _benign_empty_traces(traces, empty_traces)
     ):
@@ -524,29 +573,52 @@ def _archive_mseed_traces(
     traces_existing = 0
     traces_archived = 0
     errors = []
+    claimed = set()
     intended_claimed = False
+    reshaped = len(grouped) > 1
     for group in grouped.values():
-        if not intended_claimed and _matches_mseed_path(intended, output_root, group):
-            destination = intended
-            intended_claimed = True
-        else:
-            destination = _recovered_mseed_path(output_root, group)
-        try:
-            written, skipped = _write_mseed_group(group, destination, overwrite)
-        except Exception as exc:
-            errors.append(
-                f"trace group {group[0].id} at "
-                f"{group[0].stats.starttime} failed: {type(exc).__name__}: {exc}"
-            )
-            continue
-        files_written += written
-        traces_archived += len(group)
-        if skipped:
-            traces_existing += len(group)
+        segments, membership = _merge_group(group)
+        if len(segments) != len(group) or len(segments) > 1:
+            reshaped = True
+        for index, segment in enumerate(segments):
+            if (
+                len(segments) == 1
+                and not intended_claimed
+                and _matches_mseed_path(intended, output_root, segments)
+            ):
+                destination = intended
+                intended_claimed = True
+            else:
+                destination = _recovered_mseed_path(
+                    output_root,
+                    [segment],
+                    start_token=_short_segment_token(segment),
+                )
+                if destination in claimed:
+                    destination = _recovered_mseed_path(output_root, [segment])
+            if destination in claimed:
+                errors.append(
+                    f"trace {segment.id} maps to duplicate path {destination}"
+                )
+                continue
+            claimed.add(destination)
+            covered = sum(1 for member in membership if member == index)
+            try:
+                written, skipped = _write_mseed_group([segment], destination, overwrite)
+            except Exception as exc:
+                errors.append(
+                    f"trace group {segment.id} at "
+                    f"{segment.stats.starttime} failed: {type(exc).__name__}: {exc}"
+                )
+                continue
+            files_written += written
+            traces_archived += covered
+            if skipped:
+                traces_existing += covered
 
     if empty_traces and not _benign_empty_traces(traces, empty_traces):
         errors.append(f"ignored {len(empty_traces)} incompatible empty trace(s)")
-    return files_written, traces_existing, traces_archived, tuple(errors), True
+    return files_written, traces_existing, traces_archived, tuple(errors), reshaped
 
 
 def _matches_mseed_path(path, root, traces):
@@ -573,7 +645,7 @@ def _benign_empty_traces(traces, empty_traces):
         if nslc not in valid_nslc:
             return False
         if identity.day not in valid_days and not any(
-            (identity.day - day).days == 1
+            abs((identity.day - day).days) == 1
             and trace.stats.starttime.strftime("%H%M%S") == "000000"
             for day in valid_days
         ):
@@ -581,7 +653,7 @@ def _benign_empty_traces(traces, empty_traces):
     return True
 
 
-def _recovered_mseed_path(output_root, traces):
+def _recovered_mseed_path(output_root, traces, *, start_token=None):
     first = min(traces, key=lambda trace: trace.stats.starttime)
     last = max(traces, key=lambda trace: trace.stats.endtime)
     endtime = last.stats.endtime + last.stats.delta
@@ -594,13 +666,15 @@ def _recovered_mseed_path(output_root, traces):
         stats.channel,
         stats.starttime,
         endtime,
+        archive_day=WaveformIdentity.from_trace(first).archive_day,
+        start_token=start_token,
     )
 
 
 def _write_mseed_group(traces, destination, overwrite):
     destination = Path(destination)
     if destination.exists() and not overwrite:
-        _validate_existing_mseed(destination, destination.parents[3])
+        _validate_existing_mseed(destination, destination.parents[3], traces)
         return 0, True
     temporary = temporary_output_path(destination)
     try:
@@ -616,49 +690,64 @@ def _write_mseed_group(traces, destination, overwrite):
 
 
 def _archive_sac_traces(traces, output_root, overwrite):
+    grouped = defaultdict(list)
+    for trace in traces:
+        grouped[WaveformIdentity.from_trace(trace).day_key].append(trace)
+
     files_written = 0
     traces_existing = 0
     traces_archived = 0
     errors = []
     claimed = set()
-    for trace in traces:
-        destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
-        if destination in claimed:
-            errors.append(f"trace {trace.id} maps to duplicate path {destination}")
-            continue
-        claimed.add(destination)
-        try:
-            if destination.is_file() and not overwrite:
-                _validate_sac_output(destination, trace)
-                traces_existing += 1
-                traces_archived += 1
+    reshaped = len(grouped) > 1
+    for group in grouped.values():
+        segments, membership = _merge_group(group)
+        if len(segments) != len(group) or len(segments) > 1:
+            reshaped = True
+        for index, trace in enumerate(segments):
+            destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
+            if destination in claimed:
+                errors.append(f"trace {trace.id} maps to duplicate path {destination}")
                 continue
-            temporary = temporary_output_path(destination)
+            claimed.add(destination)
+            covered = sum(1 for member in membership if member == index)
             try:
-                trace.write(str(temporary), format="SAC")
-                _validate_sac_output(temporary, trace)
-                commit_output(temporary, destination, overwrite=overwrite)
-            finally:
-                temporary.unlink(missing_ok=True)
-        except Exception as exc:
-            errors.append(f"trace {trace.id} failed: {type(exc).__name__}: {exc}")
-            continue
-        files_written += 1
-        traces_archived += 1
-    return files_written, traces_existing, traces_archived, tuple(errors), False
+                if destination.is_file() and not overwrite:
+                    _validate_sac_output(destination, trace)
+                    traces_existing += covered
+                    traces_archived += covered
+                    continue
+                temporary = temporary_output_path(destination)
+                try:
+                    trace.write(str(temporary), format="SAC")
+                    _validate_sac_output(temporary, trace)
+                    commit_output(temporary, destination, overwrite=overwrite)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            except Exception as exc:
+                errors.append(f"trace {trace.id} failed: {type(exc).__name__}: {exc}")
+                continue
+            files_written += 1
+            traces_archived += covered
+    return files_written, traces_existing, traces_archived, tuple(errors), reshaped
 
 
 def _archive_mseed(source, trusted_source, stream, source_root, output_root, overwrite):
     relative = source.relative_to(source_root)
-    if not relative.name.endswith(".mseed.raw"):
-        raise ValueError(f"raw source does not end with .mseed.raw: {source}")
-    destination = output_root / relative.with_name(relative.name.removesuffix(".raw"))
+    name = relative.name
+    if name.endswith(".mseed.raw"):
+        archived_name = name.removesuffix(".raw")
+    elif name.endswith(".mseed"):
+        archived_name = name
+    else:
+        raise ValueError(f"source is not a miniSEED file: {source}")
+    destination = output_root / relative.with_name(archived_name)
     if not matches_mseed_path(destination, output_root, stream):
         raise ValueError(
             f"raw response headers do not match intended archive path {destination}"
         )
     if destination.exists() and not overwrite:
-        _validate_existing_mseed(destination, output_root)
+        _validate_existing_mseed(destination, output_root, stream)
         return 0, True
     temporary = temporary_output_path(destination)
     try:
@@ -669,21 +758,41 @@ def _archive_mseed(source, trusted_source, stream, source_root, output_root, ove
     return 1, False
 
 
-def _validate_existing_mseed(path, output_root):
+def _same_coverage(actual, expected):
+    tolerance = 0.5 / float(expected.stats.sampling_rate)
+    return (
+        actual.id == expected.id
+        and actual.stats.npts == expected.stats.npts
+        and abs(float(actual.stats.sampling_rate) - float(expected.stats.sampling_rate))
+        <= 1e-6
+        and abs(actual.stats.starttime - expected.stats.starttime) <= tolerance
+    )
+
+
+def _validate_existing_mseed(path, output_root, expected):
     stream = _read_full_mseed(path)
     if not matches_mseed_path(path, output_root, stream):
         raise ValueError(f"existing MiniSEED path disagrees with headers: {path}")
+    actual = sorted(
+        (trace for trace in stream if trace.stats.npts != 0),
+        key=lambda trace: (trace.id, float(trace.stats.starttime)),
+    )
+    wanted = sorted(
+        (trace for trace in expected if trace.stats.npts != 0),
+        key=lambda trace: (trace.id, float(trace.stats.starttime)),
+    )
+    if len(actual) != len(wanted) or not all(
+        _same_coverage(a, w) for a, w in zip(actual, wanted, strict=True)
+    ):
+        raise ValueError(
+            f"existing MiniSEED archive differs from the source: {path}; "
+            "re-run with overwrite=True to replace it"
+        )
 
 
 def _validate_sac_output(path, expected):
     stream = read(path, format="SAC", headonly=True)
     if len(stream) != 1:
         raise ValueError("SAC output must contain exactly one trace")
-    actual = WaveformIdentity.from_trace(stream[0])
-    wanted = WaveformIdentity.from_trace(expected)
-    tolerance = 0.5 / float(expected.stats.sampling_rate)
-    if (
-        actual.day_key != wanted.day_key
-        or abs(stream[0].stats.starttime - expected.stats.starttime) > tolerance
-    ):
+    if not _same_coverage(stream[0], expected):
         raise ValueError("SAC output identity does not match source trace")
