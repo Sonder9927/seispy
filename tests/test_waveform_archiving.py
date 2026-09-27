@@ -372,6 +372,36 @@ def test_inventory_mismatch_archives_with_a_warning(tmp_path):
     assert list(output.rglob("*.mseed"))
 
 
+def test_archive_trace_filter_runs_after_lossless_merge(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
+    path.parent.mkdir(parents=True)
+
+    first = _trace_at("2026-01-01T00:00:00", npts=600)
+    second = _trace_at("2026-01-01T00:00:06", npts=800, seed=600)
+    Stream([first, second]).write(path, format="MSEED")
+
+    summary = waveform.archive_waveforms(
+        source,
+        output,
+        max_workers=1,
+        trace_filter=TraceFilter(min_duration_seconds=10, min_samples=1000),
+    )
+
+    assert summary.succeeded == 1
+    assert summary.failed == 0
+    assert summary.traces_total == 2
+    assert summary.traces_filtered == 0
+    assert summary.traces_written == 2
+
+    archived = list(output.rglob("*.mseed"))
+    assert len(archived) == 1
+    merged = read(archived[0], format="MSEED")
+    assert len(merged) == 1
+    assert merged[0].stats.npts == 1400
+
+
 def test_archive_trace_filter_skips_filtered_traces(tmp_path):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
