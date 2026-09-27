@@ -63,6 +63,7 @@ and UTC-day boundaries. It is not used to validate bytes during download.
 
 ```python
 from seispy import waveform
+from seispy.waveform import TraceFilter
 
 archive_summary = waveform.archive_waveforms(
     "data/waveform-staging",
@@ -70,6 +71,7 @@ archive_summary = waveform.archive_waveforms(
     output_format="mseed",
     inventory="data/metadata/stations.xml",
     max_workers=5,
+    trace_filter=TraceFilter(min_duration_seconds=60),
 )
 ```
 
@@ -80,7 +82,11 @@ header-derived path; failure in one group does not discard the others. Headers,
 archive identity, and—if StationXML is supplied—channel epoch and sample rate
 are checked first. Constant (flat-line) and non-finite traces are rejected as
 unusable, so a response that decodes cleanly but carries no signal is never
-committed.
+committed. Both examples pass
+`trace_filter=TraceFilter(min_duration_seconds=60)`, which drops traces shorter
+than a minute before they are written; omit it to archive every decodable trace,
+or see [Filter waveforms before processing](filter-waveforms.md) to tune the
+policy.
 `max_workers` controls isolated archive processes and defaults to 5. A large
 server may raise it independently of the downloader's `network_workers`; for
 example, keep network transfers at 10 and use 40 archive workers if memory and
@@ -92,12 +98,15 @@ SAC uses the same staging input and integrity checks. Each resulting trace is
 written to its canonical SAC path:
 
 ```python
+from seispy.waveform import TraceFilter
+
 sac_summary = waveform.archive_waveforms(
     "data/waveform-staging",
     "data/sac",
     output_format="sac",
     inventory="data/metadata/stations.xml",
     max_workers=5,
+    trace_filter=TraceFilter(min_duration_seconds=60),
 )
 ```
 

@@ -17,6 +17,7 @@ description: Validate scattered SAC files and place them in canonical network/st
 
 ```python
 from seispy import waveform
+from seispy.waveform import TraceFilter
 
 summary = waveform.archive_waveforms(
     "data/sac-unsorted",
@@ -24,6 +25,7 @@ summary = waveform.archive_waveforms(
     output_format="sac",
     pattern="*.sac",
     max_workers=5,
+    trace_filter=TraceFilter(min_duration_seconds=60),
 )
 
 print(summary.succeeded, summary.failed)
@@ -31,6 +33,12 @@ print(summary.succeeded, summary.failed)
 
 SAC headers, not source filenames, determine the canonical destination. Each
 output is validated and committed atomically. Source files are always kept.
+
+`trace_filter=TraceFilter(min_duration_seconds=60)` drops traces shorter than
+a minute before they are committed, so truncated or test files cannot enter the
+archive; constant and non-finite traces are always rejected as unusable. Omit
+`trace_filter` to archive every decodable trace, or see
+[Filter waveforms before processing](filter-waveforms.md) to tune the policy.
 
 ## Output layout
 

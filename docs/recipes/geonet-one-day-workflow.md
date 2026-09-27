@@ -38,6 +38,7 @@ from pathlib import Path
 from obspy import read
 
 from seispy import deconvolution, download, waveform
+from seispy.waveform import TraceFilter
 
 
 FDSN_BASE_URL = "https://service.geonet.org.nz"
@@ -106,6 +107,7 @@ waveforms = waveform.archive_waveforms(
     output_format="mseed",
     inventory=inventory,
     max_workers=5,
+    trace_filter=TraceFilter(min_duration_seconds=60),
 )
 require_ok("MiniSEED archive", waveforms)
 ```

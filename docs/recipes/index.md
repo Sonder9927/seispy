@@ -49,6 +49,7 @@ For a complete example rather than individual steps, use the
 | --- | --- | --- |
 | Validate staged downloads | `.mseed.raw` responses | [`waveform.archive_waveforms`](download-waveforms.md#archive-as-miniseed) |
 | Organize scattered SAC files | SAC files in any directory layout | [`waveform.archive_waveforms`](archive-sac.md) |
+| Filter short or fragmentary traces | MiniSEED/SAC tree plus a policy | [`waveform.filter_waveforms`](filter-waveforms.md) |
 | Measure actual or estimated coverage | one network directory | [`waveform.waveform_coverage`](waveform-coverage.md) |
 
 ## 3. Process continuous waveforms

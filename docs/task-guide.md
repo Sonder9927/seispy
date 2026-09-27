@@ -13,6 +13,7 @@ The fastest entry point is your current data:
 | StationXML or a known station list | trusted MiniSEED or SAC | [Download and validate known-station waveforms](recipes/download-waveforms.md) |
 | A geographic region | discovered stations and MiniSEED | [Discover regional waveforms](recipes/mass-download-waveforms.md) |
 | Scattered SAC files | a canonical archive | [Organize SAC files](recipes/archive-sac.md) |
+| A waveform tree with short fragments | only usable traces | [Filter waveform traces](recipes/filter-waveforms.md) |
 | A waveform archive | a coverage table and figure | [Measure network coverage](recipes/waveform-coverage.md) |
 | MiniSEED | SAC | [Convert MiniSEED to SAC](recipes/convert-miniseed.md) |
 | Multiple SAC segments per day | one file per channel-day | [Merge continuous SAC files](recipes/merge-sac.md) |

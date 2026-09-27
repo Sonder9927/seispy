@@ -53,6 +53,7 @@ Download daily MiniSEED or SAC files by station.
 | Organize scattered SAC files | [Build a SAC archive](recipes/archive-sac.md) |
 | Merge continuous SAC segments by day | [Merge SAC by day](recipes/merge-sac.md) |
 | Add event and station metadata to SAC headers | [Format headers](recipes/format-headers.md) |
+| Drop short or unusable traces | [Filter traces](recipes/filter-waveforms.md) |
 | Remove an instrument response | [Remove response](recipes/remove-response.md) |
 | Reduce the sampling rate | [Decimate](recipes/decimate.md) |
 

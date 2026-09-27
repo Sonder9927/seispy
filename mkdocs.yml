@@ -60,6 +60,7 @@ nav:
           - Discover a region — mass_download_waveforms: recipes/mass-download-waveforms.md
       - Build the archive:
           - Organize SAC files — archive_waveforms: recipes/archive-sac.md
+          - Filter weak traces — filter_waveforms: recipes/filter-waveforms.md
           - Measure network coverage — waveform_coverage: recipes/waveform-coverage.md
       - Process continuous data:
           - Convert MiniSEED to SAC — convert_mseed_to_sac: recipes/convert-miniseed.md

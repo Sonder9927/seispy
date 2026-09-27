@@ -21,22 +21,53 @@ and recording interval. See [Station metadata](download-inventory.md).
 
 ```python
 from seispy import deconvolution
+from seispy.waveform import TraceFilter
 
 summary = deconvolution.deconvolve_waveforms(
-    "data/sac/NZ",
+    "data/mseed",
     "data/metadata/stations.xml",
     backend="obspy",
-    pattern="*.sac",
-    output_dir="data/deconvolved/NZ",
+    pattern="*.mseed",
+    output_dir="data/sac_deconvolved",
     max_workers=2,
+    trace_filter=TraceFilter(
+        min_duration_seconds=120,
+        min_samples=1000,
+        min_periods=1,   # >= 1 period of the 0.004 Hz pre-filter corner
+    ),
 )
 
 print(f"Processed: {summary.succeeded}/{summary.total}")
 print(f"Failed: {summary.failed}")
+print(f"Filtered traces: {summary.traces_filtered}, skipped: {summary.skipped}")
 ```
 
 Reports and logs are enabled by default under `output_dir/logs` and flush batch
 progress periodically. See [Batch reports and logs](batch-reports.md).
+
+## Skip unusable traces
+
+Pass a shared `TraceFilter` to skip traces that cannot be deconvolved
+meaningfully before response removal. Filtering is a skip, never a failure: a
+file whose traces are all filtered is counted under `summary.skipped`, and
+`summary.traces_filtered` counts the individual traces. No output is
+written for a fully filtered file, and such a file is not reported as failed.
+
+```python
+from seispy.waveform import TraceFilter
+
+trace_filter = TraceFilter(
+    min_duration_seconds=120,   # short fragments carry no usable signal
+    min_samples=1000,
+    min_periods=1,              # >= 1 period of the lowest pre_filt corner
+)
+```
+
+`min_periods` is evaluated against this workflow's own `pre_filt[0]`, so the
+default `0.004 Hz` corner with `min_periods=1` imposes a 250-second floor.
+Empty, constant, and non-finite traces are rejected by default through
+`TraceFilter.reject_unusable_samples`. See
+[Filter waveform traces](filter-waveforms.md) for the full policy and presets.
 
 By default, response removal does not change the sampling rate. To decimate as
 part of this workflow, pass `decimate_factors=[5, 5, 4]`, for example, to change

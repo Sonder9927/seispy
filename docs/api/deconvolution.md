@@ -21,6 +21,12 @@ to the separate [Inventory interface](inventory.md).
 
 ::: seispy.deconvolution.removal.deconvolve_waveforms
 
+### Skip unusable traces
+
+`deconvolve_waveforms` accepts a shared `TraceFilter` and skips traces that
+are too short, too sparse, or unusable. Filtering is a skip, never a failure.
+See [Filter waveform traces](../recipes/filter-waveforms.md).
+
 ### Process one stream
 
 ::: seispy.deconvolution.removal.remove_response_from_file

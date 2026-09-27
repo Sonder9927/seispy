@@ -70,6 +70,7 @@ Interface: `waveform.archive_waveforms(source_dir, output_dir, ...)`
 
 ```python
 from seispy import waveform
+from seispy.waveform import TraceFilter
 
 archived = waveform.archive_waveforms(
     "data/waveform-staging",
@@ -77,6 +78,7 @@ archived = waveform.archive_waveforms(
     inventory=inventory,
     output_format="mseed",
     max_workers=2,
+    trace_filter=TraceFilter(min_duration_seconds=60),
 )
 
 print(archived.succeeded, archived.failed)

@@ -29,6 +29,14 @@ workflows.
 
 ::: seispy.waveform.merge.merge_waveforms_by_day
 
+### Filter waveform traces
+
+::: seispy.waveform.filtering.filter_waveforms
+
+### Trace quality policy
+
+::: seispy.waveform.integrity.TraceFilter
+
 ### Format SAC headers
 
 ::: seispy.waveform.headers.format_sac_headers
@@ -45,6 +53,10 @@ Applications normally do not instantiate them directly.
 ### MiniSEED conversion summary
 
 ::: seispy.waveform.conversion.WaveformConversionSummary
+
+### Waveform filter summary
+
+::: seispy.waveform.filtering.WaveformFilterSummary
 
 ### Waveform coverage report
 
