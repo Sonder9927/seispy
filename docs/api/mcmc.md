@@ -204,6 +204,10 @@ point uses `reference_model`, not `reference_water_model`.
 
 ### Search widths and Vs constraints
 
+Typical `search_radius` settings are **2 km for sediment thickness**, **5 km
+for Moho depth**, **0.3 km/s for crustal Vs**, and **0.2 km/s for mantle Vs**.
+All four values are search half-widths.
+
 | Setting                                             | Unit | Interpretation                                                                                                                                                                                                                                                      |
 | --------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search_radius.sediment`                            | km   | Half-width around sediment thickness; the lower endpoint is clipped at zero.                                                                                                                                                                                        |
@@ -405,8 +409,8 @@ plot_model(point, bounds)  # depth vs Vs search intervals
 figure, axes = plot_point(point, curve, bounds, output_file="point.png")
 ```
 
-![Example per-point figure: dispersion on the left, Vs search intervals on
-the right](../assets/mcmc-point-example.png)
+[![Example per-point figure: dispersion on the left, Vs search intervals on
+the right](../assets/mcmc-point-example.png){ .example-figure }](../assets/mcmc-point-example.png)
 
 *Real-data example generated with `plot=True` at grid point `122.00_33.50`
 (Moho 34.54 km). Left: phase dispersion with one-sigma bars. Right: Vs
@@ -601,16 +605,16 @@ Both panels are depth profiles in the same style as the model panel of
 reference, the blue and orange curves are the crustal and mantle fits, and the
 shaded band between a fit and the reference is that layer's error.
 
-![Greville sampling on a real reference model: every coefficient is set to the
-reference velocity at its Greville depth](../assets/mcmc-greville-centers.png)
+[![Greville sampling on a real reference model: every coefficient is set to the
+reference velocity at its Greville depth](../assets/mcmc-greville-centers.png){ .example-figure .example-figure--portrait }](../assets/mcmc-greville-centers.png)
 
 *Greville sampling. The crustal fit is close, but the mantle fit starts at the
 reference value at the Moho (4.07 km/s) and needs about 30 km to reach the
 high-velocity lid, so the shallow mantle is reconstructed too slow; the residual
 is concentrated between the Moho and roughly 80 km.*
 
-![Least-squares projection on the same reference model: coefficients are the
-best fit of the reference profile in coefficient space](../assets/mcmc-projection-centers.png)
+[![Least-squares projection on the same reference model: coefficients are the
+best fit of the reference profile in coefficient space](../assets/mcmc-projection-centers.png){ .example-figure .example-figure--portrait }](../assets/mcmc-projection-centers.png)
 
 *Least-squares projection. Both fits follow the reference closely and the
 leftover error is spread thinly instead of concentrating at the interface. The
@@ -759,21 +763,29 @@ posterior boundary accumulation, when tuning priors.
 ## Fortran-compatible Vs prior bounds
 
 Search centers are the least-squares projection of the reference profile into
-the Fortran coefficient space, one projection per layer. Configure the
-half-widths in `config.json` (km/s):
+the Fortran coefficient space, one projection per layer. A typical
+`config.json` configuration uses the following search half-widths; sediment
+and Moho values are in **km**, while crustal and mantle Vs values are in
+**km/s**:
 
 ```json
 "search_radius": {
-  "sediment": 0.2,
-  "moho": 1.0,
+  "sediment": 2.0,
+  "moho": 5.0,
   "crust_vs": 0.3,
   "mantle_vs": 0.2
 }
 ```
 
-The Vs defaults are **0.3 for crust** and **0.2 for mantle**; either accepts
-one value per coefficient. Sediment and Moho depth half-widths (km) remain
-explicit. These widths express a chosen search prior, not measured uncertainty.
+These settings request sediment thickness within **±2 km** of the reference
+thickness and Moho depth within **±5 km** of the reference depth. The sediment
+lower endpoint is clipped at zero. Crustal and mantle coefficient windows
+start at **±0.3 km/s** and **±0.2 km/s** around their respective projection
+centres, before the constraints below are applied.
+
+The Vs values are also the code defaults; either accepts one value per
+coefficient. Sediment and Moho depth half-widths must be supplied explicitly.
+These widths express a chosen search prior, not measured uncertainty.
 
 The writer starts from each requested `[center - radius, center + radius]`:
 

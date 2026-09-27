@@ -47,8 +47,8 @@ the Fortran coefficient space, so the two interface coefficients already carry
 the reference model's Moho contrast; no synthetic jump is needed. See
 [the Moho discontinuity and the interface coefficients](../api/mcmc.md#the-moho-discontinuity-and-the-interface-coefficients).
 
-![Per-point figure at 122.00_33.50: phase dispersion and Vs search intervals
-with projection centres](../assets/mcmc-point-example.png)
+[![Per-point figure at 122.00_33.50: phase dispersion and Vs search intervals
+with projection centres](../assets/mcmc-point-example.png){ .example-figure }](../assets/mcmc-point-example.png)
 
 A point with fewer valid dispersion rows than
 `phase_constraints.minimum_periods` is skipped before its directory is created,
