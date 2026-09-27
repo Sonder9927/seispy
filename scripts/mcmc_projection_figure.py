@@ -6,14 +6,15 @@ splines are drawn as one continuous section split by the Moho line, and the raw
 reference profile is overlaid with the reconstructed spline.
 
 The reference is a real model. Both figures use point ``122.00_33.50`` of the
-project's reference Vs model (``data/models/vs_RJMCMC_Shen2016_SL2013sv.parquet``,
-Shen2016/SL2013sv), with the sediment thickness and Moho depth read from
-``data/models/sedthk.xyz`` and ``data/models/lyb_rf_moho_grid.csv`` through the
-same alignment the preparation workflow uses. Four crustal and five mantle
-coefficients are used with ``factor = 2`` and a 300 km model bottom.
+reference Vs model, sediment thickness and Moho depth that the project
+configuration (``data/config-lyb.json``) points at, aligned with the same
+``TargetGrid`` the preparation workflow uses. Layer bounds, coefficient counts,
+``factor`` and the shallow-extrapolation policy are read from that
+configuration too, so the figures track it automatically.
 
 The input grids are not committed to the repository, so this script needs a
-checkout that also has ``data/models``. The generated PNGs are committed.
+checkout that also has ``data/config-lyb.json`` and ``data/models``. The
+generated PNGs are committed.
 
 Run from the repository root:
 
@@ -31,7 +32,6 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
 
 from seispy.mcmc.bspline import (  # noqa: E402
     basis_geometry,
@@ -39,6 +39,7 @@ from seispy.mcmc.bspline import (  # noqa: E402
     greville_depths,
     projection_coefficients,
 )
+from seispy.mcmc.config import load_config  # noqa: E402
 from seispy.mcmc.gridding import TargetGrid  # noqa: E402
 from seispy.mcmc.inputs import (  # noqa: E402
     DEPTH_NAMES,
@@ -46,38 +47,31 @@ from seispy.mcmc.inputs import (  # noqa: E402
     LON_NAMES,
     VS_NAMES,
     pick_name,
+    read_table,
 )
+from seispy.mcmc.priors import PROJECTION_SAMPLES  # noqa: E402
 from seispy.mcmc.spatial import (  # noqa: E402
     ScalarFieldSpec,
     interpolate_regular_grid,
     read_spatial_scalar,
 )
+from seispy.mcmc.velocity import VsProfile, velocity_at_depths  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data" / "models"
+CONFIG_PATH = ROOT / "data" / "config-lyb.json"
 ASSET_DIR = ROOT / "docs" / "assets"
 
-VS_MODEL_FILE = "vs_RJMCMC_Shen2016_SL2013sv.parquet"
-SEDIMENT_FILE = "sedthk.xyz"
-MOHO_FILE = "lyb_rf_moho_grid.csv"
-
 POINT = (122.0, 33.5)
-REGION = [121.5, 122.5, 33.5, 34.5]
-SPACING = 0.5
-Z_MAX = 300.0
-FACTOR = 2.0
-PROJECTION_SAMPLES = 400
-HALF_WIDTHS = {"crust": 0.3, "mantle": 0.2}
 
 LAYER_ORDER = ("crust", "mantle")
 LAYER_STYLE = {
-    "crust": {"n_basis": 4, "color": "#0072B2", "marker": "o"},
-    "mantle": {"n_basis": 5, "color": "#D55E00", "marker": "s"},
+    "crust": {"color": "#0072B2", "marker": "o"},
+    "mantle": {"color": "#D55E00", "marker": "s"},
 }
 
 REFERENCE_COLOR = "0.55"
 SEDIMENT_COLOR = "#009E73"
-X_LIMITS = (2.4, 5.05)
+X_LIMITS = (2.4, 4.95)
 Y_LIMITS = (305.0, 0.0)
 
 METHODS = {
@@ -91,84 +85,119 @@ METHODS = {
 
 @dataclass(frozen=True)
 class ReferenceModel:
-    """One real reference profile with its layer geometry."""
+    """One real reference profile with its configured layer geometry."""
 
-    depth: np.ndarray
-    vs: np.ndarray
+    profile: VsProfile
     z_sediment: float
     z_moho: float
+    z_max: float
+    factor: float
+    n_basis: dict[str, int]
+    allow_shallow: bool
+    max_shallow: float | None
 
     def reference(self, depths: np.ndarray) -> np.ndarray:
-        """Return the reference Vs at ``depths`` (km)."""
+        """Return the reference Vs at ``depths`` (km).
 
-        return np.interp(depths, self.depth, self.vs)
+        Uses the same shallow-extrapolation policy as the preparation code, so
+        a layer that starts above the profile coverage is sampled identically.
+        """
+
+        return velocity_at_depths(
+            self.profile,
+            np.asarray(depths, dtype=float),
+            allow_shallow_extrapolation=self.allow_shallow,
+            max_shallow_extrapolation_km=self.max_shallow,
+        )
 
     def layer(self, name: str) -> tuple[float, float, int]:
         """Return ``(z_top, z_bottom, n_basis)`` for one layer."""
 
         if name == "crust":
-            return self.z_sediment, self.z_moho, LAYER_STYLE["crust"]["n_basis"]
-        return self.z_moho, Z_MAX, LAYER_STYLE["mantle"]["n_basis"]
+            return self.z_sediment, self.z_moho, self.n_basis["crust"]
+        return self.z_moho, self.z_max, self.n_basis["mantle"]
 
 
-def _grid_value(filename: str, spec: ScalarFieldSpec) -> float:
+def _grid_value(
+    path: Path,
+    spec: ScalarFieldSpec,
+    target: TargetGrid,
+    region: list[float],
+) -> float:
     """Read one aligned grid value at the example point."""
 
-    target = TargetGrid.from_region(REGION, SPACING)
     lon, lat = target.flat_lonlat()
     index = int(np.argmin((lon - POINT[0]) ** 2 + (lat - POINT[1]) ** 2))
-    xyz = read_spatial_scalar(DATA_DIR / filename, spec, region=list(REGION))
+    xyz = read_spatial_scalar(path, spec, region=region)
     return float(interpolate_regular_grid(xyz, target).values.ravel()[index])
 
 
 def load_reference_model() -> ReferenceModel:
-    """Load the real profile and geometry for the example point."""
+    """Load the configured profile and geometry for the example point."""
 
-    frame = pd.read_parquet(DATA_DIR / VS_MODEL_FILE)
+    cfg = load_config(CONFIG_PATH)
+    target = TargetGrid.from_region(cfg.region, cfg.grid_spacing)
+
+    frame = read_table(cfg.paths.vs_model_file)
     lon_col = pick_name(frame.columns, LON_NAMES)
     lat_col = pick_name(frame.columns, LAT_NAMES)
     depth_col = pick_name(frame.columns, DEPTH_NAMES)
     vs_col = pick_name(frame.columns, VS_NAMES)
     if lon_col is None or lat_col is None or depth_col is None or vs_col is None:
-        raise ValueError(f"{VS_MODEL_FILE} is missing lon/lat/depth/vs columns")
+        raise ValueError(
+            f"{cfg.paths.vs_model_file.name} is missing lon/lat/depth/vs columns"
+        )
 
-    profile = frame[
-        (frame[lon_col] == POINT[0]) & (frame[lat_col] == POINT[1])
-    ].sort_values(depth_col)
-    if profile.empty:
-        raise ValueError(f"{VS_MODEL_FILE} has no profile at {POINT}")
+    selected = frame[(frame[lon_col] == POINT[0]) & (frame[lat_col] == POINT[1])]
+    if selected.empty:
+        raise ValueError(f"{cfg.paths.vs_model_file.name} has no profile at {POINT}")
+    selected = selected.sort_values(depth_col)
 
     sediment = _grid_value(
-        SEDIMENT_FILE,
+        cfg.paths.sediment_file,
         ScalarFieldSpec(
             "sediment thickness",
             convention="positive_thickness",
             value_columns=("sediment", "sediment_thickness", "thickness", "sed", "z"),
         ),
+        target,
+        list(cfg.region),
     )
     moho = _grid_value(
-        MOHO_FILE,
+        cfg.paths.moho_file,
         ScalarFieldSpec(
             "Moho depth",
             convention="positive_depth",
             value_columns=("moho", "moho_depth", "depth", "z"),
             allow_zero=False,
         ),
+        target,
+        list(cfg.region),
+    )
+    profile = VsProfile(
+        lon=POINT[0],
+        lat=POINT[1],
+        depth=selected[depth_col].to_numpy(dtype=float),
+        vs=selected[vs_col].to_numpy(dtype=float),
     )
     return ReferenceModel(
-        depth=profile[depth_col].to_numpy(dtype=float),
-        vs=profile[vs_col].to_numpy(dtype=float),
+        profile=profile,
         z_sediment=sediment,
         z_moho=moho,
+        z_max=float(cfg.zmax_Bs),
+        factor=float(cfg.factor),
+        n_basis={"crust": cfg.n_coeff_crust, "mantle": cfg.n_coeff_mantle},
+        allow_shallow=bool(cfg.vs_constraints.allow_shallow_extrapolation),
+        max_shallow=cfg.vs_constraints.max_shallow_extrapolation_km,
     )
 
 
 def sample_depths(z_top: float, z_bottom: float) -> np.ndarray:
     """Return the interior depth samples used by the projection and the audit.
 
-    These are the same 400 interior samples the preparation code projects onto,
-    so the errors annotated here match the residual reported in `point.png`
-    and in `prior_bounds.csv`.
+    These are the same interior samples the preparation code projects onto, so
+    the errors annotated here match the residual reported in ``point.png`` and
+    ``prior_bounds.csv``.
     """
 
     return np.linspace(z_top, z_bottom, PROJECTION_SAMPLES + 2)[1:-1]
@@ -180,7 +209,7 @@ def greville_centers(
     """Return the Greville depth and sampled coefficient of each coefficient."""
 
     z_top, z_bottom, n_basis = model.layer(layer)
-    depths = greville_depths(n_basis, z_top, z_bottom, FACTOR)
+    depths = greville_depths(n_basis, z_top, z_bottom, model.factor)
     return depths, model.reference(depths)
 
 
@@ -192,9 +221,9 @@ def projection_centers(
     z_top, z_bottom, n_basis = model.layer(layer)
     sample = sample_depths(z_top, z_bottom)
     coefficients, _ = projection_coefficients(
-        n_basis, z_top, z_bottom, FACTOR, sample, model.reference(sample)
+        n_basis, z_top, z_bottom, model.factor, sample, model.reference(sample)
     )
-    _, centroid = basis_geometry(n_basis, z_top, z_bottom, FACTOR)
+    _, centroid = basis_geometry(n_basis, z_top, z_bottom, model.factor)
     return centroid, coefficients
 
 
@@ -210,7 +239,7 @@ def evaluate(
     z_top, z_bottom, n_basis = model.layer(layer)
     depths = np.linspace(z_top, z_bottom, samples)
     interior = depths[1:-1]
-    basis = basis_matrix(n_basis, z_top, z_bottom, FACTOR, interior)
+    basis = basis_matrix(n_basis, z_top, z_bottom, model.factor, interior)
     values = np.concatenate(
         ([coefficients[0]], basis @ coefficients, [coefficients[-1]])
     )
@@ -231,7 +260,7 @@ def layer_errors(
 
     z_top, z_bottom, n_basis = model.layer(layer)
     sample = sample_depths(z_top, z_bottom)
-    basis = basis_matrix(n_basis, z_top, z_bottom, FACTOR, sample)
+    basis = basis_matrix(n_basis, z_top, z_bottom, model.factor, sample)
     residual = basis @ coefficients - model.reference(sample)
     return float(np.max(np.abs(residual))), float(np.sqrt((residual**2).mean()))
 
@@ -243,9 +272,9 @@ def draw(
 ) -> dict[str, tuple[float, float]]:
     """Draw one method (``greville`` or ``projection``) into ``output``."""
 
-    centers = greville_centers if method == "greville" else projection_centers
     if method not in METHODS:
         raise ValueError(f"unknown method: {method!r}")
+    centers = greville_centers if method == "greville" else projection_centers
 
     figure, ax = plt.subplots(figsize=(5.8, 6.6), constrained_layout=True)
     errors: dict[str, tuple[float, float]] = {}
@@ -292,11 +321,11 @@ def draw(
     ax.axhspan(0.0, model.z_sediment, color=SEDIMENT_COLOR, alpha=0.12, zorder=0)
     ax.axhline(model.z_sediment, color=SEDIMENT_COLOR, linewidth=1.0, linestyle="--")
     ax.axhline(model.z_moho, color="black", linewidth=1.2)
-    ax.axhline(Z_MAX, color="0.3", linewidth=1.0, linestyle=":")
+    ax.axhline(model.z_max, color="0.3", linewidth=1.0, linestyle=":")
     for depth, text in (
         (model.z_sediment, "sediment bottom"),
         (model.z_moho, "Moho"),
-        (Z_MAX, "model bottom"),
+        (model.z_max, "model bottom"),
     ):
         ax.text(
             0.01,
@@ -354,7 +383,7 @@ def main() -> None:
     model = load_reference_model()
     print(
         f"point {POINT[0]:.2f}_{POINT[1]:.2f}: sediment {model.z_sediment:.4f} km, "
-        f"Moho {model.z_moho:.4f} km, {model.depth.size} reference samples"
+        f"Moho {model.z_moho:.4f} km, {model.profile.depth.size} reference samples"
     )
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     greville = draw(model, "greville", ASSET_DIR / "mcmc-greville-centers.png")
