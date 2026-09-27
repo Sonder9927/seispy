@@ -141,9 +141,11 @@ def archive_waveforms(
         overwrite: Replace existing archive outputs.
         discard_corrupt_records: Recover independently valid records when full
             MiniSEED validation reports an integrity failure.
-        trace_filter: Optional reusable policy used to skip traces that cannot be
-            archived meaningfully. Filtered traces are counted separately and
-            never count as failures. Defaults to None (keep every usable trace).
+        trace_filter: Optional reusable policy applied after lossless merging
+            within each channel-day group. This lets contiguous short segments
+            satisfy duration/sample thresholds together before they are judged.
+            Filtered traces are counted separately and never count as failures.
+            Defaults to None (keep every usable trace).
         max_error_samples: Maximum sampled failures in the result.
         save_report: Persist the continuously updated JSON report.
         save_log: Persist the human-readable run log.
@@ -387,10 +389,6 @@ def _archive_one(
                 record_recovered = True
         valid, empty, unusable = _classify_traces(stream)
         rejected = list(unusable)
-        if trace_filter is not None:
-            kept, policy_rejected = split_traces_by_filter(valid, trace_filter)
-            valid = kept
-            rejected.extend(policy_rejected)
         inventory_warnings = _inventory_warnings(valid)
         if not valid:
             if rejected:
@@ -411,31 +409,51 @@ def _archive_one(
                 Path(output_root),
                 overwrite,
                 allow_raw_copy=not rejected,
+                trace_filter=trace_filter,
             )
         else:
-            result = _archive_sac_traces(valid, Path(output_root), overwrite)
-        written, existing, archived_traces, group_errors, reshaped = result
+            result = _archive_sac_traces(
+                valid,
+                Path(output_root),
+                overwrite,
+                trace_filter=trace_filter,
+            )
+        (
+            written,
+            existing,
+            archived_traces,
+            group_errors,
+            reshaped,
+            policy_filtered,
+        ) = result
         errors = [*group_errors]
         warnings = [*inventory_warnings]
-        traces_failed = len(stream) - len(empty) - len(rejected) - archived_traces
+        filtered_count = len(rejected) + policy_filtered
+        traces_failed = (
+            len(stream) - len(empty) - filtered_count - archived_traces
+        )
         archived_any = archived_traces > 0
         all_existing = archived_any and written == 0 and not errors
+        all_policy_filtered = bool(valid) and policy_filtered == len(valid)
         issue = None
         if errors or warnings:
             issue = WaveformArchiveIssue(source, "; ".join([*errors, *warnings]))
         return _ArchiveResult(
             succeeded=int(archived_any and not all_existing),
-            skipped=int(all_existing),
+            skipped=int(all_existing or all_policy_filtered),
             recovered=int(archived_any and record_recovered),
-            reshaped=int(archived_any and (reshaped or bool(rejected))),
-            failed=int(not archived_any),
+            reshaped=int(
+                (archived_any or all_policy_filtered)
+                and (reshaped or bool(rejected) or bool(policy_filtered))
+            ),
+            failed=int(not archived_any and not all_policy_filtered),
             errored=int(issue is not None),
             files_written=written,
             traces_total=len(stream),
             traces_written=archived_traces - existing,
             traces_existing=existing,
             traces_ignored_empty=len(empty),
-            traces_filtered=len(rejected),
+            traces_filtered=filtered_count,
             traces_failed=max(0, traces_failed),
             issue=issue,
         )
@@ -588,12 +606,14 @@ def _archive_mseed_traces(
     overwrite,
     *,
     allow_raw_copy,
+    trace_filter=None,
 ):
     intended = output_root / source.relative_to(source_root).with_name(
         source.name.removesuffix(".raw")
     )
     if (
-        allow_raw_copy
+        trace_filter is None
+        and allow_raw_copy
         and len(traces) == 1
         and _matches_mseed_path(intended, output_root, traces)
         and _benign_empty_traces(traces, empty_traces)
@@ -607,7 +627,7 @@ def _archive_mseed_traces(
             overwrite,
         )
         existing = len(traces) if skipped else 0
-        return written, existing, len(traces), (), False
+        return written, existing, len(traces), (), False, 0
 
     grouped = defaultdict(list)
     for trace in traces:
@@ -619,12 +639,23 @@ def _archive_mseed_traces(
     errors = []
     claimed = set()
     intended_claimed = False
+    traces_filtered = 0
     reshaped = len(grouped) > 1
     for group in grouped.values():
         segments, membership = _merge_group(group)
         if len(segments) != len(group) or len(segments) > 1:
             reshaped = True
         for index, segment in enumerate(segments):
+            covered = sum(1 for member in membership if member == index)
+            if trace_filter is not None:
+                kept, policy_rejected = split_traces_by_filter(
+                    [segment], trace_filter
+                )
+                if policy_rejected:
+                    traces_filtered += covered
+                    reshaped = True
+                    continue
+                segment = kept[0]
             if (
                 len(segments) == 1
                 and not intended_claimed
@@ -646,7 +677,6 @@ def _archive_mseed_traces(
                 )
                 continue
             claimed.add(destination)
-            covered = sum(1 for member in membership if member == index)
             try:
                 written, skipped = _write_mseed_group([segment], destination, overwrite)
             except Exception as exc:
@@ -662,7 +692,14 @@ def _archive_mseed_traces(
 
     if empty_traces and not _benign_empty_traces(traces, empty_traces):
         errors.append(f"ignored {len(empty_traces)} incompatible empty trace(s)")
-    return files_written, traces_existing, traces_archived, tuple(errors), reshaped
+    return (
+        files_written,
+        traces_existing,
+        traces_archived,
+        tuple(errors),
+        reshaped,
+        traces_filtered,
+    )
 
 
 def _matches_mseed_path(path, root, traces):
@@ -733,7 +770,7 @@ def _write_mseed_group(traces, destination, overwrite):
     return 1, False
 
 
-def _archive_sac_traces(traces, output_root, overwrite):
+def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
     grouped = defaultdict(list)
     for trace in traces:
         grouped[WaveformIdentity.from_trace(trace).day_key].append(trace)
@@ -743,18 +780,26 @@ def _archive_sac_traces(traces, output_root, overwrite):
     traces_archived = 0
     errors = []
     claimed = set()
+    traces_filtered = 0
     reshaped = len(grouped) > 1
     for group in grouped.values():
         segments, membership = _merge_group(group)
         if len(segments) != len(group) or len(segments) > 1:
             reshaped = True
         for index, trace in enumerate(segments):
+            covered = sum(1 for member in membership if member == index)
+            if trace_filter is not None:
+                kept, policy_rejected = split_traces_by_filter([trace], trace_filter)
+                if policy_rejected:
+                    traces_filtered += covered
+                    reshaped = True
+                    continue
+                trace = kept[0]
             destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
             if destination in claimed:
                 errors.append(f"trace {trace.id} maps to duplicate path {destination}")
                 continue
             claimed.add(destination)
-            covered = sum(1 for member in membership if member == index)
             try:
                 if destination.is_file() and not overwrite:
                     _validate_sac_output(destination, trace)
@@ -773,7 +818,14 @@ def _archive_sac_traces(traces, output_root, overwrite):
                 continue
             files_written += 1
             traces_archived += covered
-    return files_written, traces_existing, traces_archived, tuple(errors), reshaped
+    return (
+        files_written,
+        traces_existing,
+        traces_archived,
+        tuple(errors),
+        reshaped,
+        traces_filtered,
+    )
 
 
 def _archive_mseed(source, trusted_source, stream, source_root, output_root, overwrite):
