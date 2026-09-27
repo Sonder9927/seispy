@@ -214,7 +214,7 @@ point uses `reference_model`, not `reference_water_model`.
 | `vs_constraints.no_shallow_layers_vs_min`           | km/s | Lower bound 0.5 on the **reconstructed node velocity** for crust and mantle, applied only when water, sediment and ice are all disabled. It cannot be set below 0.5.                                                                                              |
 | `vs_constraints.deepest_vs_min`                     | km/s | Lower bound 4.0 for the deepest node, which is exactly the deepest mantle coefficient; it cannot be set below 4.0.                                                                                                                                                 |
 | `vs_constraints.moho_strict_margin`                 | km/s | Numerical separation of the first mantle and last crust **initial midpoints**. It does not force disjoint search intervals or prescribe the geological Moho contrast.                                                                                               |
-| `vs_constraints.moho_vs_jump`                       | km/s | **Deprecated and ignored.** Least-squares projection already reproduces the reference Moho contrast; a nonzero value only raises a `DeprecationWarning`.                                                                                                        |
+| `vs_constraints.moho_vs_jump`                       | km/s | **Deprecated and ignored.** The projection gives the interface pair a positive layer-mean contrast, so a nonzero value only raises a `DeprecationWarning`.                                                                                                        |
 | `vs_constraints.allow_shallow_extrapolation`        | bool | Whether a finite shallow gap in the reference profile is filled by linear extrapolation from the two shallowest samples.                                                                                                                                            |
 | `vs_constraints.max_shallow_extrapolation_km`       | km   | Maximum shallow gap filled when extrapolation is enabled; `null` removes the gap limit.                                                                                                                                                                             |
 
@@ -408,18 +408,18 @@ figure, axes = plot_point(point, curve, bounds, output_file="point.png")
 ![Example per-point figure: dispersion on the left, Vs search intervals on
 the right](../assets/mcmc-point-example.png)
 
-*Real-data example generated with `plot=True` at grid point
-`122.00_33.50` (Moho 32.49 km). Left: phase dispersion with one-sigma bars.
-Right: Vs coefficients with their final search intervals placed at their basis
-centroids, the least-squares reference projection as the dashed initial spline,
-the raw reference profile (grey), the sediment layer, the Moho, and the model
-bottom. The last crustal marker (blue) and first mantle marker (orange) sit on
-either side of the Moho line, as described under
-[the Moho discontinuity and the interface coefficients](#the-moho-discontinuity-and-the-interface-coefficients).
-This reference has a sharp shallow gradient and an uppermost-mantle
-low-velocity zone, so the degree-2 and degree-3 layer splines cannot follow it
-exactly; the annotated layer projection error (0.800 km/s crust, 0.511 km/s
-mantle) is the audit signal for that resolution limit.*
+*Real-data example generated with `plot=True` at grid point `122.00_33.50`
+(Moho 32.49 km). Left: phase dispersion with one-sigma bars. Right: Vs
+coefficients with their final search intervals placed at their basis centroids,
+the least-squares reference projection as the dashed initial spline, the raw
+reference profile (grey), the sediment layer, the Moho, and the model bottom.
+The last crustal marker (blue) and first mantle marker (orange) sit on either
+side of the Moho line. The annotated layer projection error (0.800 km/s crust,
+0.511 km/s mantle) is the audit signal for this reference's resolution limit:
+its sharp shallow gradient and uppermost-mantle low-velocity zone cannot be
+followed exactly by degree-2 and degree-3 layer splines. For how the centring
+rule itself is chosen, see
+[Greville sampling versus least-squares projection](#greville-sampling-versus-least-squares-projection).*
 
 - `plot_dispersion(curve, ...)` draws phase velocity against period with
   one-sigma error bars; non-finite sigmas fall back to `default_sigma`
@@ -589,6 +589,76 @@ interface, where this reference is still on the crustal side of the jump
 4.49 km/s, and the projection is 4.47 km/s. Using the Greville sample would
 place the whole prior window for the uppermost mantle far too low.
 
+### Greville sampling versus least-squares projection
+
+The synthetic profile above isolates the geometry. The two figures below repeat
+the comparison on a **real reference model**: point `122.00_33.50` of the
+project's reference Vs model (Shen2016/SL2013sv), whose aligned sediment
+thickness is 2.400 km and Moho depth is 32.492 km. Four crustal and five mantle
+coefficients are used with `factor = 2` and a 300 km model bottom, exactly as in
+the configuration.
+
+Both panels are depth profiles in the same style as the model panel of
+`point.png`: depth increases downward, the thick grey curve is the raw
+reference, the blue and orange curves are the crustal and mantle fits, and the
+shaded band between a fit and the reference is that layer's error.
+
+![Greville sampling on a real reference model: every coefficient is set to the
+reference velocity at its Greville depth](../assets/mcmc-greville-centers.png)
+
+*Greville sampling. Both layers keep a large residual, because the degree-2 and
+degree-3 splines cannot follow the shallow high-velocity lid (3.95 km/s at
+5 km), the crustal low-velocity zone (3.45 km/s at 30 km), the fast lid below
+the Moho (4.69 km/s at 43 km) or the uppermost-mantle low-velocity zone
+(4.30 km/s at 120 km). The mantle fit starts at 3.75 km/s, the reference value
+at the Moho, and needs roughly 30 km to climb to the fast lid, so the whole
+fast-lid section is reconstructed too low.*
+
+![Least-squares projection on the same reference model: coefficients are the
+best fit of the reference profile in coefficient space](../assets/mcmc-projection-centers.png)
+
+*Least-squares projection. The fit follows the reference much more closely
+through both layer interiors, and the leftover error sits where the basis has no
+freedom. The coefficients themselves are scattered, because the projection
+trades local accuracy for a smaller total residual.*
+
+| Layer               | Metric       | Greville sampling | projection | improvement |
+| ------------------- | ------------ | ----------------- | ---------- | ----------- |
+| crust [2.40, 32.49] | max \|ΔVs\|  | 0.899 km/s        | 0.800 km/s | 1.12x       |
+| crust [2.40, 32.49] | rms \|ΔVs\|  | 0.293 km/s        | 0.129 km/s | **2.3x**    |
+| mantle [32.49, 300] | max \|ΔVs\|  | 0.665 km/s        | 0.511 km/s | 1.30x       |
+| mantle [32.49, 300] | rms \|ΔVs\|  | 0.192 km/s        | 0.066 km/s | **2.9x**    |
+
+Errors are measured on the same 400 interior samples the projection uses, so the
+projection maximum is exactly the per-layer residual reported by `point.png`
+and `prior_bounds.csv`. On real data that maximum is dominated by the resolution
+of the basis rather than by the centring rule, so the RMS is the discriminating
+metric: projection is about 2-3x better because it is the least-squares optimum
+by definition. The `max |ΔVs|` annotation in each figure is the audit signal for
+a layer that the chosen model size cannot resolve.
+
+What matters for a prior is not the error at one depth, but whether the
+reference *as a coefficient vector* stays representable. That vector is exactly
+`c*`, so a box centred on the projection contains it by construction. A box
+centred on the Greville samples with the configured half-widths (0.3 km/s crust,
+0.2 km/s mantle) does not: the crustal box misses one coefficient by 0.86 km/s,
+and the mantle box misses four of its five coefficients, by up to 0.67 km/s.
+That is the sense in which projection is the better centring rule here. It also
+removes the need for `moho_vs_jump`, because the projected pair differs by the
+layer-mean contrast, which is positive for this point and therefore passes the
+strict-jump check without a synthetic margin. See
+[the Moho discontinuity and the interface coefficients](#the-moho-discontinuity-and-the-interface-coefficients)
+for the caveat: that positive jump is a layer-mean contrast, not the reference
+value at the interface.
+
+The trade-off is visible at the clamped interface. The first mantle coefficient
+*is* the reconstructed Vs at the Moho, so the Greville sample is exact there
+(3.750 km/s), while projection moves it to 4.342 km/s to fit the whole layer and
+therefore overshoots the immediate Moho value by about 0.59 km/s. That is why
+`moho_strict_margin` and the model-space clipping of the prior box remain useful,
+and why the per-layer projection residual is reported as an audit signal
+(`point.png` prints it, and `para.inp` bounds are clipped in node space).
+
 ### Why projection centres, and why the basis centroid matters
 
 The coefficients are not point samples of the velocity model. The velocity
@@ -664,28 +734,32 @@ mantle coefficients are the two Moho velocities.
 
 With Greville sampling those two coefficients were both centred on the
 continuous reference value at the interface, and `moho_vs_jump` was needed to
-separate them. **Least-squares projection removes that need.** The two layers
-are projected independently, so the last crustal coefficient is fit to the
-crustal reference and the first mantle coefficient to the mantle reference; the
-pair automatically carries the reference model's own contrast.
+separate them. **Least-squares projection removes that need**, because the two
+layers are projected independently: the pair difference becomes the layer-mean
+contrast, which is positive for a normal crust/mantle pair and therefore
+satisfies the executable's strict-jump check without a synthetic margin.
+
+The pair does not preserve the exact interface velocity, though. On the worked
+example point the reference is continuous through the Moho (3.75 km/s on both
+sides), while the projections give 3.61 km/s for the last crustal and 4.34 km/s
+for the first mantle coefficient: the realized `moho_contrast_km_s` is
+`+0.727` km/s, produced by fitting each layer as a whole rather than by the
+reference value at the interface. The mantle coefficient consequently overshoots
+the immediate Moho velocity by about 0.59 km/s. Increase the coefficient count,
+or use a reference model that has a genuine sharp Moho sampled finely on both
+sides of the interface, when the exact interface velocity matters.
 
 `moho_strict_margin` remains as a numerical floor. It only fires if clipping or
 a genuinely flat reference leaves the two initial midpoints closer than the
 margin, and it never prescribes a geological contrast. `moho_vs_jump` is
 deprecated and ignored: a nonzero value raises a `DeprecationWarning`.
 
-This is also why a reference model with a sharp Moho must be sampled finely
-enough around the interface. The projection uses the reference velocities on
-each side of the jump, so a profile that ramps over tens of kilometres will
-produce a correspondingly smooth contrast bias.
-
-For the worked example point `122.00_33.50`, the crustal projection ends near
-the crustal value below the sediment and the mantle projection starts near the
-mantle value below the Moho, so the two interface windows straddle the
-interface and the initial model has a positive jump. `prior_bounds.csv`
-records the realized `moho_contrast_km_s` on the two interface rows and the
-layer projection error on every row; check them, plus posterior boundary
-accumulation, when tuning priors.
+For the worked example point `122.00_33.50` the written interface intervals are
+`[3.315, 3.914]` km/s (last crustal) and `[4.142, 4.541]` km/s (first mantle),
+so the two windows straddle the interface and the initial model has a positive
+jump. `prior_bounds.csv` records the realized `moho_contrast_km_s` on the two
+interface rows and the layer projection error on every row; check them, plus
+posterior boundary accumulation, when tuning priors.
 
 ## Fortran-compatible Vs prior bounds
 
