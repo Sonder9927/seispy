@@ -2,6 +2,7 @@ from pathlib import Path
 import struct
 
 import numpy as np
+import pytest
 from obspy import Inventory, Stream, Trace, UTCDateTime, read
 
 from seispy import waveform
@@ -173,6 +174,121 @@ def test_worker_succeeds_when_only_one_trace_group_can_be_written(
     assert result.files_written == result.traces_written == 1
     assert result.traces_failed == 1
     assert "simulated destination failure" in result.issue.error
+
+
+@pytest.mark.parametrize("output_format", ["mseed", "sac"])
+@pytest.mark.parametrize("failed_day", [1, 2])
+@pytest.mark.parametrize("stage", ["merge", "filter", "path"])
+def test_archive_isolates_group_errors(
+    tmp_path, monkeypatch, output_format, failed_day, stage
+):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    raw = _multiday_raw_mseed(source)
+    if stage == "merge":
+        original = archiving._merge_group
+
+        def fail_selected(group):
+            if group[0].stats.starttime.julday == failed_day:
+                raise ValueError("simulated group failure")
+            return original(group)
+
+        monkeypatch.setattr(archiving, "_merge_group", fail_selected)
+    elif stage == "filter":
+        original = archiving.split_traces_by_filter
+
+        def fail_selected(traces, policy):
+            if traces[0].stats.starttime.julday == failed_day:
+                raise ValueError("simulated group failure")
+            return original(traces, policy)
+
+        monkeypatch.setattr(archiving, "split_traces_by_filter", fail_selected)
+    else:
+        original = (
+            WaveformIdentity.sac_path
+            if output_format == "sac"
+            else archiving._recovered_mseed_path
+        )
+
+        def fail_sac(identity, root):
+            if identity.julday == failed_day:
+                raise ValueError("simulated group failure")
+            return original(identity, root)
+
+        def fail_mseed(root, traces, **kwargs):
+            if traces[0].stats.starttime.julday == failed_day:
+                raise ValueError("simulated group failure")
+            return original(root, traces, **kwargs)
+
+        if output_format == "sac":
+            monkeypatch.setattr(WaveformIdentity, "sac_path", fail_sac)
+        else:
+            # Ensure both days use generated paths rather than the raw filename.
+            renamed = raw.with_name("arbitrary.mseed.raw")
+            raw.rename(renamed)
+            raw = renamed
+            monkeypatch.setattr(archiving, "_recovered_mseed_path", fail_mseed)
+
+    result = archiving._archive_one(
+        str(raw),
+        str(source),
+        str(output),
+        output_format,
+        False,
+        False,
+        trace_filter=TraceFilter(min_duration_seconds=0, min_samples=2),
+    )
+
+    assert result.succeeded == 1
+    assert result.failed == result.skipped == 0
+    assert result.files_written == result.traces_written == 1
+    assert result.traces_total == 2
+    assert result.traces_failed == result.errored == 1
+    assert "simulated group failure" in result.issue.error
+    outputs = list(output.rglob(f"*.{output_format}"))
+    assert len(outputs) == 1
+    assert read(outputs[0])[0].stats.starttime.julday == 3 - failed_day
+
+
+@pytest.mark.parametrize("output_format", ["mseed", "sac"])
+def test_archive_existing_samples_must_match(tmp_path, output_format):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    raw = _raw_mseed(source)
+
+    def archive(overwrite=False):
+        return archiving._archive_one(
+            str(raw), str(source), str(output), output_format, overwrite, False
+        )
+
+    assert archive().files_written == 1
+    assert archive().traces_existing == 1
+    destination = next(output.rglob(f"*.{output_format}"))
+    previous = destination.read_bytes()
+    changed = read(raw)
+    changed[0].data += 5000
+    changed.write(raw, format="MSEED")
+
+    conflict = archive()
+    assert conflict.failed == conflict.traces_failed == 1
+    assert conflict.traces_existing == conflict.files_written == 0
+    assert "source" in conflict.issue.error
+    assert destination.read_bytes() == previous
+    assert archive(overwrite=True).files_written == 1
+    np.testing.assert_array_equal(read(destination)[0].data, changed[0].data)
+    assert archive().traces_existing == 1
+
+
+def test_sac_validation_compares_samples_at_storage_precision(tmp_path):
+    trace = _trace_at("2026-01-01", npts=100)
+    trace.data = np.linspace(0.1, 1.1, 100, dtype=np.float64)
+    path = tmp_path / "rounded.sac"
+    trace.write(str(path), format="SAC")
+
+    archiving._validate_sac_output(path, trace)
+    trace.data[50] += 0.01
+    with pytest.raises(ValueError, match="samples differ"):
+        archiving._validate_sac_output(path, trace)
 
 
 def test_archive_requires_separate_source_and_output_trees(tmp_path):
@@ -372,7 +488,10 @@ def test_inventory_mismatch_archives_with_a_warning(tmp_path):
     assert list(output.rglob("*.mseed"))
 
 
-def test_archive_trace_filter_runs_after_lossless_merge(tmp_path):
+@pytest.mark.parametrize("output_format", ["mseed", "sac"])
+def test_archive_trace_filter_runs_after_lossless_merge(
+    tmp_path, monkeypatch, output_format
+):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
     path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
@@ -380,12 +499,24 @@ def test_archive_trace_filter_runs_after_lossless_merge(tmp_path):
 
     first = _trace_at("2026-01-01T00:00:00", npts=600)
     second = _trace_at("2026-01-01T00:00:06", npts=800, seed=600)
-    Stream([first, second]).write(path, format="MSEED")
+    # ObsPy can merge contiguous records while reading MiniSEED. Keep the
+    # decoded traces separate so this exercises the archive's merge/filter order.
+    read_full_mseed = archiving._read_full_mseed
 
-    summary = waveform.archive_waveforms(
-        source,
-        output,
-        max_workers=1,
+    def read_source_unmerged(candidate):
+        if Path(candidate) == path:
+            return Stream([first.copy(), second.copy()])
+        return read_full_mseed(candidate)
+
+    monkeypatch.setattr(archiving, "_read_full_mseed", read_source_unmerged)
+
+    summary = archiving._archive_one(
+        str(path),
+        str(source),
+        str(output),
+        output_format,
+        False,
+        True,
         trace_filter=TraceFilter(min_duration_seconds=10, min_samples=1000),
     )
 
@@ -395,11 +526,80 @@ def test_archive_trace_filter_runs_after_lossless_merge(tmp_path):
     assert summary.traces_filtered == 0
     assert summary.traces_written == 2
 
-    archived = list(output.rglob("*.mseed"))
+    archived = list(output.rglob(f"*.{output_format}"))
     assert len(archived) == 1
-    merged = read(archived[0], format="MSEED")
+    merged = read(archived[0], format=output_format.upper())
     assert len(merged) == 1
     assert merged[0].stats.npts == 1400
+    np.testing.assert_array_equal(merged[0].data, np.arange(1400))
+
+
+@pytest.mark.parametrize("output_format", ["mseed", "sac"])
+@pytest.mark.parametrize("filter_outer", [True, False])
+def test_archive_conflicting_overlap_counts_only_preserved_trace(
+    tmp_path, output_format, filter_outer
+):
+    source = tmp_path / "raw"
+    source.mkdir()
+    output = tmp_path / "archive"
+    path = source / "overlap.mseed.raw"
+    outer = _trace_at("2026-01-01", npts=2000)
+    inner = _trace_at("2026-01-01T00:00:02", npts=1200, seed=5000)
+    rejected, expected = (outer, inner) if filter_outer else (inner, outer)
+    rejected.data = np.tile(np.array([0, 1], dtype=np.int32), rejected.stats.npts // 2)
+    Stream([outer, inner]).write(path, format="MSEED")
+
+    result = archiving._archive_one(
+        str(path),
+        str(source),
+        str(output),
+        output_format,
+        False,
+        True,
+        trace_filter=TraceFilter(max_flatline_amplitude=2),
+    )
+
+    assert result.succeeded == 1
+    assert result.skipped == result.failed == result.errored == 0
+    assert result.traces_total == 2
+    assert result.traces_written == result.traces_filtered == 1
+    assert result.traces_failed == 0
+    assert result.files_written == 1
+    archived = list(output.rglob(f"*.{output_format}"))
+    assert len(archived) == 1
+    actual = read(archived[0])[0]
+    assert actual.stats.starttime == expected.stats.starttime
+    np.testing.assert_array_equal(actual.data, expected.data)
+
+
+def test_merge_group_tracks_identical_overlap():
+    outer = _trace_at("2026-01-01", npts=2000)
+    inner = _trace_at("2026-01-01T00:00:02", npts=1200, seed=200)
+
+    segments, membership = archiving._merge_group([outer, inner])
+
+    assert len(segments) == 1
+    assert membership == [0, 0]
+    np.testing.assert_array_equal(segments[0].data, np.arange(2000))
+
+
+@pytest.mark.parametrize("mismatch", ["samples", "rate", "grid", "coverage", "channel"])
+def test_covering_segment_rejects_incompatible_trace(mismatch):
+    segment = _trace_at("2026-01-01", npts=2000)
+    trace = _trace_at("2026-01-01T00:00:02", npts=1200, seed=200)
+    if mismatch == "samples":
+        trace.data[0] = -1
+    elif mismatch == "rate":
+        trace.stats.sampling_rate = 200
+    elif mismatch == "grid":
+        trace.stats.starttime += 0.005
+    elif mismatch == "coverage":
+        trace.stats.starttime += 10
+    else:
+        trace.stats.channel = "HHN"
+
+    with pytest.raises(ValueError, match="no merged segment preserves trace"):
+        archiving._covering_segment([segment], trace)
 
 
 def test_archive_trace_filter_skips_filtered_traces(tmp_path):

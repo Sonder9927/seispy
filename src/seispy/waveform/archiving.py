@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from obspy import Stream, read, read_inventory
 from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
@@ -429,9 +430,7 @@ def _archive_one(
         errors = [*group_errors]
         warnings = [*inventory_warnings]
         filtered_count = len(rejected) + policy_filtered
-        traces_failed = (
-            len(stream) - len(empty) - filtered_count - archived_traces
-        )
+        traces_failed = len(stream) - len(empty) - filtered_count - archived_traces
         archived_any = archived_traces > 0
         all_existing = archived_any and written == 0 and not errors
         all_policy_filtered = bool(valid) and policy_filtered == len(valid)
@@ -570,10 +569,7 @@ def _merge_group(group):
     stream.sort()
     merge_contiguous_segments(stream)
     segments = list(stream)
-    membership = [
-        _covering_segment(segments, trace.stats.starttime, trace.stats.endtime)
-        for trace in group
-    ]
+    membership = [_covering_segment(segments, trace) for trace in group]
     return segments, membership
 
 
@@ -586,14 +582,33 @@ def _short_segment_token(segment):
     )
 
 
-def _covering_segment(segments, starttime, endtime):
+def _covering_segment(segments, trace):
+    """Find a segment preserving all input samples on the same sample grid."""
+    # Unmerged traces retain their identity, including conflicting overlaps.
     for index, segment in enumerate(segments):
-        if segment.stats.starttime <= starttime and endtime <= segment.stats.endtime:
+        if segment is trace:
             return index
     for index, segment in enumerate(segments):
-        if segment.stats.starttime <= starttime <= segment.stats.endtime:
+        if (
+            segment.id != trace.id
+            or segment.stats.sampling_rate != trace.stats.sampling_rate
+        ):
+            continue
+        offset = (
+            (trace.stats.starttime.ns - segment.stats.starttime.ns)
+            / 1e9
+            * trace.stats.sampling_rate
+        )
+        start = round(offset)
+        stop = start + trace.stats.npts
+        # Allow floating-point rounding, but never round to another sample grid.
+        if abs(offset - start) > 1e-6 or start < 0 or stop > segment.stats.npts:
+            continue
+        if np.array_equal(segment.data[start:stop], trace.data):
             return index
-    return None
+    raise ValueError(
+        f"no merged segment preserves trace {trace.id} at {trace.stats.starttime}"
+    )
 
 
 def _archive_mseed_traces(
@@ -642,53 +657,61 @@ def _archive_mseed_traces(
     traces_filtered = 0
     reshaped = len(grouped) > 1
     for group in grouped.values():
-        segments, membership = _merge_group(group)
-        if len(segments) != len(group) or len(segments) > 1:
-            reshaped = True
-        for index, segment in enumerate(segments):
-            covered = sum(1 for member in membership if member == index)
-            if trace_filter is not None:
-                kept, policy_rejected = split_traces_by_filter(
-                    [segment], trace_filter
-                )
-                if policy_rejected:
-                    traces_filtered += covered
-                    reshaped = True
-                    continue
-                segment = kept[0]
-            if (
-                len(segments) == 1
-                and not intended_claimed
-                and _matches_mseed_path(intended, output_root, segments)
-            ):
-                destination = intended
-                intended_claimed = True
-            else:
-                destination = _recovered_mseed_path(
-                    output_root,
-                    [segment],
-                    start_token=_short_segment_token(segment),
-                )
+        try:
+            segments, membership = _merge_group(group)
+            if len(segments) != len(group) or len(segments) > 1:
+                reshaped = True
+            for index, segment in enumerate(segments):
+                covered = sum(1 for member in membership if member == index)
+                if trace_filter is not None:
+                    kept, policy_rejected = split_traces_by_filter(
+                        [segment], trace_filter
+                    )
+                    if policy_rejected:
+                        traces_filtered += covered
+                        reshaped = True
+                        continue
+                    segment = kept[0]
+                if (
+                    len(segments) == 1
+                    and not intended_claimed
+                    and _matches_mseed_path(intended, output_root, segments)
+                ):
+                    destination = intended
+                    intended_claimed = True
+                else:
+                    destination = _recovered_mseed_path(
+                        output_root,
+                        [segment],
+                        start_token=_short_segment_token(segment),
+                    )
+                    if destination in claimed:
+                        destination = _recovered_mseed_path(output_root, [segment])
                 if destination in claimed:
-                    destination = _recovered_mseed_path(output_root, [segment])
-            if destination in claimed:
-                errors.append(
-                    f"trace {segment.id} maps to duplicate path {destination}"
-                )
-                continue
-            claimed.add(destination)
-            try:
-                written, skipped = _write_mseed_group([segment], destination, overwrite)
-            except Exception as exc:
-                errors.append(
-                    f"trace group {segment.id} at "
-                    f"{segment.stats.starttime} failed: {type(exc).__name__}: {exc}"
-                )
-                continue
-            files_written += written
-            traces_archived += covered
-            if skipped:
-                traces_existing += covered
+                    errors.append(
+                        f"trace {segment.id} maps to duplicate path {destination}"
+                    )
+                    continue
+                claimed.add(destination)
+                try:
+                    written, skipped = _write_mseed_group(
+                        [segment], destination, overwrite
+                    )
+                except Exception as exc:
+                    errors.append(
+                        f"trace group {segment.id} at "
+                        f"{segment.stats.starttime} failed: {type(exc).__name__}: {exc}"
+                    )
+                    continue
+                files_written += written
+                traces_archived += covered
+                if skipped:
+                    traces_existing += covered
+        except Exception as exc:
+            errors.append(
+                f"trace group {group[0].id} at {group[0].stats.starttime} "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
 
     if empty_traces and not _benign_empty_traces(traces, empty_traces):
         errors.append(f"ignored {len(empty_traces)} incompatible empty trace(s)")
@@ -783,41 +806,54 @@ def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
     traces_filtered = 0
     reshaped = len(grouped) > 1
     for group in grouped.values():
-        segments, membership = _merge_group(group)
-        if len(segments) != len(group) or len(segments) > 1:
-            reshaped = True
-        for index, trace in enumerate(segments):
-            covered = sum(1 for member in membership if member == index)
-            if trace_filter is not None:
-                kept, policy_rejected = split_traces_by_filter([trace], trace_filter)
-                if policy_rejected:
-                    traces_filtered += covered
-                    reshaped = True
+        try:
+            segments, membership = _merge_group(group)
+            if len(segments) != len(group) or len(segments) > 1:
+                reshaped = True
+            for index, trace in enumerate(segments):
+                covered = sum(1 for member in membership if member == index)
+                if trace_filter is not None:
+                    kept, policy_rejected = split_traces_by_filter(
+                        [trace], trace_filter
+                    )
+                    if policy_rejected:
+                        traces_filtered += covered
+                        reshaped = True
+                        continue
+                    trace = kept[0]
+                destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
+                if destination in claimed:
+                    errors.append(
+                        f"trace {trace.id} maps to duplicate path {destination}"
+                    )
                     continue
-                trace = kept[0]
-            destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
-            if destination in claimed:
-                errors.append(f"trace {trace.id} maps to duplicate path {destination}")
-                continue
-            claimed.add(destination)
-            try:
-                if destination.is_file() and not overwrite:
-                    _validate_sac_output(destination, trace)
-                    traces_existing += covered
-                    traces_archived += covered
-                    continue
-                temporary = temporary_output_path(destination)
+                claimed.add(destination)
                 try:
-                    trace.write(str(temporary), format="SAC")
-                    _validate_sac_output(temporary, trace)
-                    commit_output(temporary, destination, overwrite=overwrite)
-                finally:
-                    temporary.unlink(missing_ok=True)
-            except Exception as exc:
-                errors.append(f"trace {trace.id} failed: {type(exc).__name__}: {exc}")
-                continue
-            files_written += 1
-            traces_archived += covered
+                    if destination.is_file() and not overwrite:
+                        _validate_sac_output(destination, trace)
+                        traces_existing += covered
+                        traces_archived += covered
+                        continue
+                    temporary = temporary_output_path(destination)
+                    try:
+                        trace.write(str(temporary), format="SAC")
+                        _validate_sac_output(temporary, trace)
+                        commit_output(temporary, destination, overwrite=overwrite)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                except Exception as exc:
+                    errors.append(
+                        f"trace {trace.id} failed: {type(exc).__name__}: {exc}"
+                    )
+                    continue
+                files_written += 1
+                traces_archived += covered
+        except Exception as exc:
+            errors.append(
+                f"trace group {group[0].id} at {group[0].stats.starttime} "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
+
     return (
         files_written,
         traces_existing,
@@ -878,7 +914,8 @@ def _validate_existing_mseed(path, output_root, expected):
         key=lambda trace: (trace.id, float(trace.stats.starttime)),
     )
     if len(actual) != len(wanted) or not all(
-        _same_coverage(a, w) for a, w in zip(actual, wanted, strict=True)
+        _same_coverage(a, w) and np.array_equal(a.data, w.data)
+        for a, w in zip(actual, wanted, strict=True)
     ):
         raise ValueError(
             f"existing MiniSEED archive differs from the source: {path}; "
@@ -887,8 +924,14 @@ def _validate_existing_mseed(path, output_root, expected):
 
 
 def _validate_sac_output(path, expected):
-    stream = read(path, format="SAC", headonly=True)
+    stream = read(path, format="SAC")
     if len(stream) != 1:
         raise ValueError("SAC output must contain exactly one trace")
     if not _same_coverage(stream[0], expected):
         raise ValueError("SAC output identity does not match source trace")
+    # SAC stores samples as float32, including integer and float64 inputs.
+    if not np.array_equal(stream[0].data, np.asarray(expected.data, dtype=np.float32)):
+        raise ValueError(
+            f"SAC output samples differ from the source: {path}; "
+            "re-run with overwrite=True to replace it"
+        )
