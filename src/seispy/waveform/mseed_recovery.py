@@ -35,9 +35,12 @@ def filter_valid_mseed_records(
 ) -> MSeedRecovery:
     """Copy independently verified miniSEED records, dropping corrupt records.
 
-    Record framing must remain readable. Each record is decompressed separately
-    with miniSEED integrity warnings promoted to errors. Valid records are copied
-    byte-for-byte; no interpolation, merging, or recompression is performed.
+    Each record is decompressed separately with miniSEED integrity warnings
+    promoted to errors. Valid records are copied byte-for-byte; no interpolation,
+    merging, or recompression is performed. When framing breaks part-way through
+    (for example a truncated response followed by an FDSN text notice), every
+    record before the break is kept and the unreadable tail is dropped; the call
+    fails only when no record is usable.
     """
     source_path = Path(source)
     destination_path = Path(destination)
@@ -52,15 +55,10 @@ def filter_valid_mseed_records(
                 reader.seek(0)
                 info = get_record_information(reader, offset=offset)
                 record_length = int(info["record_length"])
-            except Exception as exc:
-                raise ValueError(
-                    f"cannot parse miniSEED record at byte offset {offset}"
-                ) from exc
+            except Exception:
+                break
             if record_length <= 0 or offset + record_length > filesize:
-                raise ValueError(
-                    f"invalid miniSEED record length {record_length} at byte "
-                    f"offset {offset}"
-                )
+                break
             reader.seek(offset)
             record = reader.read(record_length)
             total += 1

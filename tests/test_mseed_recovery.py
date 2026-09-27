@@ -66,3 +66,28 @@ def test_filter_valid_records_rejects_wrong_identity(tmp_path):
         )
 
     assert not destination.exists()
+
+
+def test_filter_valid_records_salvages_prefix_before_trailing_garbage(tmp_path):
+    source = tmp_path / "raw.mseed"
+    destination = tmp_path / "recovered.mseed"
+    _multi_record_mseed(source)
+    record_count = get_record_information(source)["number_of_records"]
+    source.write_bytes(
+        source.read_bytes() + b"\nRequest Submitted:\nService version:\n"
+    )
+
+    result = mseed_recovery.filter_valid_mseed_records(
+        source,
+        destination,
+        network="NZ",
+        station="ABAZ",
+        location="11",
+        channel="HHE",
+        sample_rate=100.0,
+    )
+
+    assert result.total_records == record_count
+    assert result.valid_records == record_count
+    assert result.discarded_records == 0
+    assert len(read(destination)) == 1
