@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from obspy import UTCDateTime, read_inventory
+from obspy import UTCDateTime, read, read_inventory
 from obspy.clients.fdsn.header import (
     FDSNBadGatewayException,
     FDSNInternalServerException,
@@ -20,6 +20,7 @@ from obspy.clients.fdsn.header import (
     FDSNTooManyRequestsException,
 )
 from obspy.core.inventory import Inventory
+from obspy.io.mseed.util import get_record_information
 from seispy.progress import progress_bar
 
 from seispy.archive import channel_mseed_path
@@ -35,7 +36,18 @@ from seispy.workflow import (
 
 logger = logging.getLogger(__name__)
 _THREAD_STATE = threading.local()
+
+
+class InvalidWaveformResponse(ValueError):
+    """A staged response that is not complete miniSEED framing (retryable)."""
+
+
+class DiscontinuousWaveformResponse(ValueError):
+    """A response that covers too little of its span to be trusted (final)."""
+
+
 _RETRYABLE_ERRORS = (
+    InvalidWaveformResponse,
     ConnectionError,
     TimeoutError,
     FDSNBadGatewayException,
@@ -44,6 +56,9 @@ _RETRYABLE_ERRORS = (
     FDSNTimeoutException,
     FDSNTooManyRequestsException,
 )
+
+DEFAULT_MAX_GAP_RATIO = 0.5
+DEFAULT_MAX_SEGMENTS = 1000
 
 
 @dataclass(frozen=True)
@@ -112,13 +127,16 @@ def download_waveforms(
     max_error_samples: int = 20,
     max_retries: int = 2,
     retry_backoff: float = 1.0,
+    max_gap_ratio: float | None = DEFAULT_MAX_GAP_RATIO,
+    max_segments: int | None = DEFAULT_MAX_SEGMENTS,
     save_report: bool | None = True,
     save_log: bool = True,
     inventory: str | Path | Inventory | None = None,
 ) -> WaveformDownloadSummary:
-    """Download FDSN responses byte-for-byte without invoking libmseed.
+    """Download FDSN responses byte-for-byte without decoding sample values.
 
-    The output is an unverified staging area. Files use the ``.mseed.raw``
+    The output is a staging area, and every body is checked for complete
+    miniSEED framing. Files use the ``.mseed.raw``
     suffix and must be passed to :func:`seispy.waveform.archive_waveforms`
     before normal processing.
 
@@ -138,6 +156,11 @@ def download_waveforms(
         max_error_samples: Maximum sampled failures retained in the summary.
         max_retries: Retries after a transient request failure.
         retry_backoff: Initial exponential retry delay in seconds.
+        max_gap_ratio: Reject a response whose positive gaps exceed this
+            fraction of its span. Defaults to 0.5; pass None to accept
+            discontinuous data.
+        max_segments: Reject a response that splits into more traces than this.
+            Defaults to 1000; pass None to accept any segmentation.
         save_report: Persist the continuously updated JSON run report.
         save_log: Persist the human-readable run log.
         inventory: Optional StationXML path or Inventory used as an exact NSLC
@@ -145,7 +168,7 @@ def download_waveforms(
 
     Returns:
         Download counts and paths. ``succeeded`` means transport succeeded; it
-        does not claim that the response is valid MiniSEED.
+        now also passed framing and continuity checks.
     """
     if (
         network_workers < 1
@@ -157,6 +180,10 @@ def download_waveforms(
             "network_workers must be positive; sample/retry counts and backoff "
             "must be non-negative"
         )
+    if max_gap_ratio is not None and not 0.0 <= max_gap_ratio <= 1.0:
+        raise ValueError("max_gap_ratio must be within [0, 1] or None")
+    if max_segments is not None and max_segments < 0:
+        raise ValueError("max_segments must be non-negative or None")
     _client(client, username, password)
     start, end = UTCDateTime(starttime), UTCDateTime(endtime)
     if start >= end:
@@ -254,6 +281,8 @@ def download_waveforms(
                             max_retries,
                             retry_backoff,
                             run,
+                            max_gap_ratio=max_gap_ratio,
+                            max_segments=max_segments,
                         )
                     else:
                         code, day = task
@@ -274,6 +303,8 @@ def download_waveforms(
                             max_retries,
                             retry_backoff,
                             run,
+                            max_gap_ratio=max_gap_ratio,
+                            max_segments=max_segments,
                         )
                     pending.add(future)
                 if not pending:
@@ -424,6 +455,9 @@ def _download_inventory_task(
     max_retries,
     retry_backoff,
     journal=None,
+    *,
+    max_gap_ratio=DEFAULT_MAX_GAP_RATIO,
+    max_segments=DEFAULT_MAX_SEGMENTS,
 ):
     destination = _inventory_raw_path(output, task)
     return _download_raw_response(
@@ -442,6 +476,8 @@ def _download_inventory_task(
         max_retries,
         retry_backoff,
         journal,
+        max_gap_ratio=max_gap_ratio,
+        max_segments=max_segments,
     )
 
 
@@ -461,6 +497,9 @@ def _download_day(
     max_retries,
     retry_backoff,
     journal=None,
+    *,
+    max_gap_ratio=DEFAULT_MAX_GAP_RATIO,
+    max_segments=DEFAULT_MAX_SEGMENTS,
 ):
     destination = _station_day_raw_path(output, network, station, day)
     return _download_raw_response(
@@ -479,6 +518,8 @@ def _download_day(
         max_retries,
         retry_backoff,
         journal,
+        max_gap_ratio=max_gap_ratio,
+        max_segments=max_segments,
     )
 
 
@@ -498,6 +539,9 @@ def _download_raw_response(
     max_retries,
     retry_backoff,
     journal,
+    *,
+    max_gap_ratio=DEFAULT_MAX_GAP_RATIO,
+    max_segments=DEFAULT_MAX_SEGMENTS,
 ):
     if destination.is_file() and destination.stat().st_size > 0 and not overwrite:
         return _Counts(total=1, skipped=1)
@@ -517,6 +561,8 @@ def _download_raw_response(
             max_retries,
             retry_backoff,
             journal,
+            max_gap_ratio=max_gap_ratio,
+            max_segments=max_segments,
         )
         commit_output(
             temporary,
@@ -559,6 +605,61 @@ def _station_day_raw_path(output, network, station, day):
     return directory / f"{network}.{station}.{day.year}.{day.julday:03d}.mseed.raw"
 
 
+def _validate_mseed_response(
+    path: Path,
+    *,
+    max_gap_ratio: float | None = DEFAULT_MAX_GAP_RATIO,
+    max_segments: int | None = DEFAULT_MAX_SEGMENTS,
+) -> None:
+    """Reject a staged response that is not complete, continuous miniSEED.
+
+    A provider can answer with a valid first record followed by an HTTP error
+    page, with a plain text/HTML body, or with a response that only covers a
+    fraction of the requested window. Framing and coverage are inspected here
+    without decoding sample values; the archive stays responsible for sample
+    validation and recovery.
+    """
+    size = path.stat().st_size
+    try:
+        length = int(get_record_information(str(path))["record_length"])
+    except Exception as exc:
+        raise InvalidWaveformResponse(f"response is not miniSEED: {exc}") from exc
+    if length <= 0 or size % length != 0:
+        raise InvalidWaveformResponse(
+            f"response is not complete miniSEED framing ({size} bytes)"
+        )
+    if max_gap_ratio is None and max_segments is None:
+        return
+    try:
+        stream = read(str(path), headonly=True)
+    except Exception as exc:
+        raise InvalidWaveformResponse(
+            f"response is not readable miniSEED: {exc}"
+        ) from exc
+    if not stream:
+        raise InvalidWaveformResponse("response contains no miniSEED traces")
+    if max_segments is not None and len(stream) > max_segments:
+        raise DiscontinuousWaveformResponse(
+            f"response fragments into {len(stream)} segments "
+            f"(limit {max_segments}); likely a partial or discontinuous response"
+        )
+    if max_gap_ratio is None:
+        return
+    sampling_rate = float(stream[0].stats.sampling_rate)
+    if sampling_rate <= 0:
+        return
+    data_seconds = sum(trace.stats.npts for trace in stream) / sampling_rate
+    span = float(stream[-1].stats.endtime - stream[0].stats.starttime)
+    if span <= 0:
+        return
+    gap_ratio = max(0.0, (span - data_seconds) / span)
+    if gap_ratio > max_gap_ratio:
+        raise DiscontinuousWaveformResponse(
+            f"response has a {gap_ratio:.0%} gap ratio "
+            f"(limit {max_gap_ratio:.0%}); likely a partial or discontinuous response"
+        )
+
+
 def _fetch_waveform_file(
     base_url,
     username,
@@ -573,6 +674,9 @@ def _fetch_waveform_file(
     max_retries,
     retry_backoff,
     journal=None,
+    *,
+    max_gap_ratio=DEFAULT_MAX_GAP_RATIO,
+    max_segments=DEFAULT_MAX_SEGMENTS,
 ):
     """Download response bytes without asking ObsPy to decode MiniSEED."""
     client = _thread_client(base_url, username, password)
@@ -591,6 +695,11 @@ def _fetch_waveform_file(
             )
             if not destination.is_file() or destination.stat().st_size == 0:
                 raise FDSNNoDataException("empty raw waveform response")
+            _validate_mseed_response(
+                destination,
+                max_gap_ratio=max_gap_ratio,
+                max_segments=max_segments,
+            )
             return
         except FDSNNoDataException:
             raise

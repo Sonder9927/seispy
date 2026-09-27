@@ -1,12 +1,64 @@
 import inspect
+import io
 import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
-from obspy import UTCDateTime
+from obspy import Stream, Trace, UTCDateTime
 
 from seispy.download import stations, waveforms
+
+
+def _mseed_payload(npts=100):
+    trace = Trace(np.arange(npts, dtype=np.int32))
+    trace.stats.network = "NZ"
+    trace.stats.station = "AAA"
+    trace.stats.location = "10"
+    trace.stats.channel = "HHZ"
+    trace.stats.starttime = UTCDateTime("2026-01-01")
+    trace.stats.sampling_rate = 1.0
+    buffer = io.BytesIO()
+    Stream([trace]).write(buffer, format="MSEED")
+    return buffer.getvalue()
+
+
+def _fragmented_mseed_payload():
+    first = Trace(np.arange(100, dtype=np.int32))
+    first.stats.network = "NZ"
+    first.stats.station = "AAA"
+    first.stats.location = "10"
+    first.stats.channel = "HHZ"
+    first.stats.starttime = UTCDateTime("2026-01-01T00:00:00")
+    first.stats.sampling_rate = 1.0
+    second = first.copy()
+    second.stats.starttime = UTCDateTime("2026-01-01T01:00:00")
+    buffer = io.BytesIO()
+    Stream([first, second]).write(buffer, format="MSEED")
+    return buffer.getvalue()
+
+
+def _stage(client, destination, **kwargs):
+    with patch.object(waveforms, "_thread_client", return_value=client):
+        return waveforms._download_raw_response(
+            "client",
+            None,
+            None,
+            destination,
+            "NZ",
+            "AAA",
+            "10",
+            "HHZ",
+            UTCDateTime("2026-01-01"),
+            UTCDateTime("2026-01-02"),
+            False,
+            1,
+            0,
+            0,
+            None,
+            **kwargs,
+        )
 
 
 def test_download_is_raw_only_and_defaults_to_ten_network_workers():
@@ -18,7 +70,7 @@ def test_download_is_raw_only_and_defaults_to_ten_network_workers():
 
 
 def test_raw_response_is_saved_byte_for_byte(tmp_path):
-    payload = b"arbitrary response bytes that must not be decoded"
+    payload = _mseed_payload()
     client = Mock()
 
     def download(**kwargs):
@@ -78,12 +130,13 @@ def test_existing_raw_response_is_skipped_without_request(tmp_path):
 
 
 def test_transient_request_is_retried(tmp_path):
+    payload = _mseed_payload()
     client = Mock()
 
     def fail_then_write(**kwargs):
         if client.get_waveforms.call_count == 1:
             raise TimeoutError("temporary")
-        Path(kwargs["filename"]).write_bytes(b"raw")
+        Path(kwargs["filename"]).write_bytes(payload)
 
     client.get_waveforms.side_effect = fail_then_write
     destination = tmp_path / "response.mseed.raw"
@@ -106,9 +159,71 @@ def test_transient_request_is_retried(tmp_path):
             0.5,
         )
 
-    assert destination.read_bytes() == b"raw"
+    assert destination.read_bytes() == payload
     assert client.get_waveforms.call_count == 2
     assert sleep.call_count == 1
+
+
+def test_non_miniseed_response_is_rejected(tmp_path):
+    client = Mock()
+    client.get_waveforms.side_effect = lambda **kwargs: Path(
+        kwargs["filename"]
+    ).write_bytes(b"Error 500: Internal Server Error")
+    destination = tmp_path / "response.mseed.raw"
+
+    with patch.object(waveforms, "_thread_client", return_value=client):
+        result = waveforms._download_raw_response(
+            "client",
+            None,
+            None,
+            destination,
+            "NZ",
+            "AAA",
+            "10",
+            "HHZ",
+            UTCDateTime("2026-01-01"),
+            UTCDateTime("2026-01-02"),
+            False,
+            1,
+            0,
+            0,
+            None,
+        )
+
+    assert result.failed == 1
+    assert not destination.exists()
+    assert "miniSEED" in result.samples[0].error
+
+
+def test_content_after_a_valid_record_is_rejected(tmp_path):
+    payload = _mseed_payload() + b"Error 500: Internal Server Error"
+    client = Mock()
+    client.get_waveforms.side_effect = lambda **kwargs: Path(
+        kwargs["filename"]
+    ).write_bytes(payload)
+    destination = tmp_path / "response.mseed.raw"
+
+    with patch.object(waveforms, "_thread_client", return_value=client):
+        result = waveforms._download_raw_response(
+            "client",
+            None,
+            None,
+            destination,
+            "NZ",
+            "AAA",
+            "10",
+            "HHZ",
+            UTCDateTime("2026-01-01"),
+            UTCDateTime("2026-01-02"),
+            False,
+            1,
+            0,
+            0,
+            None,
+        )
+
+    assert result.failed == 1
+    assert not destination.exists()
 
 
 def test_inventory_task_uses_self_describing_raw_name(tmp_path):
@@ -165,3 +280,58 @@ def test_interrupted_download_leaves_interrupted_report(tmp_path):
 
     report = next((tmp_path / "logs" / "reports").glob("*.json"))
     assert json.loads(report.read_text())["status"] == "interrupted"
+
+
+def test_fragmented_response_is_rejected(tmp_path):
+    payload = _fragmented_mseed_payload()
+    client = Mock()
+    client.get_waveforms.side_effect = lambda **kwargs: Path(
+        kwargs["filename"]
+    ).write_bytes(payload)
+    destination = tmp_path / "response.mseed.raw"
+
+    result = _stage(client, destination)
+
+    assert result.failed == 1
+    assert not destination.exists()
+    assert "gap ratio" in result.samples[0].error
+
+
+def test_fragmented_response_is_allowed_when_disabled(tmp_path):
+    payload = _fragmented_mseed_payload()
+    client = Mock()
+    client.get_waveforms.side_effect = lambda **kwargs: Path(
+        kwargs["filename"]
+    ).write_bytes(payload)
+    destination = tmp_path / "response.mseed.raw"
+
+    result = _stage(client, destination, max_gap_ratio=None, max_segments=None)
+
+    assert result.succeeded == 1
+    assert destination.exists()
+
+
+def test_segment_limit_rejects_many_traces(tmp_path):
+    payload = _fragmented_mseed_payload()
+    client = Mock()
+    client.get_waveforms.side_effect = lambda **kwargs: Path(
+        kwargs["filename"]
+    ).write_bytes(payload)
+    destination = tmp_path / "response.mseed.raw"
+
+    result = _stage(client, destination, max_segments=1)
+
+    assert result.failed == 1
+    assert "segments" in result.samples[0].error
+
+
+def test_download_rejects_invalid_gap_ratio_setting(tmp_path):
+    with pytest.raises(ValueError, match="max_gap_ratio"):
+        waveforms.download_waveforms(
+            tmp_path,
+            "NZ",
+            "2026-01-01",
+            "2026-01-02",
+            station=["AAA"],
+            max_gap_ratio=2.0,
+        )
