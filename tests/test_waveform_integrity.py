@@ -5,8 +5,11 @@ import pytest
 from obspy import Stream, Trace, UTCDateTime
 
 from seispy.waveform.integrity import (
+    TraceFilter,
     merge_contiguous_segments,
     merge_short_gaps,
+    trace_header_rejection_reason,
+    trace_rejection_reason,
     unusable_sample_reason,
 )
 
@@ -75,3 +78,81 @@ def test_unusable_sample_reason_classifies_arrays():
     assert (
         unusable_sample_reason(np.array([], dtype=np.float64)) == "contains no samples"
     )
+
+
+def _filter_trace(*, npts=1000, sampling_rate=100.0, data=None):
+    trace = Trace(np.arange(npts, dtype=np.int32) if data is None else data)
+    trace.stats.network = "NZ"
+    trace.stats.station = "AAA"
+    trace.stats.channel = "HHZ"
+    trace.stats.starttime = UTCDateTime("2026-01-01")
+    trace.stats.sampling_rate = sampling_rate
+    return trace
+
+
+def test_trace_header_filter_rejects_single_sample_trace():
+    reason = trace_header_rejection_reason(_filter_trace(npts=1), TraceFilter())
+
+    assert reason == "has 1 sample(s)"
+
+
+def test_trace_header_filter_rejects_short_duration():
+    reason = trace_header_rejection_reason(_filter_trace(npts=500), TraceFilter())
+
+    assert reason is not None and "spans" in reason
+
+
+def test_trace_header_filter_rejects_too_few_samples():
+    policy = TraceFilter(min_duration_seconds=0.0)
+
+    reason = trace_header_rejection_reason(_filter_trace(npts=50), policy)
+
+    assert reason is not None and "samples" in reason
+
+
+def test_trace_header_filter_min_periods_uses_low_frequency():
+    policy = TraceFilter(min_duration_seconds=0.0, min_samples=0, min_periods=3.0)
+
+    assert (
+        trace_header_rejection_reason(
+            _filter_trace(npts=1000, sampling_rate=1.0), policy, low_frequency=0.004
+        )
+        is None
+    )
+    assert (
+        trace_header_rejection_reason(
+            _filter_trace(npts=100, sampling_rate=1.0), policy, low_frequency=0.004
+        )
+        is not None
+    )
+
+
+def test_trace_rejection_reason_rejects_unusable_samples():
+    policy = TraceFilter(min_duration_seconds=0.0, min_samples=0)
+
+    constant = _filter_trace(data=np.full(1000, 7, dtype=np.int32))
+    non_finite = _filter_trace(data=np.full(1000, np.nan, dtype=np.float64))
+
+    assert trace_rejection_reason(constant, policy) == "is constant"
+    assert "NaN" in trace_rejection_reason(non_finite, policy)
+    assert trace_rejection_reason(_filter_trace(), policy) is None
+
+
+def test_trace_rejection_reason_rejects_tolerant_flatline():
+    policy = TraceFilter(
+        min_duration_seconds=0.0,
+        min_samples=0,
+        reject_unusable_samples=False,
+        max_flatline_amplitude=2.0,
+    )
+
+    jittering = _filter_trace(data=np.resize(np.array([5, 6, 4, 5, 6]), 1000))
+    live = _filter_trace(data=np.arange(1000, dtype=np.int32))
+
+    assert "flat-line" in trace_rejection_reason(jittering, policy)
+    assert trace_rejection_reason(live, policy) is None
+
+
+def test_trace_filter_rejects_negative_flatline_threshold():
+    with pytest.raises(ValueError, match="max_flatline_amplitude"):
+        TraceFilter(max_flatline_amplitude=-1.0)

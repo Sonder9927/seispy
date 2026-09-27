@@ -16,7 +16,11 @@ from obspy.core.inventory import Inventory
 
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 from seispy.waveform.integrity import (
+    DEFAULT_TRACE_FILTER,
+    TraceFilter,
     merge_contiguous_segments,
+    split_traces_by_filter,
+    trace_header_rejection_reason,
     unusable_sample_reason,
 )
 from seispy.waveform.decimation import (
@@ -34,7 +38,7 @@ from seispy.workflow import (
 from seispy.inventory import analyze_inventory
 
 logger = logging.getLogger(__name__)
-IssueStatus = Literal["deconvolution_failed"]
+IssueStatus = Literal["deconvolution_failed", "trace_filtered"]
 PreFilter = tuple[float, float, float, float]
 DEFAULT_PRE_FILTER: PreFilter = (0.004, 0.006, 4.0, 5.0)
 MAX_BATCH_SIZE = 32
@@ -57,6 +61,9 @@ class _WorkerSummary:
     succeeded: int = 0
     failed: int = 0
     issue_samples: tuple[DeconvolutionIssue, ...] = ()
+    skipped: int = 0
+    traces_filtered: int = 0
+    filter_samples: tuple[DeconvolutionIssue, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -71,16 +78,13 @@ class DeconvolutionSummary(BatchSummary):
         total: Number of waveform files considered.
         succeeded: Number processed successfully.
         failed: Number that failed deconvolution.
-        issue_samples: Bounded sample of processing issues.
+        skipped: Number whose traces were all filtered out before processing.
+        traces_filtered: Number of individual traces filtered out.
+        issue_samples: Bounded sample of processing failures.
+        filter_samples: Bounded sample of filtered traces and their reasons.
         output_dir: Output root.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
-
-    Examples:
-        ```python
-        summary = deconvolve_waveforms(...)
-        print(summary.succeeded, summary.failed)
-        ```
     """
 
     total: int
@@ -88,6 +92,9 @@ class DeconvolutionSummary(BatchSummary):
     failed: int
     issue_samples: tuple[DeconvolutionIssue, ...]
     output_dir: Path
+    skipped: int = 0
+    traces_filtered: int = 0
+    filter_samples: tuple[DeconvolutionIssue, ...] = ()
 
     @property
     def has_issues(self) -> bool:
@@ -108,6 +115,7 @@ def deconvolve_waveforms(
     save_log: bool = True,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     decimate_factors: int | Sequence[int] | None = None,
+    trace_filter: TraceFilter = DEFAULT_TRACE_FILTER,
 ) -> DeconvolutionSummary:
     """Deconvolve every matching waveform in a directory tree.
 
@@ -133,6 +141,9 @@ def deconvolve_waveforms(
             is applied before instrument-response removal. The final Nyquist
             frequency must stay above the second ``pre_filt`` corner. By
             default, no decimation is performed.
+        trace_filter: Skip traces that cannot be processed meaningfully, such
+            as single-sample, very short, or constant traces. Filtering is
+            counted as skipped, never as a failure.
 
     Returns:
         Processing counts, sampled issues, output location, and run duration.
@@ -212,7 +223,10 @@ def deconvolve_waveforms(
                 total=total,
                 succeeded=0,
                 failed=0,
+                skipped=0,
+                traces_filtered=0,
                 issue_samples=(),
+                filter_samples=(),
                 output_dir=output_path,
             )
             run.info(
@@ -237,6 +251,7 @@ def deconvolve_waveforms(
                 worker_error_samples,
                 pre_filt,
                 factors,
+                trace_filter,
                 max_workers,
                 actual_batch_size,
                 max_error_samples,
@@ -249,7 +264,10 @@ def deconvolve_waveforms(
                     total=compact.total,
                     succeeded=compact.succeeded,
                     failed=compact.failed,
+                    skipped=compact.skipped,
+                    traces_filtered=compact.traces_filtered,
                     issue_samples=compact.issue_samples,
+                    filter_samples=compact.filter_samples,
                     output_dir=output_path,
                     duration_seconds=0,
                 )
@@ -270,9 +288,18 @@ def deconvolve_waveforms(
                     len(summary.issue_samples),
                     summary.failed,
                 )
+            for filtered in summary.filter_samples:
+                run.info(
+                    "run_id=%s status=%s source=%s destination=%s reason=%s",
+                    run_id,
+                    filtered.status,
+                    filtered.source,
+                    filtered.destination,
+                    filtered.error,
+                )
     print(
         f"Deconvolution complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed."
+        f"{summary.failed} failed, {summary.skipped} skipped."
     )
     return summary
 
@@ -299,6 +326,7 @@ def _run_deconvolution_batches(
     worker_error_samples,
     pre_filt,
     factors,
+    trace_filter,
     max_workers,
     batch_size,
     max_error_samples,
@@ -333,6 +361,7 @@ def _run_deconvolution_batches(
                         worker_error_samples,
                         pre_filt,
                         factors,
+                        trace_filter,
                     )
                     futures[future] = batch
                 if not futures:
@@ -357,7 +386,15 @@ def _run_deconvolution_batches(
     return _combine_batches(batches, max_error_samples)
 
 
-def _process_worker_batch(targets, src_path, output_path, limit, pre_filt, factors):
+def _process_worker_batch(
+    targets,
+    src_path,
+    output_path,
+    limit,
+    pre_filt,
+    factors,
+    trace_filter=DEFAULT_TRACE_FILTER,
+):
     if _WORKER_BACKEND == "obspy":
         return _process_obspy_targets(
             targets,
@@ -367,6 +404,7 @@ def _process_worker_batch(targets, src_path, output_path, limit, pre_filt, facto
             limit,
             pre_filt,
             factors,
+            trace_filter,
         )
     if _WORKER_BACKEND == "sac":
         environment = os.environ.copy()
@@ -381,6 +419,7 @@ def _process_worker_batch(targets, src_path, output_path, limit, pre_filt, facto
             pre_filt,
             environment,
             factors,
+            trace_filter,
         )
     raise ValueError(f"Unknown backend: {_WORKER_BACKEND}")
 
@@ -402,20 +441,30 @@ def _checkpoint_deconvolution(run, compact, total, output_path):
         total=total,
         succeeded=compact.succeeded,
         failed=compact.failed,
+        skipped=compact.skipped,
+        traces_filtered=compact.traces_filtered,
         issue_samples=compact.issue_samples,
+        filter_samples=compact.filter_samples,
         output_dir=output_path,
     )
 
 
 def _combine_batches(batches, limit: int) -> _WorkerSummary:
     samples = []
+    filter_samples = []
     for batch in batches:
         samples.extend(batch.issue_samples[: max(0, limit - len(samples))])
+        filter_samples.extend(
+            batch.filter_samples[: max(0, limit - len(filter_samples))]
+        )
     return _WorkerSummary(
-        sum(x.total for x in batches),
-        sum(x.succeeded for x in batches),
-        sum(x.failed for x in batches),
-        tuple(samples),
+        total=sum(x.total for x in batches),
+        succeeded=sum(x.succeeded for x in batches),
+        failed=sum(x.failed for x in batches),
+        issue_samples=tuple(samples),
+        skipped=sum(x.skipped for x in batches),
+        traces_filtered=sum(x.traces_filtered for x in batches),
+        filter_samples=tuple(filter_samples),
     )
 
 
@@ -545,22 +594,42 @@ def _process_obspy_targets(
     limit,
     pre_filt,
     decimate_factors,
+    trace_filter=DEFAULT_TRACE_FILTER,
 ):
-    succeeded = failed = 0
+    succeeded = failed = skipped = 0
+    filtered_traces = 0
     samples = []
+    filter_samples = []
     for target in targets:
         base_destination = _destination_for(target, src_root, output_dir)
         temporary_outputs = []
         committed_outputs = []
         try:
-            stream = remove_response_from_file(
-                target,
+            stream = obspy.read(target)
+            merge_contiguous_segments(stream)
+            kept, rejected = split_traces_by_filter(
+                stream, trace_filter, low_frequency=pre_filt[0]
+            )
+            filtered_traces += len(rejected)
+            for _, reason in rejected:
+                if len(filter_samples) >= limit:
+                    break
+                filter_samples.append(
+                    DeconvolutionIssue(
+                        target, base_destination, "trace_filtered", reason
+                    )
+                )
+            if not kept:
+                skipped += 1
+                continue
+            processed = remove_response(
+                kept,
                 inv,
                 pre_filt=pre_filt,
                 decimate_factors=decimate_factors,
             )
-            destinations = _obspy_destinations(target, stream, src_root, output_dir)
-            for trace, destination in zip(stream, destinations, strict=True):
+            destinations = _obspy_destinations(target, processed, src_root, output_dir)
+            for trace, destination in zip(processed, destinations, strict=True):
                 temporary = temporary_output_path(destination)
                 temporary_outputs.append((temporary, destination))
                 trace.write(str(temporary), format="SAC")
@@ -585,7 +654,15 @@ def _process_obspy_targets(
                 )
             continue
         succeeded += 1
-    return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))
+    return _WorkerSummary(
+        total=len(targets),
+        succeeded=succeeded,
+        failed=failed,
+        issue_samples=tuple(samples),
+        skipped=skipped,
+        traces_filtered=filtered_traces,
+        filter_samples=tuple(filter_samples),
+    )
 
 
 def _obspy_destinations(target, stream, src_root, output_dir):
@@ -632,10 +709,13 @@ def _process_sac_batch(
     pre_filt,
     environment,
     decimate_factors,
+    trace_filter=DEFAULT_TRACE_FILTER,
 ):
     """Run a bounded group of files in one SAC process."""
-    failed = 0
+    failed = skipped = 0
+    filtered_traces = 0
     samples = []
+    filter_samples = []
     prepared = []
 
     def record(target, destination, status: IssueStatus, exc):
@@ -655,6 +735,20 @@ def _process_sac_batch(
         temporary = temporary_output_path(destination)
         try:
             trace = obspy.read(target, headonly=True)[0]
+            reason = trace_header_rejection_reason(
+                trace, trace_filter, low_frequency=pre_filt[0]
+            )
+            if reason is not None:
+                temporary.unlink(missing_ok=True)
+                filtered_traces += 1
+                skipped += 1
+                if len(filter_samples) < limit:
+                    filter_samples.append(
+                        DeconvolutionIssue(
+                            target, destination, "trace_filtered", reason
+                        )
+                    )
+                continue
             final_rate = _final_sampling_rate(
                 trace.stats.sampling_rate, decimate_factors, pre_filt
             )
@@ -725,6 +819,9 @@ def _process_sac_batch(
                 total=len(targets) - len(prepared),
                 failed=failed,
                 issue_samples=tuple(samples),
+                skipped=skipped,
+                traces_filtered=filtered_traces,
+                filter_samples=tuple(filter_samples),
             )
             return _combine_batches([initial, *retried], limit)
 
@@ -748,7 +845,15 @@ def _process_sac_batch(
     else:
         succeeded = 0
 
-    return _WorkerSummary(len(targets), succeeded, failed, tuple(samples))
+    return _WorkerSummary(
+        total=len(targets),
+        succeeded=succeeded,
+        failed=failed,
+        issue_samples=tuple(samples),
+        skipped=skipped,
+        traces_filtered=filtered_traces,
+        filter_samples=tuple(filter_samples),
+    )
 
 
 def _response_epoch_for_trace(inv, trace):
@@ -876,15 +981,28 @@ def remove_response_from_file(
         )
         ```
     """
+    stream = obspy.read(file)
+    merge_contiguous_segments(stream)
+    return remove_response(
+        stream, inv, pre_filt=pre_filt, decimate_factors=decimate_factors
+    )
+
+
+def remove_response(
+    stream: obspy.Stream,
+    inv: str | Path | Inventory,
+    *,
+    pre_filt: PreFilter = DEFAULT_PRE_FILTER,
+    decimate_factors: int | Sequence[int] | None = None,
+) -> obspy.Stream:
+    """Remove the instrument response from every trace in a loaded stream."""
     inventory = obspy.read_inventory(str(inv)) if isinstance(inv, (str, Path)) else inv
     if isinstance(inventory, Inventory):
         analyze_inventory(inventory).response_suitability.require_safe(
             "response removal"
         )
-    st = obspy.read(file)
-    merge_contiguous_segments(st)
     factors = _normalize_decimate_factors(decimate_factors)
-    for tr in st:
+    for tr in stream:
         response_inventory, _ = _response_epoch_for_trace(inventory, tr)
         final_rate = _final_sampling_rate(tr.stats.sampling_rate, factors, pre_filt)
         tr.detrend("demean")
@@ -902,7 +1020,7 @@ def remove_response_from_file(
             taper=False,
         )
         tr.data *= 1e9
-    return st
+    return stream
 
 
 def _sac_taper_width(trace) -> float:

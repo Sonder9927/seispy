@@ -19,7 +19,12 @@ from seispy.archive import (
     matches_mseed_path,
     start_day_token,
 )
-from seispy.waveform.integrity import merge_contiguous_segments, unusable_sample_reason
+from seispy.waveform.integrity import (
+    TraceFilter,
+    merge_contiguous_segments,
+    split_traces_by_filter,
+    unusable_sample_reason,
+)
 from seispy.waveform.mseed_recovery import filter_valid_mseed_records
 from seispy.workflow import (
     BatchRun,
@@ -54,6 +59,7 @@ class _ArchiveResult:
     traces_written: int = 0
     traces_existing: int = 0
     traces_ignored_empty: int = 0
+    traces_filtered: int = 0
     traces_failed: int = 0
     issue: WaveformArchiveIssue | None = None
 
@@ -83,6 +89,7 @@ class WaveformArchiveSummary(BatchSummary):
     traces_written: int
     traces_existing: int
     traces_ignored_empty: int
+    traces_filtered: int
     traces_failed: int
     issue_samples: tuple[WaveformArchiveIssue, ...]
     source_dir: Path
@@ -104,6 +111,7 @@ def archive_waveforms(
     max_workers: int = 5,
     overwrite: bool = False,
     discard_corrupt_records: bool = True,
+    trace_filter: TraceFilter | None = None,
     max_error_samples: int = 20,
     save_report: bool | None = True,
     save_log: bool = True,
@@ -115,10 +123,11 @@ def archive_waveforms(
     them with ``pattern`` and ``output_format="sac"``. Valid traces are archived
     independently, so one trace or destination failure does not discard other
     usable traces from the same source. A source succeeds when at least one
-    trace is preserved. Empty traces do not determine archive identity. Constant
-    (flat-line) and non-finite traces are rejected as unusable. Native waveform
-    reads run in isolated worker processes. Source files are never modified or
-    removed.
+    trace is preserved and is skipped when every usable trace was filtered out.
+    Empty traces do not determine archive identity. Constant (flat-line) and
+    non-finite traces are skipped rather than failed and are counted under
+    traces_filtered. Native waveform reads run in isolated worker processes.
+    Source files are never modified or removed.
 
     Args:
         source_dir: Root containing raw MiniSEED responses or SAC files.
@@ -132,6 +141,9 @@ def archive_waveforms(
         overwrite: Replace existing archive outputs.
         discard_corrupt_records: Recover independently valid records when full
             MiniSEED validation reports an integrity failure.
+        trace_filter: Optional reusable policy used to skip traces that cannot be
+            archived meaningfully. Filtered traces are counted separately and
+            never count as failures. Defaults to None (keep every usable trace).
         max_error_samples: Maximum sampled failures in the result.
         save_report: Persist the continuously updated JSON report.
         save_log: Persist the human-readable run log.
@@ -167,6 +179,7 @@ def archive_waveforms(
             "traces_written",
             "traces_existing",
             "traces_ignored_empty",
+            "traces_filtered",
             "traces_failed",
         ),
         0,
@@ -217,6 +230,7 @@ def archive_waveforms(
                                 output_format,
                                 overwrite,
                                 discard_corrupt_records,
+                                trace_filter,
                             )
                         except Exception as exc:
                             result = _failed_result(path, exc)
@@ -339,6 +353,7 @@ def _archive_one(
     output_format,
     overwrite,
     discard_corrupt_records,
+    trace_filter=None,
 ):
     source = Path(source_name)
     filtered = None
@@ -370,12 +385,22 @@ def _archive_one(
                 stream = _read_full_mseed(filtered)
                 trusted_source = filtered
                 record_recovered = True
-        valid, empty, validation_errors = _classify_traces(stream)
+        valid, empty, unusable = _classify_traces(stream)
+        rejected = list(unusable)
+        if trace_filter is not None:
+            kept, policy_rejected = split_traces_by_filter(valid, trace_filter)
+            valid = kept
+            rejected.extend(policy_rejected)
+        inventory_warnings = _inventory_warnings(valid)
         if not valid:
-            detail = (
-                "; ".join(validation_errors) or "waveform stream contains no samples"
-            )
-            raise ValueError(detail)
+            if rejected:
+                return _ArchiveResult(
+                    skipped=1,
+                    traces_total=len(stream),
+                    traces_ignored_empty=len(empty),
+                    traces_filtered=len(rejected),
+                )
+            raise ValueError("waveform stream contains no samples")
         if output_format == "mseed":
             result = _archive_mseed_traces(
                 source,
@@ -385,23 +410,24 @@ def _archive_one(
                 Path(source_root),
                 Path(output_root),
                 overwrite,
-                allow_raw_copy=not validation_errors,
+                allow_raw_copy=not rejected,
             )
         else:
             result = _archive_sac_traces(valid, Path(output_root), overwrite)
         written, existing, archived_traces, group_errors, reshaped = result
-        errors = [*validation_errors, *group_errors]
-        traces_failed = len(stream) - len(empty) - archived_traces
+        errors = [*group_errors]
+        warnings = [*inventory_warnings]
+        traces_failed = len(stream) - len(empty) - len(rejected) - archived_traces
         archived_any = archived_traces > 0
         all_existing = archived_any and written == 0 and not errors
         issue = None
-        if errors:
-            issue = WaveformArchiveIssue(source, "; ".join(errors))
+        if errors or warnings:
+            issue = WaveformArchiveIssue(source, "; ".join([*errors, *warnings]))
         return _ArchiveResult(
             succeeded=int(archived_any and not all_existing),
             skipped=int(all_existing),
             recovered=int(archived_any and record_recovered),
-            reshaped=int(archived_any and (reshaped or bool(validation_errors))),
+            reshaped=int(archived_any and (reshaped or bool(rejected))),
             failed=int(not archived_any),
             errored=int(issue is not None),
             files_written=written,
@@ -409,13 +435,14 @@ def _archive_one(
             traces_written=archived_traces - existing,
             traces_existing=existing,
             traces_ignored_empty=len(empty),
+            traces_filtered=len(rejected),
             traces_failed=max(0, traces_failed),
             issue=issue,
         )
     except Exception as exc:
         traces_total = len(stream) if "stream" in locals() else 0
         traces_ignored_empty = (
-            sum(trace.stats.npts == 0 for trace in stream)
+            sum(trace.stats.npts <= 1 for trace in stream)
             if "stream" in locals()
             else 0
         )
@@ -473,29 +500,46 @@ def _validate_inventory(stream):
             )
 
 
-def _validate_trace_samples(trace):
-    """Reject constant or non-finite samples that carry no usable signal."""
-    reason = unusable_sample_reason(trace.data)
-    if reason is not None:
-        raise ValueError(f"trace {reason}")
-
-
 def _classify_traces(stream):
+    """Split usable traces from empty and unusable ones.
+
+    Empty, constant, and non-finite traces are skipped instead of being reported
+    as failures: they stay out of the archive and the caller counts them.
+    """
     valid = []
     empty = []
-    errors = []
-    for index, trace in enumerate(stream):
-        if trace.stats.npts == 0:
+    unusable = []
+    for trace in stream:
+        # A lone sample is a boundary fragment, not a flat-line signal.
+        if trace.stats.npts <= 1:
             empty.append(trace)
             continue
-        try:
-            _validate_trace_samples(trace)
-            _validate_inventory([trace])
-        except Exception as exc:
-            errors.append(f"trace {index} ({trace.id}) failed validation: {exc}")
+        reason = unusable_sample_reason(trace.data)
+        if reason is not None:
+            unusable.append((trace, reason))
             continue
         valid.append(trace)
-    return valid, empty, errors
+    return valid, empty, unusable
+
+
+def _inventory_warnings(stream):
+    """Return advisory inventory mismatches without dropping any trace.
+
+    Inventory metadata is a cross-check, not authority: a missing or stale epoch
+    must never discard otherwise valid waveform data, so callers keep the trace
+    and record the mismatch as an issue.
+    """
+    counts: dict[str, int] = {}
+    for trace in stream:
+        try:
+            _validate_inventory([trace])
+        except Exception as exc:
+            message = str(exc)
+            counts[message] = counts.get(message, 0) + 1
+    return [
+        message if count == 1 else f"{message} ({count} traces)"
+        for message, count in counts.items()
+    ]
 
 
 def _merge_group(group):

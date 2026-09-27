@@ -51,6 +51,16 @@ _EXPORTS = {
     "SacHeaderIssue": ("seispy.waveform.headers", "SacHeaderIssue"),
     "SacHeaderSummary": ("seispy.waveform.headers", "SacHeaderSummary"),
     "merge_waveforms_by_day": ("seispy.waveform.merge", "merge_waveforms_by_day"),
+    "TraceFilter": ("seispy.waveform.integrity", "TraceFilter"),
+    "filter_waveforms": ("seispy.waveform.filtering", "filter_waveforms"),
+    "WaveformFilterIssue": (
+        "seispy.waveform.filtering",
+        "WaveformFilterIssue",
+    ),
+    "WaveformFilterSummary": (
+        "seispy.waveform.filtering",
+        "WaveformFilterSummary",
+    ),
 }
 
 

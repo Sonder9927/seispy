@@ -2,11 +2,12 @@ from pathlib import Path
 import struct
 
 import numpy as np
-from obspy import Stream, Trace, UTCDateTime, read
+from obspy import Inventory, Stream, Trace, UTCDateTime, read
 
 from seispy import waveform
 from seispy.archive import WaveformIdentity
 from seispy.waveform import archiving
+from seispy.waveform.integrity import TraceFilter
 
 
 def _raw_mseed(root, *, channel="HHZ"):
@@ -299,10 +300,11 @@ def test_constant_raw_response_is_not_archived(tmp_path):
 
     summary = waveform.archive_waveforms(source, output, max_workers=1)
 
-    assert summary.failed == 1
+    assert summary.failed == 0
+    assert summary.skipped == 1
     assert summary.succeeded == summary.files_written == 0
+    assert summary.traces_filtered == 1
     assert not list(output.rglob("*.mseed"))
-    assert "trace is constant" in summary.issue_samples[0].error
     assert raw.is_file()
 
 
@@ -330,10 +332,11 @@ def test_worker_keeps_usable_traces_when_a_sibling_is_constant(tmp_path):
     assert result.succeeded == result.reshaped == 1
     assert result.recovered == 0
     assert result.failed == 0
+    assert result.errored == 0
     assert result.traces_total == 2
     assert result.traces_written == 1
-    assert result.traces_failed == 1
-    assert "trace is constant" in result.issue.error
+    assert result.traces_filtered == 1
+    assert result.traces_failed == 0
 
 
 def test_classify_traces_rejects_non_finite_samples():
@@ -345,11 +348,69 @@ def test_classify_traces_rejects_non_finite_samples():
     trace.stats.starttime = UTCDateTime("2026-01-01")
     trace.stats.sampling_rate = 10
 
-    valid, empty, errors = archiving._classify_traces(Stream([trace]))
+    valid, empty, unusable = archiving._classify_traces(Stream([trace]))
 
     assert valid == []
     assert empty == []
-    assert "NaN or infinite" in errors[0]
+    assert len(unusable) == 1
+    assert "NaN or infinite" in unusable[0][1]
+
+
+def test_inventory_mismatch_archives_with_a_warning(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    _raw_mseed(source)
+
+    summary = waveform.archive_waveforms(
+        source, output, inventory=Inventory(), max_workers=1
+    )
+
+    assert summary.succeeded == 1
+    assert summary.errored == 1
+    assert summary.has_issues
+    assert "no inventory epoch matches" in summary.issue_samples[0].error
+    assert list(output.rglob("*.mseed"))
+
+
+def test_archive_trace_filter_skips_filtered_traces(tmp_path):
+    source = tmp_path / "raw"
+    output = tmp_path / "archive"
+    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
+    path.parent.mkdir(parents=True)
+    Stream(
+        [
+            _trace_at("2026-01-01T00:00:00", npts=100),
+            _trace_at("2026-01-01T01:00:00", npts=100_000),
+        ]
+    ).write(path, format="MSEED")
+
+    summary = waveform.archive_waveforms(
+        source,
+        output,
+        max_workers=1,
+        trace_filter=TraceFilter(min_duration_seconds=60),
+    )
+
+    assert summary.traces_total == 2
+    assert summary.traces_filtered == 1
+    assert summary.traces_failed == 0
+    assert summary.succeeded == 1
+
+
+def test_classify_traces_treats_single_sample_trace_as_empty():
+    trace = Trace(data=np.array([5], dtype=np.int32))
+    trace.stats.network = "NZ"
+    trace.stats.station = "AAA"
+    trace.stats.location = "10"
+    trace.stats.channel = "HHZ"
+    trace.stats.starttime = UTCDateTime("2026-01-01")
+    trace.stats.sampling_rate = 100
+
+    valid, empty, unusable = archiving._classify_traces(Stream([trace]))
+
+    assert valid == []
+    assert len(empty) == 1
+    assert unusable == []
 
 
 def _midnight_straddling_raw(root):

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
-from obspy import Trace, UTCDateTime
+from obspy import Stream, Trace, UTCDateTime
 from obspy.core.inventory import Inventory
 
 remove_response = import_module("seispy.deconvolution.removal")
@@ -26,6 +26,17 @@ class _WritableStream(list):
         super().__init__([_WritableTrace(content)])
 
 
+def _readable_stream(npts=1000):
+    trace = Trace(np.arange(npts, dtype=np.int32))
+    trace.stats.network = "STA"
+    trace.stats.station = "AAA"
+    trace.stats.location = ""
+    trace.stats.channel = "BHZ"
+    trace.stats.starttime = UTCDateTime("2026-01-01")
+    trace.stats.sampling_rate = 100.0
+    return Stream([trace])
+
+
 def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
     source_root = tmp_path / "source"
     station = source_root / "STA" / "2026" / "001"
@@ -35,8 +46,9 @@ def test_obspy_deconv_writes_to_mirrored_output_directory(tmp_path):
     output_root = tmp_path / "processed"
 
     with (
+        patch.object(remove_response.obspy, "read", return_value=_readable_stream()),
         patch.object(
-            remove_response, "remove_response_from_file", return_value=_WritableStream()
+            remove_response, "remove_response", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
@@ -67,8 +79,9 @@ def test_obspy_deconv_accepts_miniseed_and_writes_sac_extension(tmp_path):
     output_root = tmp_path / "processed"
 
     with (
+        patch.object(remove_response.obspy, "read", return_value=_readable_stream()),
         patch.object(
-            remove_response, "remove_response_from_file", return_value=_WritableStream()
+            remove_response, "remove_response", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
@@ -183,7 +196,10 @@ def test_failure_preserves_source_and_is_reported(tmp_path):
     def fail(*args, **kwargs):
         raise RuntimeError("response unavailable")
 
-    with patch.object(remove_response, "remove_response_from_file", side_effect=fail):
+    with (
+        patch.object(remove_response.obspy, "read", return_value=_readable_stream()),
+        patch.object(remove_response, "remove_response", side_effect=fail),
+    ):
         results = remove_response._process_obspy_targets(
             [source],
             object(),
@@ -212,8 +228,9 @@ def test_success_writes_output_and_preserves_source(tmp_path):
     source = station / "trace.sac"
     source.write_bytes(b"original")
     with (
+        patch.object(remove_response.obspy, "read", return_value=_readable_stream()),
         patch.object(
-            remove_response, "remove_response_from_file", return_value=_WritableStream()
+            remove_response, "remove_response", return_value=_WritableStream()
         ),
         patch.object(remove_response, "_validate_output_trace"),
     ):
@@ -240,6 +257,119 @@ def test_output_directory_must_not_overlap_source(tmp_path):
         remove_response._resolve_output_dir(source, source / "output")
     with pytest.raises(ValueError, match="separate directory trees"):
         remove_response._resolve_output_dir(source, tmp_path)
+
+
+def _stream_with_short_and_long():
+    def trace(npts, start):
+        tr = Trace(np.arange(npts, dtype=np.int32))
+        tr.stats.network = "STA"
+        tr.stats.station = "AAA"
+        tr.stats.location = ""
+        tr.stats.channel = "BHZ"
+        tr.stats.starttime = UTCDateTime(start)
+        tr.stats.sampling_rate = 100.0
+        return tr
+
+    return Stream(
+        [
+            trace(10, "2026-01-01T00:00:00"),
+            trace(1000, "2026-01-01T01:00:00"),
+        ]
+    )
+
+
+def test_all_filtered_traces_skip_the_file(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    source = station / "trace.sac"
+    source.write_bytes(b"original")
+
+    with patch.object(
+        remove_response.obspy, "read", return_value=_readable_stream(npts=10)
+    ):
+        results = remove_response._process_obspy_targets(
+            [source],
+            object(),
+            source_root,
+            tmp_path / "output",
+            20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
+        )
+
+    assert results.skipped == 1
+    assert results.succeeded == 0
+    assert results.failed == 0
+    assert results.traces_filtered == 1
+    assert results.filter_samples[0].status == "trace_filtered"
+    assert not (tmp_path / "output" / "STA" / "trace.sac").exists()
+
+
+def test_partially_filtered_file_processes_remaining_traces(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    source = station / "trace.sac"
+    source.write_bytes(b"original")
+
+    with (
+        patch.object(
+            remove_response.obspy, "read", return_value=_stream_with_short_and_long()
+        ),
+        patch.object(
+            remove_response, "remove_response", return_value=_WritableStream()
+        ),
+        patch.object(remove_response, "_validate_output_trace"),
+    ):
+        results = remove_response._process_obspy_targets(
+            [source],
+            object(),
+            source_root,
+            tmp_path / "output",
+            20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
+        )
+
+    assert results.succeeded == 1
+    assert results.skipped == 0
+    assert results.traces_filtered == 1
+    assert (tmp_path / "output" / "STA" / "trace.sac").read_bytes() == b"processed"
+
+
+def test_trace_filter_can_be_disabled(tmp_path):
+    source_root = tmp_path / "source"
+    station = source_root / "STA"
+    station.mkdir(parents=True)
+    source = station / "trace.sac"
+    source.write_bytes(b"original")
+    policy = remove_response.TraceFilter(
+        min_duration_seconds=0.0, min_samples=0, reject_unusable_samples=False
+    )
+
+    with (
+        patch.object(
+            remove_response.obspy, "read", return_value=_readable_stream(npts=10)
+        ),
+        patch.object(
+            remove_response, "remove_response", return_value=_WritableStream()
+        ),
+        patch.object(remove_response, "_validate_output_trace"),
+    ):
+        results = remove_response._process_obspy_targets(
+            [source],
+            object(),
+            source_root,
+            tmp_path / "output",
+            20,
+            remove_response.DEFAULT_PRE_FILTER,
+            (),
+            policy,
+        )
+
+    assert results.succeeded == 1
+    assert results.traces_filtered == 0
 
 
 def test_input_files_are_discovered_recursively_once(tmp_path):

@@ -19,6 +19,10 @@ _EXPORTS = {
         "seispy.deconvolution.removal",
         "DeconvolutionSummary",
     ),
+    "TraceFilter": (
+        "seispy.deconvolution.removal",
+        "TraceFilter",
+    ),
 }
 
 
