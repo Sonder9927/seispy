@@ -5,7 +5,7 @@ description: Phase-preserving SAC-compatible waveform decimation.
 
 # Reduce the waveform sampling rate
 
-## Interface
+<a id="interface"></a>
 
 `waveform.decimate_waveforms(src_dir, factors, ...)`
 

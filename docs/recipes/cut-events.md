@@ -5,7 +5,7 @@ description: Extract event-centered windows from continuous SAC archives.
 
 # Cut event windows
 
-## Interface
+<a id="interface"></a>
 
 `event.cut_event_waveforms(source_dir, event_csv, output_dir=..., ...)`
 

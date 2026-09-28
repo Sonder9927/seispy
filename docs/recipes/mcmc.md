@@ -5,7 +5,7 @@ description: Generate per-grid inputs and collect completed inversion outputs.
 
 # MCMC workflow
 
-## Interfaces
+<a id="interfaces"></a>
 
 - `mcmc.init_grids(config_file)` builds per-grid inversion inputs serially.
 - `mcmc.plot_grids(grids_dir)` redraws the per-point figures from the written files.
@@ -19,7 +19,7 @@ and figures.
 
 Prepare a JSON configuration matching `seispy.mcmc.config.Config`, including input
 paths, region, grid spacing, physical constraints, and output directory.
-Start from the [complete config.json example and quantity definitions](../api/mcmc.md#complete-configjson-example).
+Start from the [complete config.json example and quantity definitions](../mcmc/configuration.md#complete-configjson-example).
 
 ```python
 from seispy import mcmc
@@ -45,7 +45,7 @@ mcmc.plot_grids("output/grids")  # rebuild point.png from the written files
 Prior centres are the least-squares projection of the reference profile into
 the Fortran coefficient space, so the two interface coefficients already carry
 the reference model's Moho contrast; no synthetic jump is needed. See
-[the Moho discontinuity and the interface coefficients](../api/mcmc.md#the-moho-discontinuity-and-the-interface-coefficients).
+[the Moho discontinuity and the interface coefficients](../mcmc/parameterization.md#the-moho-discontinuity-and-the-interface-coefficients).
 
 [![Per-point figure at 122.00_33.50: phase dispersion and Vs search intervals
 with projection centres](../assets/mcmc-point-example.png){ .example-figure }](../assets/mcmc-point-example.png)

@@ -35,7 +35,6 @@ theme:
     - content.code.annotate
     - navigation.footer
     - navigation.indexes
-    - navigation.sections
     - navigation.top
     - search.highlight
     - search.share
@@ -43,40 +42,34 @@ theme:
     - toc.follow
 
 nav:
-  - Home: index.md
-  - Start here:
-      - Quick start: quickstart.md
-      - Choose a workflow: task-guide.md
-      - Data archive layout: design/archive-layout.md
-  - Recipes:
-      - Workflow map: recipes/index.md
-      - Guided workflows:
-          - Process one GeoNet day: recipes/geonet-one-day-workflow.md
-          - Explore GeoNet 100 Hz interactively: recipes/geonet-100hz-notebook.md
-      - Acquire data:
-          - Download station metadata — download_inventory: recipes/download-inventory.md
-          - Download an event catalog — download_earthquake_events: recipes/download-events.md
-          - Download known stations — download_waveforms: recipes/download-waveforms.md
-          - Discover a region — mass_download_waveforms: recipes/mass-download-waveforms.md
-      - Build the archive:
-          - Organize SAC files — archive_waveforms: recipes/archive-sac.md
-          - Filter weak traces — filter_waveforms: recipes/filter-waveforms.md
-          - Measure network coverage — waveform_coverage: recipes/waveform-coverage.md
-      - Process continuous data:
-          - Convert MiniSEED to SAC — convert_mseed_to_sac: recipes/convert-miniseed.md
-          - Merge SAC by day — merge_waveforms_by_day: recipes/merge-sac.md
-          - Deconvolve waveforms — deconvolve_waveforms: recipes/remove-response.md
-          - Decimate waveforms — decimate_waveforms: recipes/decimate.md
-      - Prepare events:
-          - Cut event windows — cut_event_waveforms: recipes/cut-events.md
-          - Format event SAC headers — format_sac_headers: recipes/format-headers.md
-      - Correct stations:
-          - Correct clock drift — correct_clock_drift: recipes/correct-clock-drift.md
-          - Correct orientation — correct_orientation: recipes/correct-orientation.md
-      - Run inversion:
-          - Prepare and collect MCMC results: recipes/mcmc.md
-      - Understand reports and logs: recipes/batch-reports.md
-  - Interface reference:
+  - Find an example: index.md
+  - Quick start: quickstart.md
+  - Examples:
+      - Download:
+          - Station metadata: recipes/download-inventory.md
+          - Event catalog: recipes/download-events.md
+          - Known stations: recipes/download-waveforms.md
+          - Regional discovery: recipes/mass-download-waveforms.md
+      - Archive and inspect:
+          - Organize SAC: recipes/archive-sac.md
+          - Filter traces: recipes/filter-waveforms.md
+          - Coverage: recipes/waveform-coverage.md
+          - Reports and logs: recipes/batch-reports.md
+      - Process waveforms:
+          - MiniSEED to SAC: recipes/convert-miniseed.md
+          - Merge by day: recipes/merge-sac.md
+          - Remove response: recipes/remove-response.md
+          - Decimate: recipes/decimate.md
+      - Events and corrections:
+          - Cut events: recipes/cut-events.md
+          - SAC headers: recipes/format-headers.md
+          - Clock drift: recipes/correct-clock-drift.md
+          - Orientation: recipes/correct-orientation.md
+      - MCMC: recipes/mcmc.md
+      - Complete workflows:
+          - GeoNet one day: recipes/geonet-one-day-workflow.md
+          - Interactive notebook: recipes/geonet-100hz-notebook.md
+  - API reference:
       - Overview: api/index.md
       - Download: api/download.md
       - Inventory: api/inventory.md
@@ -86,12 +79,20 @@ nav:
       - Events: api/event.md
       - Corrections: api/correct.md
       - MCMC: api/mcmc.md
-  - Design and development:
+  - Configuration and concepts:
+      - Archive layout: design/archive-layout.md
+      - MCMC configuration: mcmc/configuration.md
+      - MCMC parameterization: mcmc/parameterization.md
+  - Development:
       - Project structure: design/project-structure.md
       - Event cutting: design/event-cutting.md
-      - Testing strategy: development/testing.md
+      - Testing: development/testing.md
       - Roadmap: development/roadmap.md
-  - Contributing docs: development.md
+      - Contribute docs: development.md
+
+not_in_nav: |
+  /task-guide.md
+  /recipes/index.md
 
 plugins:
   - search:

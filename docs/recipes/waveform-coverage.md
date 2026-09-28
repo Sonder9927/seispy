@@ -5,13 +5,33 @@ description: Measure actual daily waveform time coverage by station.
 
 # Measure network waveform coverage
 
-## Interface
+<a id="interface"></a>
 
 `waveform.waveform_coverage(net_dir, ...)`
 
 **Input:** one network directory inside a waveform tree.<br>
 **Output:** station-day coverage, station summaries, and optional CSV and
 figure files.
+
+## Example
+
+```python
+from seispy import waveform
+
+report = waveform.waveform_coverage(
+    "data/mseed/NZ",
+    start_date="2024-01-01",
+    end_date="2024-12-31",
+    output_figure="figures/waveform-coverage.pdf",
+    output_csv="data/metadata/waveform-coverage.csv",
+    station_order="coverage",
+    read_mode="header",
+)
+
+print(report.coverage)
+print(report.summary)
+```
+
 
 ## Expected layout
 
@@ -74,25 +94,6 @@ report = waveform.waveform_coverage(
     read_mode="filename",
     layout="deconvolved",
 )
-```
-
-## Example
-
-```python
-from seispy import waveform
-
-report = waveform.waveform_coverage(
-    "data/mseed/NZ",
-    start_date="2024-01-01",
-    end_date="2024-12-31",
-    output_figure="figures/waveform-coverage.pdf",
-    output_csv="data/metadata/waveform-coverage.csv",
-    station_order="coverage",
-    read_mode="header",
-)
-
-print(report.coverage)
-print(report.summary)
 ```
 
 ## Result

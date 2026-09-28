@@ -5,7 +5,7 @@ description: Rotate three-component SAC data using station orientation metadata.
 
 # Correct sensor orientation
 
-## Interface
+<a id="interface"></a>
 
 `correct.correct_orientation(net_dir, dest_dir, cor_csv, ...)`
 

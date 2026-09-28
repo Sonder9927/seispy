@@ -5,7 +5,7 @@ description: Validate scattered SAC files and place them in canonical network/st
 
 # Organize SAC files into an archive
 
-## Interface
+<a id="interface"></a>
 
 `waveform.archive_waveforms(source_dir, output_dir, ...)`
 
@@ -39,6 +39,25 @@ a minute before they are committed, so truncated or test files cannot enter the
 archive; constant and non-finite traces are always rejected as unusable. Omit
 `trace_filter` to archive every decodable trace, or see
 [Filter waveforms before processing](filter-waveforms.md) to tune the policy.
+
+## Report fields
+
+`succeeded`, `skipped`, and `failed` describe mutually exclusive source-file
+outcomes. A partially archived file can succeed while still reporting errors.
+The former `errored` field is replaced by `files_with_errors` and
+`files_with_warnings`; a source with both contributes once to each counter.
+
+`error_counts` and `warning_counts` summarize all recorded events by reason
+code, independently of the sample limit. Common codes include
+`source_read_failed`, `existing_content_conflict`, `output_write_failed`,
+`output_validation_failed`, `group_processing_failed`, `duplicate_path`, and
+`inventory_mismatch` (warning). Unexpected worker failures use `worker_failed`;
+other source-processing failures use `archive_failed`.
+
+`issue_samples` contains at most `max_error_samples` events in total, with
+`source`, `error` (the readable message), `severity`, and `reason_code`.
+The run log records every event at its error or warning level without a
+traceback. Normal policy filtering only increments `traces_filtered`.
 
 ## Output layout
 

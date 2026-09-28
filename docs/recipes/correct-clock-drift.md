@@ -5,7 +5,7 @@ description: Adjust SAC trace times using station clock-drift metadata.
 
 # Correct station clock drift
 
-## Interface
+<a id="interface"></a>
 
 `correct.correct_clock_drift(net_dir, dest_dir, drift_csv, ...)`
 

@@ -5,7 +5,7 @@ description: Download response-level StationXML from an FDSN service.
 
 # Download station metadata
 
-## Interface
+<a id="interface"></a>
 
 `download.download_inventory(output_file, ...)`
 

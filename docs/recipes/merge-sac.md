@@ -5,7 +5,7 @@ description: Combine compatible SAC segments into one channel-day waveform.
 
 # Merge continuous SAC files by day
 
-## Interface
+<a id="interface"></a>
 
 `waveform.merge_waveforms_by_day(source_dir, output_dir, ...)`
 

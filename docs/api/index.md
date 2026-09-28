@@ -2,7 +2,7 @@
 
 The public interface is grouped by processing domain. Each page gives exact
 parameters, return models, error behavior, and source links. Start with a
-[workflow recipe](../recipes/index.md) if you do not yet know which function
+[workflow recipe](../index.md#find-an-example) if you do not yet know which function
 fits your task.
 
 - [Download](download.md): FDSN inventories, events, and waveforms

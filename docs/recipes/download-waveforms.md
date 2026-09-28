@@ -1,49 +1,104 @@
 ---
 title: Download and validate known-station waveforms
-description: Stage raw FDSN responses, then validate them into MiniSEED or SAC archives.
+description: Download known stations and archive the results as MiniSEED or SAC.
 ---
 
-# Download and validate known-station waveforms
+# Download known stations
 
-## Interfaces
+<a id="interfaces"></a>
 
-1. `download.download_waveforms(output_dir, ...)` transfers unverified bytes.
-2. `waveform.archive_waveforms(source_dir, output_dir, ...)` validates and
-   commits the archive.
+**Input:** response-level [StationXML](download-inventory.md#example) at
+`data/metadata/stations.xml`, covering the requested stations and dates.
 
-**Input:** StationXML or explicit network, station, channel, and time
-selectors.<br>
-**Output:** trusted files below `data/mseed/` or `data/sac/`, organized by
-network, station, and year.
-
-Waveform acquisition has two explicit stages:
-
-1. `download_waveforms` transfers FDSN response bytes into an untrusted staging
-   directory. It never invokes ObsPy's MiniSEED decoder.
-2. `archive_waveforms` validates those responses in isolated processes and
-   commits trusted MiniSEED or SAC files.
-
-This boundary keeps network concurrency independent from CPU-heavy native
-decoding and prevents concurrent libmseed calls in download threads.
+**Output:** a validated MiniSEED or SAC archive. Change the paths, provider,
+station selectors, and dates in the example to match your dataset.
 
 ## Download raw responses
 
-```python
-from seispy import download
+Choose an output format, then copy the complete download-and-archive example.
+The download writes unverified `.mseed.raw` files; archival validates them.
 
-download_summary = download.download_waveforms(
-    "data/waveform-staging",
-    network="NZ",
-    starttime="2025-01-01",
-    endtime="2025-01-03",  # exclusive
-    station=["WEL", "KHZ"],
-    channel="BH?",
-    inventory="data/metadata/stations.xml",
-    network_workers=10,
-    max_retries=2,
-    retry_backoff=1.0,
-)
-```
+=== "MiniSEED"
+
+    ```python
+    from seispy import download
+
+    download_summary = download.download_waveforms(
+        "data/waveform-staging",
+        client="https://service.geonet.org.nz",
+        network="NZ",
+        starttime="2025-01-01",
+        endtime="2025-01-03",  # exclusive
+        station=["WEL", "KHZ"],
+        channel="BH?",
+        inventory="data/metadata/stations.xml",
+        network_workers=10,
+        max_retries=2,
+        retry_backoff=1.0,
+    )
+
+    from seispy import waveform
+    from seispy.waveform import TraceFilter
+
+    archive_summary = waveform.archive_waveforms(
+        "data/waveform-staging",
+        "data/mseed",
+        output_format="mseed",
+        inventory="data/metadata/stations.xml",
+        max_workers=5,
+        trace_filter=TraceFilter(min_duration_seconds=60),
+    )
+
+    print(download_summary.succeeded, download_summary.failed)
+    print(archive_summary.succeeded, archive_summary.failed)
+    ```
+
+=== "SAC"
+
+    ```python
+    from seispy import download
+
+    download_summary = download.download_waveforms(
+        "data/waveform-staging",
+        client="https://service.geonet.org.nz",
+        network="NZ",
+        starttime="2025-01-01",
+        endtime="2025-01-03",  # exclusive
+        station=["WEL", "KHZ"],
+        channel="BH?",
+        inventory="data/metadata/stations.xml",
+        network_workers=10,
+        max_retries=2,
+        retry_backoff=1.0,
+    )
+
+    from seispy import waveform
+    from seispy.waveform import TraceFilter
+
+    sac_summary = waveform.archive_waveforms(
+        "data/waveform-staging",
+        "data/sac",
+        output_format="sac",
+        inventory="data/metadata/stations.xml",
+        max_workers=5,
+        trace_filter=TraceFilter(min_duration_seconds=60),
+    )
+
+    print(download_summary.succeeded, download_summary.failed)
+    print(sac_summary.succeeded, sac_summary.failed)
+    ```
+
+## Output and common changes
+
+- Raw responses: `data/waveform-staging/<network>/<station>/<year>/`.
+- Trusted output: `data/mseed/` or `data/sac/` with the same station hierarchy.
+- Use `network_workers` for download concurrency and `max_workers` for archival.
+- Set `TraceFilter(min_duration_seconds=...)` to your minimum usable duration.
+- Source files are preserved. Inspect `summary.issue_samples` if failures occur.
+
+## Download details
+
+
 
 Successful responses are stored byte-for-byte with a `.mseed.raw` suffix.
 This suffix deliberately marks them as unverified and keeps ordinary MiniSEED
@@ -61,19 +116,7 @@ and UTC-day boundaries. It is not used to validate bytes during download.
 
 ## Archive as MiniSEED
 
-```python
-from seispy import waveform
-from seispy.waveform import TraceFilter
 
-archive_summary = waveform.archive_waveforms(
-    "data/waveform-staging",
-    "data/mseed",
-    output_format="mseed",
-    inventory="data/metadata/stations.xml",
-    max_workers=5,
-    trace_filter=TraceFilter(min_duration_seconds=60),
-)
-```
 
 Valid single-identity MiniSEED is copied without re-encoding. Zero-sample
 boundary traces do not determine archive identity. When a response contains
@@ -97,18 +140,7 @@ storage throughput permit.
 SAC uses the same staging input and integrity checks. Each resulting trace is
 written to its canonical SAC path:
 
-```python
-from seispy.waveform import TraceFilter
 
-sac_summary = waveform.archive_waveforms(
-    "data/waveform-staging",
-    "data/sac",
-    output_format="sac",
-    inventory="data/metadata/stations.xml",
-    max_workers=5,
-    trace_filter=TraceFilter(min_duration_seconds=60),
-)
-```
 
 This replaces “download SAC directly”: an FDSN dataselect response is normally
 MiniSEED, so SAC creation belongs to local validation and archival rather than

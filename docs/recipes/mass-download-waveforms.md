@@ -5,7 +5,7 @@ description: Bulk-download continuous MiniSEED with ObsPy MassDownloader.
 
 # Discover and download regional waveforms
 
-## Interface
+<a id="interface"></a>
 
 `download.mass_download_waveforms(output_dir, domain=..., restrictions=...)`
 
@@ -17,6 +17,47 @@ description: Bulk-download continuous MiniSEED with ObsPy MassDownloader.
     `mass_download_waveforms` may change before SeisPy reaches a stable release.
     Test it on a short interval before starting a large acquisition. The stable
     `download_waveforms` function remains available and unchanged.
+
+## Recommended example
+
+```python
+from seispy import download
+
+result = download.mass_download_waveforms(
+    "data/mseed",
+    "2025-01-01",
+    "2025-01-08",
+    providers="GEONET",
+    network="NZ",
+    station="WEL,KHZ",
+    location="*",
+    channel="BH?",
+    chunklength_in_sec=86_400,
+    reject_channels_with_gaps=False,
+    minimum_length=0.9,
+    threads_per_client=3,
+    download_chunk_size_in_mb=50,
+)
+
+print(f"MiniSEED: {len(result.mseed_files)}")
+print(f"StationXML: {len(result.stationxml_files)}")
+print(f"Lifecycle report: {result.report_path}")
+print(f"Run log: {result.log_path}")
+```
+
+SeisPy's lifecycle report and persistent log are enabled by default. They show
+whether the blocking MassDownloader call completed or was interrupted; detailed
+provider acquisition statistics still come from ObsPy's `print_report=True`.
+See [Batch reports and logs](batch-reports.md).
+
+`MassDownloader` uses threads, not Python worker processes.
+`threads_per_client=3` means up to three download threads for each provider.
+Increasing it can overload public services and may be slower when a provider
+rate-limits requests. Start with 2–3.
+
+`download_chunk_size_in_mb` controls the approximate size of bulk requests. A
+larger value reduces request count but increases memory use and retry cost.
+
 
 ## When to use it
 
@@ -72,46 +113,6 @@ number of days.
 | Spatial selection | FDSN selectors | Global, rectangular, circular, or custom domain |
 | Metadata | Optional input inventory | Downloads matching StationXML |
 | Existing data | Header-validated station-day skip | ObsPy validates each storage path |
-
-## Recommended example
-
-```python
-from seispy import download
-
-result = download.mass_download_waveforms(
-    "data/mseed",
-    "2025-01-01",
-    "2025-01-08",
-    providers="GEONET",
-    network="NZ",
-    station="WEL,KHZ",
-    location="*",
-    channel="BH?",
-    chunklength_in_sec=86_400,
-    reject_channels_with_gaps=False,
-    minimum_length=0.9,
-    threads_per_client=3,
-    download_chunk_size_in_mb=50,
-)
-
-print(f"MiniSEED: {len(result.mseed_files)}")
-print(f"StationXML: {len(result.stationxml_files)}")
-print(f"Lifecycle report: {result.report_path}")
-print(f"Run log: {result.log_path}")
-```
-
-SeisPy's lifecycle report and persistent log are enabled by default. They show
-whether the blocking MassDownloader call completed or was interrupted; detailed
-provider acquisition statistics still come from ObsPy's `print_report=True`.
-See [Batch reports and logs](batch-reports.md).
-
-`MassDownloader` uses threads, not Python worker processes.
-`threads_per_client=3` means up to three download threads for each provider.
-Increasing it can overload public services and may be slower when a provider
-rate-limits requests. Start with 2–3.
-
-`download_chunk_size_in_mb` controls the approximate size of bulk requests. A
-larger value reduces request count but increases memory use and retry cost.
 
 ## Limit downloads with StationXML
 

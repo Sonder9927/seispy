@@ -5,7 +5,7 @@ description: Query FDSN events and save a normalized SeisPy CSV.
 
 # Download an earthquake catalog
 
-## Interface
+<a id="interface"></a>
 
 `download.download_earthquake_events(starttime, endtime, output_file, ...)`
 

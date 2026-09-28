@@ -5,7 +5,7 @@ description: Deconvolve SAC files with StationXML while preserving source data.
 
 # Remove instrument response
 
-## Interface
+<a id="interface"></a>
 
 `deconvolution.deconvolve_waveforms(source_dir, inventory, ...)`
 

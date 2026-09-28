@@ -1,90 +1,42 @@
 ---
 title: SeisPy
-description: Task-oriented examples for seismic data processing with SeisPy.
+description: Find a task, copy an example, and process seismic data.
 ---
 
-# Learn SeisPy by task
+# SeisPy
 
-SeisPy documentation is organized around **what you want to accomplish**. Pick
-a task, copy the example, then follow its link to the full API only when you
-need every parameter.
+Seismic data processing with ObsPy. Choose your input below to jump straight
+to a working example; change the paths and selectors to match your data.
 
-<div class="hero-actions" markdown>
-[Choose a workflow](task-guide.md){ .md-button .md-button--primary }
-[Run the quick start](quickstart.md){ .md-button }
-</div>
+[Install and run your first workflow](quickstart.md){ .md-button .md-button--primary }
 
-## Download data
+## Find an example
 
-Need a complete, runnable example? Follow the
-[GeoNet one-day workflow from 100 Hz MiniSEED to 1 Hz SAC](recipes/geonet-one-day-workflow.md).
+| Input | Task | Copy an example |
+| --- | --- | --- |
+| Time and region selectors | Earthquake catalog | [Download events](recipes/download-events.md#example) |
+| Network and time selectors | StationXML | [Download station metadata](recipes/download-inventory.md#example) |
+| StationXML or a known station list | trusted MiniSEED or SAC | [Download and validate known-station waveforms](recipes/download-waveforms.md#download-raw-responses) |
+| A geographic region | discovered stations and MiniSEED | [Discover regional waveforms](recipes/mass-download-waveforms.md#recommended-example) |
+| Scattered SAC files | a canonical archive | [Organize SAC files](recipes/archive-sac.md#example) |
+| A waveform tree with short fragments | only usable traces | [Filter waveform traces](recipes/filter-waveforms.md#example) |
+| A waveform archive | a coverage table and figure | [Measure network coverage](recipes/waveform-coverage.md#example) |
+| MiniSEED | SAC | [Convert MiniSEED to SAC](recipes/convert-miniseed.md#example) |
+| Multiple SAC segments per day | one file per channel-day | [Merge continuous SAC files](recipes/merge-sac.md#example) |
+| Raw-count waveforms plus StationXML | physical units | [Remove instrument response](recipes/remove-response.md#example) |
+| High-rate waveforms | a lower sampling rate | [Decimate waveforms](recipes/decimate.md#scipy-example) |
+| Continuous SAC plus an event CSV | event windows | [Cut event windows](recipes/cut-events.md#example) |
+| Event SAC plus metadata tables | populated SAC headers | [Format event SAC headers](recipes/format-headers.md#example) |
+| SAC plus drift metadata | corrected timestamps | [Correct station clock drift](recipes/correct-clock-drift.md#example) |
+| Three-component SAC plus orientation metadata | corrected horizontals | [Correct sensor orientation](recipes/correct-orientation.md#example) |
+| Inversion source datasets | grid inputs and collected results | [Run the MCMC workflow](recipes/mcmc.md#generate-grid-inputs) |
 
-<div class="task-grid" markdown>
-<div class="task-card" markdown>
-### Station metadata
+## Complete workflows
 
-Download response-level StationXML from an FDSN service.
+- [GeoNet: download and process one day](recipes/geonet-one-day-workflow.md)
+- [Interactive GeoNet notebook](recipes/geonet-100hz-notebook.md)
 
-[View recipe →](recipes/download-inventory.md)
-</div>
+## Reference
 
-<div class="task-card" markdown>
-### Earthquake catalog
-
-Query events and save a normalized CSV catalog.
-
-[View recipe →](recipes/download-events.md)
-</div>
-
-<div class="task-card" markdown>
-### Waveforms
-
-Download daily MiniSEED or SAC files by station.
-
-[View recipe →](recipes/download-waveforms.md)
-</div>
-</div>
-
-## Prepare waveforms
-
-| I want to... | Copyable example |
-| --- | --- |
-| Convert MiniSEED to SAC | [MiniSEED to SAC](recipes/convert-miniseed.md) |
-| Organize scattered SAC files | [Build a SAC archive](recipes/archive-sac.md) |
-| Merge continuous SAC segments by day | [Merge SAC by day](recipes/merge-sac.md) |
-| Add event and station metadata to SAC headers | [Format headers](recipes/format-headers.md) |
-| Drop short or unusable traces | [Filter traces](recipes/filter-waveforms.md) |
-| Remove an instrument response | [Remove response](recipes/remove-response.md) |
-| Reduce the sampling rate | [Decimate](recipes/decimate.md) |
-
-## Analyze events and stations
-
-| I want to... | Copyable example |
-| --- | --- |
-| Cut event windows from continuous data | [Cut events](recipes/cut-events.md) |
-| Correct station clock drift | [Correct clock drift](recipes/correct-clock-drift.md) |
-| Correct sensor orientation | [Correct orientation](recipes/correct-orientation.md) |
-| Generate inputs and collect MCMC results | [MCMC workflow](recipes/mcmc.md) |
-
-!!! tip "A simple learning path"
-
-    Start with [MiniSEED to SAC](recipes/convert-miniseed.md), continue with
-    [decimation](recipes/decimate.md), and use the returned summary objects to
-    understand what each batch operation changed.
-
-!!! note "Source data is immutable"
-
-    Waveform processing functions always write to a separate output directory.
-    They never delete or replace their inputs.
-
-## Look up exact parameters
-
-Recipes teach the workflow. The [interface reference](api/index.md) provides complete
-signatures, return models, and source links. You can also inspect any function
-without opening this site:
-
-```python
-from seispy import deconvolution
-
-help(deconvolution.deconvolve_waveforms)
-```
+[All API parameters](api/index.md) · [Archive paths](design/archive-layout.md) ·
+[Reports and logs](recipes/batch-reports.md)

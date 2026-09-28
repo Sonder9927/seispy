@@ -20,9 +20,11 @@ uv sync
 Run Python through the project environment with `uv run python`, or copy the
 following cells into a notebook using the same environment.
 
-## 1. Download StationXML
+## Complete example
 
-Interface: `download.download_inventory(output_file, ...)`
+Copy this entire script into the project environment. It downloads one station
+for one day, validates the archive, and writes a coverage table. Internet access
+and data availability at the provider are required.
 
 ```python
 from seispy import download
@@ -37,15 +39,7 @@ inventory = download.download_inventory(
     endtime="2025-01-02",
     level="response",
 )
-```
 
-This creates `data/metadata/stations.xml` and a companion station CSV.
-
-## 2. Download unverified waveform bytes
-
-Interface: `download.download_waveforms(output_dir, ...)`
-
-```python
 downloaded = download.download_waveforms(
     "data/waveform-staging",
     client="https://service.geonet.org.nz",
@@ -59,16 +53,7 @@ downloaded = download.download_waveforms(
 )
 
 print(downloaded.succeeded, downloaded.failed, downloaded.no_data)
-```
 
-Successful responses retain the `.mseed.raw` suffix because they have not yet
-been decoded and validated.
-
-## 3. Commit the trusted MiniSEED archive
-
-Interface: `waveform.archive_waveforms(source_dir, output_dir, ...)`
-
-```python
 from seispy import waveform
 from seispy.waveform import TraceFilter
 
@@ -82,16 +67,7 @@ archived = waveform.archive_waveforms(
 )
 
 print(archived.succeeded, archived.failed)
-```
 
-Trusted output is written below `data/mseed/NZ/WEL/2025/`. Staging files are
-always preserved.
-
-## 4. Measure the result
-
-Interface: `waveform.waveform_coverage(net_dir, ...)`
-
-```python
 coverage = waveform.waveform_coverage(
     "data/mseed/NZ",
     start_date="2025-01-01",
@@ -102,10 +78,30 @@ coverage = waveform.waveform_coverage(
 print(coverage.summary)
 ```
 
-## Continue learning
+## Outputs
 
-- Convert the archive with [Convert MiniSEED to SAC](recipes/convert-miniseed.md).
-- Understand acquisition and recovery policy in
-  [Download and validate known-station waveforms](recipes/download-waveforms.md).
-- Find another path from [Choose a workflow](task-guide.md).
-- Look up exact parameters in the [interface reference](api/index.md).
+<a id="1-download-stationxml"></a>
+<a id="2-download-unverified-waveform-bytes"></a>
+<a id="3-commit-the-trusted-miniseed-archive"></a>
+<a id="4-measure-the-result"></a>
+
+| Step | Output |
+| --- | --- |
+| Metadata | `data/metadata/stations.xml` and companion station CSV |
+| Download | Unverified `.mseed.raw` files in `data/waveform-staging` |
+| Archive | Validated MiniSEED in `data/mseed/NZ/WEL/2025` |
+| Coverage | `data/metadata/waveform-coverage.csv` |
+
+Source files are preserved. Check the printed failure counts before continuing.
+
+## Common changes
+
+- Change `network`, `station`, `channel`, and the dates in both download calls.
+- Change the network directory and date range in the coverage call to match.
+- Adjust `min_duration_seconds` for your shortest usable trace.
+
+## Next step
+
+[Convert to SAC](recipes/convert-miniseed.md#example) ·
+[Download options](recipes/download-waveforms.md) ·
+[Find another task](index.md#find-an-example)
