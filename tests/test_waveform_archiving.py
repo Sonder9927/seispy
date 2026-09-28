@@ -3,6 +3,7 @@ import struct
 
 import numpy as np
 import pytest
+from hypothesis import given, strategies as st
 from obspy import Inventory, Stream, Trace, UTCDateTime, read
 
 from seispy import waveform
@@ -12,13 +13,12 @@ from seispy.waveform.integrity import TraceFilter
 
 
 def _raw_mseed(root, *, channel="HHZ"):
-    trace = Trace(data=np.arange(100, dtype=np.int32))
-    trace.stats.network = "NZ"
-    trace.stats.station = "AAA"
-    trace.stats.location = "10"
-    trace.stats.channel = channel
-    trace.stats.starttime = UTCDateTime("2026-01-01")
-    trace.stats.sampling_rate = 10
+    trace = _trace_at(
+        "2026-01-01",
+        data=np.arange(100, dtype=np.int32),
+        channel=channel,
+        sampling_rate=10,
+    )
     path = root / "NZ" / "AAA" / "2026" / f"NZ.AAA.10.{channel}.2026.001.mseed.raw"
     path.parent.mkdir(parents=True, exist_ok=True)
     Stream([trace]).write(path, format="MSEED")
@@ -26,13 +26,13 @@ def _raw_mseed(root, *, channel="HHZ"):
 
 
 def _constant_raw_mseed(root, *, value=1):
-    trace = Trace(data=np.full(100, value, dtype=np.int32))
-    trace.stats.network = "YH"
-    trace.stats.station = "LOBS1"
-    trace.stats.location = ""
-    trace.stats.channel = "HHZ"
-    trace.stats.starttime = UTCDateTime("2015-01-01")
-    trace.stats.sampling_rate = 100
+    trace = _trace_at(
+        "2015-01-01",
+        data=np.full(100, value, dtype=np.int32),
+        network="YH",
+        station="LOBS1",
+        location="",
+    )
     path = root / "YH" / "LOBS1" / "2015" / "YH.LOBS1.--.HHZ.2015.001.mseed.raw"
     path.parent.mkdir(parents=True, exist_ok=True)
     Stream([trace]).write(path, format="MSEED")
@@ -52,13 +52,9 @@ def _append_empty_next_day_record(path):
 
 
 def _multiday_raw_mseed(root):
-    first = Trace(data=np.arange(100, dtype=np.int32))
-    first.stats.network = "NZ"
-    first.stats.station = "AAA"
-    first.stats.location = "10"
-    first.stats.channel = "HHZ"
-    first.stats.starttime = UTCDateTime("2026-01-01T01:00:00")
-    first.stats.sampling_rate = 10
+    first = _trace_at(
+        "2026-01-01T01:00:00", data=np.arange(100, dtype=np.int32), sampling_rate=10
+    )
     second = first.copy()
     second.stats.starttime = UTCDateTime("2026-01-02T02:00:00")
     path = root / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
@@ -68,13 +64,9 @@ def _multiday_raw_mseed(root):
 
 
 def _unsorted_sac(root):
-    trace = Trace(data=np.arange(100, dtype=np.float32))
-    trace.stats.network = "NZ"
-    trace.stats.station = "AAA"
-    trace.stats.location = "10"
-    trace.stats.channel = "HHZ"
-    trace.stats.starttime = UTCDateTime("2026-01-01")
-    trace.stats.sampling_rate = 10
+    trace = _trace_at(
+        "2026-01-01", data=np.arange(100, dtype=np.float32), sampling_rate=10
+    )
     path = root / "incoming" / "arbitrary-name.sac"
     path.parent.mkdir(parents=True, exist_ok=True)
     trace.write(str(path), format="SAC")
@@ -94,6 +86,11 @@ def test_mseed_archive_preserves_valid_source_bytes(tmp_path):
     assert raw.is_file()
     assert summary.succeeded == summary.files_written == 1
     assert summary.failed == 0
+
+    repeated = waveform.archive_waveforms(source, output, max_workers=1)
+    assert repeated.skipped == 1
+    assert repeated.succeeded == repeated.failed == repeated.files_written == 0
+    assert archived.read_bytes() == original
 
 
 def test_mseed_archive_ignores_empty_next_day_trace_and_preserves_bytes(tmp_path):
@@ -299,22 +296,6 @@ def test_archive_requires_separate_source_and_output_trees(tmp_path):
         waveform.archive_waveforms(source, source / "archive", max_workers=1)
 
 
-def test_sac_archive_writes_one_valid_file_per_trace(tmp_path):
-    source = tmp_path / "raw"
-    raw = _raw_mseed(source)
-    output = tmp_path / "sac"
-
-    summary = waveform.archive_waveforms(
-        source, output, output_format="sac", max_workers=1
-    )
-
-    files = list(output.rglob("*.sac"))
-    assert len(files) == 1
-    assert read(files[0], format="SAC")[0].id == "NZ.AAA.10.HHZ"
-    assert raw.exists()
-    assert summary.files_written == 1
-
-
 def test_archive_organizes_existing_sac_from_headers(tmp_path):
     source = tmp_path / "unsorted"
     original = _unsorted_sac(source)
@@ -368,19 +349,6 @@ def test_invalid_source_is_reported(tmp_path):
     assert summary.failed == 1
 
 
-def test_existing_valid_archive_is_skipped(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    raw = _raw_mseed(source)
-
-    first = waveform.archive_waveforms(source, output, max_workers=1)
-    second = waveform.archive_waveforms(source, output, max_workers=1)
-
-    assert first.succeeded == 1
-    assert second.skipped == 1
-    assert second.succeeded == 0
-
-
 def test_worker_salvages_valid_trace_when_source_path_disagrees(tmp_path):
     raw = _raw_mseed(tmp_path / "raw")
     mismatched = raw.with_name("NZ.WRONG.10.HHZ.2026.001.mseed.raw")
@@ -427,13 +395,9 @@ def test_constant_raw_response_is_not_archived(tmp_path):
 def test_worker_keeps_usable_traces_when_a_sibling_is_constant(tmp_path):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
-    first = Trace(data=np.full(100, 7, dtype=np.int32))
-    first.stats.network = "NZ"
-    first.stats.station = "AAA"
-    first.stats.location = "10"
-    first.stats.channel = "HHZ"
-    first.stats.starttime = UTCDateTime("2026-01-01T01:00:00")
-    first.stats.sampling_rate = 10
+    first = _trace_at(
+        "2026-01-01T01:00:00", data=np.full(100, 7, dtype=np.int32), sampling_rate=10
+    )
     second = first.copy()
     second.data = np.arange(100, dtype=np.int32)
     second.stats.starttime = UTCDateTime("2026-01-02T02:00:00")
@@ -456,13 +420,11 @@ def test_worker_keeps_usable_traces_when_a_sibling_is_constant(tmp_path):
 
 
 def test_classify_traces_rejects_non_finite_samples():
-    trace = Trace(data=np.array([1.0, np.nan, 2.0], dtype=np.float64))
-    trace.stats.network = "NZ"
-    trace.stats.station = "AAA"
-    trace.stats.location = "10"
-    trace.stats.channel = "HHZ"
-    trace.stats.starttime = UTCDateTime("2026-01-01")
-    trace.stats.sampling_rate = 10
+    trace = _trace_at(
+        "2026-01-01",
+        data=np.array([1.0, np.nan, 2.0], dtype=np.float64),
+        sampling_rate=10,
+    )
 
     valid, empty, unusable = archiving._classify_traces(Stream([trace]))
 
@@ -572,29 +534,45 @@ def test_archive_conflicting_overlap_counts_only_preserved_trace(
     np.testing.assert_array_equal(actual.data, expected.data)
 
 
-def test_merge_group_tracks_identical_overlap():
-    outer = _trace_at("2026-01-01", npts=2000)
-    inner = _trace_at("2026-01-01T00:00:02", npts=1200, seed=200)
+@st.composite
+def _contained_trace_pairs(draw):
+    rate = draw(st.sampled_from([10, 20, 50, 100, 200]))
+    npts = draw(st.integers(min_value=4, max_value=2000))
+    offset = draw(st.integers(min_value=0, max_value=npts - 2))
+    length = draw(st.integers(min_value=2, max_value=npts - offset))
+    seed = draw(st.integers(min_value=-10000, max_value=10000))
+    start = UTCDateTime("2026-01-01") + draw(st.integers(0, 86399))
+    outer = _trace_at(start, npts=npts, seed=seed, sampling_rate=rate)
+    inner = _trace_at(
+        start + offset / rate, npts=length, seed=seed + offset, sampling_rate=rate
+    )
+    return outer, inner
+
+
+@given(pair=_contained_trace_pairs())
+def test_merge_group_tracks_identical_overlap(pair):
+    outer, inner = pair
+    expected = outer.data.copy()
 
     segments, membership = archiving._merge_group([outer, inner])
 
     assert len(segments) == 1
     assert membership == [0, 0]
-    np.testing.assert_array_equal(segments[0].data, np.arange(2000))
+    np.testing.assert_array_equal(segments[0].data, expected)
 
 
 @pytest.mark.parametrize("mismatch", ["samples", "rate", "grid", "coverage", "channel"])
-def test_covering_segment_rejects_incompatible_trace(mismatch):
-    segment = _trace_at("2026-01-01", npts=2000)
-    trace = _trace_at("2026-01-01T00:00:02", npts=1200, seed=200)
+@given(pair=_contained_trace_pairs())
+def test_covering_segment_rejects_incompatible_trace(mismatch, pair):
+    segment, trace = pair
     if mismatch == "samples":
-        trace.data[0] = -1
+        trace.data[0] += 1
     elif mismatch == "rate":
-        trace.stats.sampling_rate = 200
+        trace.stats.sampling_rate *= 2
     elif mismatch == "grid":
-        trace.stats.starttime += 0.005
+        trace.stats.starttime += trace.stats.delta / 2
     elif mismatch == "coverage":
-        trace.stats.starttime += 10
+        trace.stats.starttime = segment.stats.endtime + segment.stats.delta
     else:
         trace.stats.channel = "HHN"
 
@@ -628,13 +606,7 @@ def test_archive_trace_filter_skips_filtered_traces(tmp_path):
 
 
 def test_classify_traces_treats_single_sample_trace_as_empty():
-    trace = Trace(data=np.array([5], dtype=np.int32))
-    trace.stats.network = "NZ"
-    trace.stats.station = "AAA"
-    trace.stats.location = "10"
-    trace.stats.channel = "HHZ"
-    trace.stats.starttime = UTCDateTime("2026-01-01")
-    trace.stats.sampling_rate = 100
+    trace = _trace_at("2026-01-01", data=np.array([5], dtype=np.int32))
 
     valid, empty, unusable = archiving._classify_traces(Stream([trace]))
 
@@ -644,13 +616,7 @@ def test_classify_traces_treats_single_sample_trace_as_empty():
 
 
 def _midnight_straddling_raw(root):
-    pre_roll = Trace(data=np.arange(1000, dtype=np.int32))
-    pre_roll.stats.network = "NZ"
-    pre_roll.stats.station = "AAA"
-    pre_roll.stats.location = "10"
-    pre_roll.stats.channel = "HHZ"
-    pre_roll.stats.starttime = UTCDateTime("2026-01-01T23:59:57")
-    pre_roll.stats.sampling_rate = 100
+    pre_roll = _trace_at("2026-01-01T23:59:57", data=np.arange(1000, dtype=np.int32))
     same_day = pre_roll.copy()
     same_day.stats.starttime = UTCDateTime("2026-01-02T12:00:00")
     path = root / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
@@ -660,13 +626,7 @@ def _midnight_straddling_raw(root):
 
 
 def _contiguous_raw(root):
-    first = Trace(data=np.arange(1000, dtype=np.int32))
-    first.stats.network = "NZ"
-    first.stats.station = "AAA"
-    first.stats.location = "10"
-    first.stats.channel = "HHZ"
-    first.stats.starttime = UTCDateTime("2026-01-02T00:00:00")
-    first.stats.sampling_rate = 100
+    first = _trace_at("2026-01-02T00:00:00", data=np.arange(1000, dtype=np.int32))
     second = first.copy()
     second.stats.starttime = first.stats.endtime + first.stats.delta
     path = root / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
@@ -675,81 +635,78 @@ def _contiguous_raw(root):
     return path
 
 
-def test_mseed_archive_splits_unmergeable_traces_into_one_file_each(tmp_path):
+@pytest.mark.parametrize("output_format", ["mseed", "sac"])
+def test_archive_splits_unmergeable_traces_into_one_file_each(tmp_path, output_format):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
     _midnight_straddling_raw(source)
 
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
+    summary = waveform.archive_waveforms(
+        source, output, output_format=output_format, max_workers=1
+    )
 
-    outputs = sorted(path.name for path in output.rglob("*.mseed"))
+    outputs = sorted(path.name for path in output.rglob(f"*.{output_format}"))
     assert outputs == [
-        "NZ.AAA.10.HHZ.2026.002.001T235957.mseed",
-        "NZ.AAA.10.HHZ.2026.002.120000.mseed",
+        f"NZ.AAA.10.HHZ.2026.002.001T235957.{output_format}",
+        f"NZ.AAA.10.HHZ.2026.002.120000.{output_format}",
     ]
     assert summary.succeeded == 1
     assert summary.files_written == 2
     assert summary.traces_failed == 0
 
 
-def test_mseed_archive_merges_contiguous_traces_into_one_file(tmp_path):
+@pytest.mark.parametrize(
+    "output_format, filename",
+    [
+        ("mseed", "NZ.AAA.10.HHZ.2026.002.mseed"),
+        ("sac", "NZ.AAA.10.HHZ.2026.002.000000.sac"),
+    ],
+)
+def test_archive_merges_contiguous_traces_into_one_file(
+    tmp_path, output_format, filename
+):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
-    _contiguous_raw(source)
+    raw = _contiguous_raw(source)
 
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
+    summary = waveform.archive_waveforms(
+        source, output, output_format=output_format, max_workers=1
+    )
 
-    outputs = sorted(output.rglob("*.mseed"))
-    assert [path.name for path in outputs] == ["NZ.AAA.10.HHZ.2026.002.mseed"]
+    outputs = sorted(output.rglob(f"*.{output_format}"))
+    assert [path.name for path in outputs] == [filename]
     merged = read(outputs[0])
     assert len(merged) == 1
     assert merged[0].stats.npts == 2000
+    assert merged[0].id == "NZ.AAA.10.HHZ"
+    assert raw.is_file()
     assert summary.files_written == 1
     assert summary.traces_failed == 0
 
 
-def test_sac_archive_merges_contiguous_traces_into_one_file(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "sac"
-    _contiguous_raw(source)
-
-    summary = waveform.archive_waveforms(
-        source, output, output_format="sac", max_workers=1
+def _trace_at(
+    starttime,
+    *,
+    npts=1000,
+    seed=0,
+    sampling_rate=100,
+    network="NZ",
+    station="AAA",
+    location="10",
+    channel="HHZ",
+    data=None,
+):
+    return Trace(
+        data=np.arange(npts, dtype=np.int32) + seed if data is None else data,
+        header=dict(
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            starttime=UTCDateTime(starttime),
+            sampling_rate=sampling_rate,
+        ),
     )
-
-    outputs = sorted(path.name for path in output.rglob("*.sac"))
-    assert outputs == ["NZ.AAA.10.HHZ.2026.002.000000.sac"]
-    assert summary.files_written == 1
-    assert summary.traces_failed == 0
-
-
-def test_sac_archive_splits_unmergeable_traces_into_one_file_each(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "sac"
-    _midnight_straddling_raw(source)
-
-    summary = waveform.archive_waveforms(
-        source, output, output_format="sac", max_workers=1
-    )
-
-    outputs = sorted(path.name for path in output.rglob("*.sac"))
-    assert outputs == [
-        "NZ.AAA.10.HHZ.2026.002.001T235957.sac",
-        "NZ.AAA.10.HHZ.2026.002.120000.sac",
-    ]
-    assert summary.files_written == 2
-    assert summary.traces_failed == 0
-
-
-def _trace_at(starttime, *, npts=1000, seed=0):
-    trace = Trace(data=(np.arange(npts, dtype=np.int32) + seed))
-    trace.stats.network = "NZ"
-    trace.stats.station = "AAA"
-    trace.stats.location = "10"
-    trace.stats.channel = "HHZ"
-    trace.stats.starttime = UTCDateTime(starttime)
-    trace.stats.sampling_rate = 100
-    return trace
 
 
 def test_mseed_archive_uses_short_segment_tokens(tmp_path):
@@ -831,55 +788,46 @@ def test_mseed_archive_migrates_a_misnamed_archived_file(tmp_path):
     assert source.joinpath("NZ/AAA/2026/NZ.AAA.10.HHZ.2026.001.mseed").is_file()
 
 
-def test_existing_shorter_mseed_archive_is_not_silently_kept(tmp_path):
-    source = tmp_path / "old"
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed"
-    path.parent.mkdir(parents=True)
-    Stream([_trace_at("2026-01-01T23:59:57.1")]).write(path, format="MSEED")
+@pytest.mark.parametrize(
+    "output_format, source_name",
+    [
+        ("mseed", "NZ.AAA.10.HHZ.2026.001.mseed"),
+        ("sac", "NZ.AAA.10.HHZ.2026.001.235957.sac"),
+    ],
+)
+def test_existing_shorter_archive_is_not_silently_kept(
+    tmp_path, output_format, source_name
+):
     output = tmp_path / "archive"
-    waveform.archive_waveforms(source, output, pattern="*.mseed", max_workers=1)
-
-    longer = tmp_path / "new" / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed"
-    longer.parent.mkdir(parents=True)
-    Stream([_trace_at("2026-01-01T23:59:57.1", npts=5000)]).write(
-        longer, format="MSEED"
-    )
-    summary = waveform.archive_waveforms(
-        tmp_path / "new", output, pattern="*.mseed", max_workers=1
-    )
+    for directory, npts in [("old", 1000), ("new", 5000)]:
+        source = tmp_path / directory
+        path = source / "NZ" / "AAA" / "2026" / source_name
+        path.parent.mkdir(parents=True)
+        _trace_at("2026-01-01T23:59:57.1", npts=npts).write(
+            str(path), format=output_format.upper()
+        )
+        summary = waveform.archive_waveforms(
+            source,
+            output,
+            output_format=output_format,
+            pattern=f"*.{output_format}",
+            max_workers=1,
+        )
+        if directory == "old":
+            assert summary.files_written == 1
 
     archived = (
-        output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.001T235957.mseed"
+        output
+        / "NZ"
+        / "AAA"
+        / "2026"
+        / f"NZ.AAA.10.HHZ.2026.002.001T235957.{output_format}"
     )
     assert read(archived)[0].stats.npts == 1000
     assert summary.failed == 1
     assert summary.has_issues
-    assert "overwrite=True" in summary.issue_samples[0].error
-
-
-def test_existing_shorter_sac_archive_is_not_silently_kept(tmp_path):
-    source = tmp_path / "old"
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.235957.sac"
-    path.parent.mkdir(parents=True)
-    _trace_at("2026-01-01T23:59:57.1").write(str(path), format="SAC")
-    output = tmp_path / "archive"
-    waveform.archive_waveforms(
-        source, output, output_format="sac", pattern="*.sac", max_workers=1
-    )
-
-    longer = (
-        tmp_path / "new" / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.235957.sac"
-    )
-    longer.parent.mkdir(parents=True)
-    _trace_at("2026-01-01T23:59:57.1", npts=5000).write(str(longer), format="SAC")
-    summary = waveform.archive_waveforms(
-        tmp_path / "new", output, output_format="sac", pattern="*.sac", max_workers=1
-    )
-
-    archived = output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.001T235957.sac"
-    assert read(archived, format="SAC")[0].stats.npts == 1000
-    assert summary.failed == 1
-    assert summary.has_issues
+    if output_format == "mseed":
+        assert "overwrite=True" in summary.issue_samples[0].error
 
 
 def test_conflicting_same_start_traces_are_reported(tmp_path):
@@ -903,13 +851,7 @@ def test_conflicting_same_start_traces_are_reported(tmp_path):
 def test_mseed_archive_keeps_post_roll_trace_in_its_day(tmp_path):
     source = tmp_path / "raw"
     output = tmp_path / "archive"
-    trace = Trace(data=np.arange(10000, dtype=np.int32))
-    trace.stats.network = "NZ"
-    trace.stats.station = "AAA"
-    trace.stats.location = "10"
-    trace.stats.channel = "HHZ"
-    trace.stats.starttime = UTCDateTime("2026-01-02T23:59:00")
-    trace.stats.sampling_rate = 100
+    trace = _trace_at("2026-01-02T23:59:00", data=np.arange(10000, dtype=np.int32))
     path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
     path.parent.mkdir(parents=True, exist_ok=True)
     Stream([trace]).write(path, format="MSEED")
@@ -923,13 +865,9 @@ def test_mseed_archive_keeps_post_roll_trace_in_its_day(tmp_path):
 
 
 def _sac_chunk(starttime, npts):
-    trace = Trace(data=np.arange(npts, dtype=np.float32))
-    trace.stats.network = "NZ"
-    trace.stats.station = "HLRZ"
-    trace.stats.location = "10"
-    trace.stats.channel = "EHE"
-    trace.stats.starttime = UTCDateTime(starttime)
-    trace.stats.sampling_rate = 100
+    trace = _trace_at(
+        starttime, data=np.arange(npts, dtype=np.float32), station="HLRZ", channel="EHE"
+    )
     return trace
 
 
