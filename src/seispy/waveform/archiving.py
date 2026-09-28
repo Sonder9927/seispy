@@ -41,10 +41,12 @@ _WORKER_INVENTORY = None
 
 @dataclass(frozen=True)
 class WaveformArchiveIssue:
-    """Describe one sampled raw-response archival failure."""
+    """Describe one bounded error or warning sample."""
 
     source: Path
     error: str
+    severity: Literal["error", "warning"] = "error"
+    reason_code: str = "archive_failed"
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,6 @@ class _ArchiveResult:
     recovered: int = 0
     reshaped: int = 0
     failed: int = 0
-    errored: int = 0
     files_written: int = 0
     traces_total: int = 0
     traces_written: int = 0
@@ -62,7 +63,15 @@ class _ArchiveResult:
     traces_ignored_empty: int = 0
     traces_filtered: int = 0
     traces_failed: int = 0
-    issue: WaveformArchiveIssue | None = None
+    issues: tuple[WaveformArchiveIssue, ...] = ()
+
+    @property
+    def files_with_errors(self):
+        return int(any(issue.severity == "error" for issue in self.issues))
+
+    @property
+    def files_with_warnings(self):
+        return int(any(issue.severity == "warning" for issue in self.issues))
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,9 @@ class WaveformArchiveSummary(BatchSummary):
     were filtered); reshaped counts sources whose traces were merged, split, or
     otherwise rewritten. Neither rescues a source from failure. Trace counters
     expose partial recovery without turning it into a source failure.
+    files_with_errors and files_with_warnings count sources independently;
+    error_counts and warning_counts count all events by reason, even when
+    issue_samples is capped. These fields replace the ambiguous errored count.
     """
 
     total: int
@@ -84,7 +96,10 @@ class WaveformArchiveSummary(BatchSummary):
     recovered: int
     reshaped: int
     failed: int
-    errored: int
+    files_with_errors: int
+    files_with_warnings: int
+    error_counts: dict[str, int]
+    warning_counts: dict[str, int]
     files_written: int
     traces_total: int
     traces_written: int
@@ -99,7 +114,13 @@ class WaveformArchiveSummary(BatchSummary):
 
     @property
     def has_issues(self) -> bool:
-        return bool(self.failed or self.recovered or self.traces_failed or self.errored)
+        return bool(
+            self.failed
+            or self.recovered
+            or self.traces_failed
+            or self.files_with_errors
+            or self.files_with_warnings
+        )
 
 
 def archive_waveforms(
@@ -147,7 +168,7 @@ def archive_waveforms(
             satisfy duration/sample thresholds together before they are judged.
             Filtered traces are counted separately and never count as failures.
             Defaults to None (keep every usable trace).
-        max_error_samples: Maximum sampled failures in the result.
+        max_error_samples: Maximum error/warning event samples; reason counts include all events.
         save_report: Persist the continuously updated JSON report.
         save_log: Persist the human-readable run log.
     """
@@ -176,7 +197,8 @@ def archive_waveforms(
             "recovered",
             "reshaped",
             "failed",
-            "errored",
+            "files_with_errors",
+            "files_with_warnings",
             "files_written",
             "traces_total",
             "traces_written",
@@ -187,6 +209,7 @@ def archive_waveforms(
         ),
         0,
     )
+    counters.update(error_counts={}, warning_counts={})
     issues = []
     with BatchRun(
         "waveform-archive",
@@ -300,26 +323,33 @@ def _archive_executor(workers, inventory):
 def _failed_result(path, exc):
     return _ArchiveResult(
         failed=1,
-        issue=WaveformArchiveIssue(path, f"{type(exc).__name__}: {exc}"),
+        issues=(
+            WaveformArchiveIssue(
+                path, f"{type(exc).__name__}: {exc}", reason_code="worker_failed"
+            ),
+        ),
     )
 
 
 def _record_result(result, counters, issues, max_error_samples):
     for name in counters:
-        counters[name] += getattr(result, name)
-    if result.issue is not None and len(issues) < max_error_samples:
-        issues.append(result.issue)
+        if name not in {"error_counts", "warning_counts"}:
+            counters[name] += getattr(result, name)
+    for issue in result.issues:
+        counts = counters[f"{issue.severity}_counts"]
+        counts[issue.reason_code] = counts.get(issue.reason_code, 0) + 1
+        if len(issues) < max_error_samples:
+            issues.append(issue)
 
 
 def _log_issue(run, result):
-    if result.issue is not None:
-        log = run.error if result.failed else run.warning
-        status = "archive_failed" if result.failed else "archive_partial"
+    for issue in result.issues:
+        log = run.error if issue.severity == "error" else run.warning
         log(
-            "source=%s %s error=%s",
-            result.issue.source,
-            status,
-            result.issue.error,
+            "source=%s reason=%s message=%s",
+            issue.source,
+            issue.reason_code,
+            issue.error,
         )
 
 
@@ -361,6 +391,7 @@ def _archive_one(
     source = Path(source_name)
     filtered = None
     record_recovered = False
+    reason_code = "source_read_failed"
     try:
         is_sac = source.suffix.lower() == ".sac"
         if is_sac:
@@ -388,6 +419,7 @@ def _archive_one(
                 stream = _read_full_mseed(filtered)
                 trusted_source = filtered
                 record_recovered = True
+        reason_code = "archive_failed"
         valid, empty, unusable = _classify_traces(stream)
         rejected = list(unusable)
         inventory_warnings = _inventory_warnings(valid)
@@ -400,6 +432,7 @@ def _archive_one(
                     traces_filtered=len(rejected),
                 )
             raise ValueError("waveform stream contains no samples")
+        reason_code = "output_write_failed"
         if output_format == "mseed":
             result = _archive_mseed_traces(
                 source,
@@ -434,9 +467,13 @@ def _archive_one(
         archived_any = archived_traces > 0
         all_existing = archived_any and written == 0 and not errors
         all_policy_filtered = bool(valid) and policy_filtered == len(valid)
-        issue = None
-        if errors or warnings:
-            issue = WaveformArchiveIssue(source, "; ".join([*errors, *warnings]))
+        issues = tuple(
+            WaveformArchiveIssue(source, message, reason_code=code)
+            for code, message in errors
+        ) + tuple(
+            WaveformArchiveIssue(source, message, "warning", "inventory_mismatch")
+            for message in warnings
+        )
         return _ArchiveResult(
             succeeded=int(archived_any and not all_existing),
             skipped=int(all_existing or all_policy_filtered),
@@ -446,7 +483,6 @@ def _archive_one(
                 and (reshaped or bool(rejected) or bool(policy_filtered))
             ),
             failed=int(not archived_any and not all_policy_filtered),
-            errored=int(issue is not None),
             files_written=written,
             traces_total=len(stream),
             traces_written=archived_traces - existing,
@@ -454,7 +490,7 @@ def _archive_one(
             traces_ignored_empty=len(empty),
             traces_filtered=filtered_count,
             traces_failed=max(0, traces_failed),
-            issue=issue,
+            issues=issues,
         )
     except Exception as exc:
         traces_total = len(stream) if "stream" in locals() else 0
@@ -468,7 +504,13 @@ def _archive_one(
             traces_total=traces_total,
             traces_ignored_empty=traces_ignored_empty,
             traces_failed=traces_total - traces_ignored_empty,
-            issue=WaveformArchiveIssue(source, f"{type(exc).__name__}: {exc}"),
+            issues=(
+                WaveformArchiveIssue(
+                    source,
+                    f"{type(exc).__name__}: {exc}",
+                    reason_code=getattr(exc, "reason_code", reason_code),
+                ),
+            ),
         )
     finally:
         if filtered is not None:
@@ -546,17 +588,13 @@ def _inventory_warnings(stream):
     must never discard otherwise valid waveform data, so callers keep the trace
     and record the mismatch as an issue.
     """
-    counts: dict[str, int] = {}
+    issues = []
     for trace in stream:
         try:
             _validate_inventory([trace])
         except Exception as exc:
-            message = str(exc)
-            counts[message] = counts.get(message, 0) + 1
-    return [
-        message if count == 1 else f"{message} ({count} traces)"
-        for message, count in counts.items()
-    ]
+            issues.append(str(exc))
+    return issues
 
 
 def _merge_group(group):
@@ -689,7 +727,10 @@ def _archive_mseed_traces(
                         destination = _recovered_mseed_path(output_root, [segment])
                 if destination in claimed:
                     errors.append(
-                        f"trace {segment.id} maps to duplicate path {destination}"
+                        (
+                            "duplicate_path",
+                            f"trace {segment.id} maps to duplicate path {destination}",
+                        )
                     )
                     continue
                 claimed.add(destination)
@@ -699,8 +740,11 @@ def _archive_mseed_traces(
                     )
                 except Exception as exc:
                     errors.append(
-                        f"trace group {segment.id} at "
-                        f"{segment.stats.starttime} failed: {type(exc).__name__}: {exc}"
+                        (
+                            getattr(exc, "reason_code", "output_write_failed"),
+                            f"trace group {segment.id} at "
+                            f"{segment.stats.starttime} failed: {type(exc).__name__}: {exc}",
+                        )
                     )
                     continue
                 files_written += written
@@ -709,12 +753,20 @@ def _archive_mseed_traces(
                     traces_existing += covered
         except Exception as exc:
             errors.append(
-                f"trace group {group[0].id} at {group[0].stats.starttime} "
-                f"failed: {type(exc).__name__}: {exc}"
+                (
+                    "group_processing_failed",
+                    f"trace group {group[0].id} at {group[0].stats.starttime} "
+                    f"failed: {type(exc).__name__}: {exc}",
+                )
             )
 
     if empty_traces and not _benign_empty_traces(traces, empty_traces):
-        errors.append(f"ignored {len(empty_traces)} incompatible empty trace(s)")
+        errors.append(
+            (
+                "incompatible_empty_trace",
+                f"ignored {len(empty_traces)} incompatible empty trace(s)",
+            )
+        )
     return (
         files_written,
         traces_existing,
@@ -786,7 +838,10 @@ def _write_mseed_group(traces, destination, overwrite):
         written = _read_full_mseed(temporary)
         root = destination.parents[3]
         if not matches_mseed_path(destination, root, written):
-            raise ValueError("written MiniSEED path disagrees with trace headers")
+            raise _ArchiveValidationError(
+                "written MiniSEED path disagrees with trace headers",
+                "output_validation_failed",
+            )
         commit_output(temporary, destination, overwrite=overwrite)
     finally:
         temporary.unlink(missing_ok=True)
@@ -824,13 +879,18 @@ def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
                 destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
                 if destination in claimed:
                     errors.append(
-                        f"trace {trace.id} maps to duplicate path {destination}"
+                        (
+                            "duplicate_path",
+                            f"trace {trace.id} maps to duplicate path {destination}",
+                        )
                     )
                     continue
                 claimed.add(destination)
                 try:
                     if destination.is_file() and not overwrite:
-                        _validate_sac_output(destination, trace)
+                        _validate_sac_output(
+                            destination, trace, reason_code="existing_content_conflict"
+                        )
                         traces_existing += covered
                         traces_archived += covered
                         continue
@@ -843,15 +903,21 @@ def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
                         temporary.unlink(missing_ok=True)
                 except Exception as exc:
                     errors.append(
-                        f"trace {trace.id} failed: {type(exc).__name__}: {exc}"
+                        (
+                            getattr(exc, "reason_code", "output_write_failed"),
+                            f"trace {trace.id} failed: {type(exc).__name__}: {exc}",
+                        )
                     )
                     continue
                 files_written += 1
                 traces_archived += covered
         except Exception as exc:
             errors.append(
-                f"trace group {group[0].id} at {group[0].stats.starttime} "
-                f"failed: {type(exc).__name__}: {exc}"
+                (
+                    "group_processing_failed",
+                    f"trace group {group[0].id} at {group[0].stats.starttime} "
+                    f"failed: {type(exc).__name__}: {exc}",
+                )
             )
 
     return (
@@ -901,10 +967,18 @@ def _same_coverage(actual, expected):
     )
 
 
+class _ArchiveValidationError(ValueError):
+    def __init__(self, message, reason_code="existing_content_conflict"):
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 def _validate_existing_mseed(path, output_root, expected):
     stream = _read_full_mseed(path)
     if not matches_mseed_path(path, output_root, stream):
-        raise ValueError(f"existing MiniSEED path disagrees with headers: {path}")
+        raise _ArchiveValidationError(
+            f"existing MiniSEED path disagrees with headers: {path}"
+        )
     actual = sorted(
         (trace for trace in stream if trace.stats.npts != 0),
         key=lambda trace: (trace.id, float(trace.stats.starttime)),
@@ -917,21 +991,26 @@ def _validate_existing_mseed(path, output_root, expected):
         _same_coverage(a, w) and np.array_equal(a.data, w.data)
         for a, w in zip(actual, wanted, strict=True)
     ):
-        raise ValueError(
+        raise _ArchiveValidationError(
             f"existing MiniSEED archive differs from the source: {path}; "
             "re-run with overwrite=True to replace it"
         )
 
 
-def _validate_sac_output(path, expected):
+def _validate_sac_output(path, expected, *, reason_code="output_validation_failed"):
     stream = read(path, format="SAC")
     if len(stream) != 1:
-        raise ValueError("SAC output must contain exactly one trace")
+        raise _ArchiveValidationError(
+            "SAC output must contain exactly one trace", reason_code
+        )
     if not _same_coverage(stream[0], expected):
-        raise ValueError("SAC output identity does not match source trace")
+        raise _ArchiveValidationError(
+            "SAC output identity does not match source trace", reason_code
+        )
     # SAC stores samples as float32, including integer and float64 inputs.
     if not np.array_equal(stream[0].data, np.asarray(expected.data, dtype=np.float32)):
-        raise ValueError(
+        raise _ArchiveValidationError(
             f"SAC output samples differ from the source: {path}; "
-            "re-run with overwrite=True to replace it"
+            "re-run with overwrite=True to replace it",
+            reason_code,
         )

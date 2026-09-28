@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import struct
 
 import numpy as np
@@ -140,7 +141,7 @@ def test_worker_fails_when_mseed_contains_only_an_empty_trace(tmp_path):
     assert result.failed == 1
     assert result.succeeded == result.files_written == 0
     assert result.traces_total == result.traces_ignored_empty == 1
-    assert "contains no samples" in result.issue.error
+    assert "contains no samples" in result.issues[0].error
 
 
 def test_worker_succeeds_when_only_one_trace_group_can_be_written(
@@ -170,7 +171,7 @@ def test_worker_succeeds_when_only_one_trace_group_can_be_written(
     assert result.failed == 0
     assert result.files_written == result.traces_written == 1
     assert result.traces_failed == 1
-    assert "simulated destination failure" in result.issue.error
+    assert "simulated destination failure" in result.issues[0].error
 
 
 @pytest.mark.parametrize("output_format", ["mseed", "sac"])
@@ -240,8 +241,8 @@ def test_archive_isolates_group_errors(
     assert result.failed == result.skipped == 0
     assert result.files_written == result.traces_written == 1
     assert result.traces_total == 2
-    assert result.traces_failed == result.errored == 1
-    assert "simulated group failure" in result.issue.error
+    assert result.traces_failed == result.files_with_errors == 1
+    assert "simulated group failure" in result.issues[0].error
     outputs = list(output.rglob(f"*.{output_format}"))
     assert len(outputs) == 1
     assert read(outputs[0])[0].stats.starttime.julday == 3 - failed_day
@@ -268,8 +269,10 @@ def test_archive_existing_samples_must_match(tmp_path, output_format):
 
     conflict = archive()
     assert conflict.failed == conflict.traces_failed == 1
+    assert conflict.files_with_errors == 1
+    assert conflict.issues[0].reason_code == "existing_content_conflict"
     assert conflict.traces_existing == conflict.files_written == 0
-    assert "source" in conflict.issue.error
+    assert "source" in conflict.issues[0].error
     assert destination.read_bytes() == previous
     assert archive(overwrite=True).files_written == 1
     np.testing.assert_array_equal(read(destination)[0].data, changed[0].data)
@@ -286,6 +289,78 @@ def test_sac_validation_compares_samples_at_storage_precision(tmp_path):
     trace.data[50] += 0.01
     with pytest.raises(ValueError, match="samples differ"):
         archiving._validate_sac_output(path, trace)
+
+
+@pytest.mark.parametrize("sample_limit", [0, 1])
+def test_archive_report_counts_all_events_when_samples_are_capped(
+    tmp_path, sample_limit
+):
+    source = tmp_path / "raw"
+    _raw_mseed(source, channel="HHZ")
+    _raw_mseed(source, channel="HHN")
+    (source / "broken.mseed.raw").write_bytes(b"not a waveform")
+
+    summary = waveform.archive_waveforms(
+        source,
+        tmp_path / "archive",
+        max_workers=1,
+        inventory=Inventory([], source="test"),
+        max_error_samples=sample_limit,
+    )
+
+    assert summary.succeeded == 2
+    assert summary.failed == summary.files_with_errors == 1
+    assert summary.files_with_warnings == 2
+    assert summary.error_counts == {"source_read_failed": 1}
+    assert summary.warning_counts == {"inventory_mismatch": 2}
+    assert len(summary.issue_samples) == sample_limit
+    report = json.loads(summary.report_path.read_text())
+    assert report["error_counts"] == summary.error_counts
+    assert report["warning_counts"] == summary.warning_counts
+    assert "errored" not in report
+    assert len(report["issue_samples"]) == sample_limit
+    log = summary.log_path.read_text()
+    assert "reason=source_read_failed" in log
+    assert log.count("reason=inventory_mismatch") == 2
+
+
+def test_partial_archive_logs_errors_and_warnings_separately(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    source = tmp_path / "raw"
+    raw = _multiday_raw_mseed(source)
+    original = archiving._merge_group
+
+    def fail_second(group):
+        if group[0].stats.starttime.julday == 2:
+            raise ValueError("bad group")
+        return original(group)
+
+    monkeypatch.setattr(archiving, "_merge_group", fail_second)
+    monkeypatch.setattr(archiving, "_WORKER_INVENTORY", Inventory([], source="test"))
+    result = archiving._archive_one(
+        str(raw), str(source), str(tmp_path / "archive"), "sac", False, False
+    )
+
+    assert result.succeeded == 1
+    assert result.failed == 0
+    assert result.files_with_errors == result.files_with_warnings == 1
+    assert [issue.reason_code for issue in result.issues] == [
+        "group_processing_failed",
+        "inventory_mismatch",
+        "inventory_mismatch",
+    ]
+    run = Mock()
+    archiving._log_issue(run, result)
+    assert run.error.call_count == 1
+    assert run.warning.call_count == 2
+
+
+def test_worker_failure_is_an_error_event():
+    result = archiving._failed_result(Path("source"), RuntimeError("worker stopped"))
+    assert result.failed == result.files_with_errors == 1
+    assert result.files_with_warnings == 0
+    assert result.issues[0].reason_code == "worker_failed"
 
 
 def test_archive_requires_separate_source_and_output_trees(tmp_path):
@@ -412,7 +487,7 @@ def test_worker_keeps_usable_traces_when_a_sibling_is_constant(tmp_path):
     assert result.succeeded == result.reshaped == 1
     assert result.recovered == 0
     assert result.failed == 0
-    assert result.errored == 0
+    assert result.files_with_errors == 0
     assert result.traces_total == 2
     assert result.traces_written == 1
     assert result.traces_filtered == 1
@@ -444,7 +519,8 @@ def test_inventory_mismatch_archives_with_a_warning(tmp_path):
     )
 
     assert summary.succeeded == 1
-    assert summary.errored == 1
+    assert summary.files_with_errors == 0
+    assert summary.files_with_warnings == 1
     assert summary.has_issues
     assert "no inventory epoch matches" in summary.issue_samples[0].error
     assert list(output.rglob("*.mseed"))
@@ -522,7 +598,7 @@ def test_archive_conflicting_overlap_counts_only_preserved_trace(
     )
 
     assert result.succeeded == 1
-    assert result.skipped == result.failed == result.errored == 0
+    assert result.skipped == result.failed == result.files_with_errors == 0
     assert result.traces_total == 2
     assert result.traces_written == result.traces_filtered == 1
     assert result.traces_failed == 0
@@ -784,7 +860,7 @@ def test_mseed_archive_migrates_a_misnamed_archived_file(tmp_path):
     assert outputs == ["NZ.AAA.10.HHZ.2026.002.001T235957.mseed"]
     assert summary.succeeded == 1
     assert summary.reshaped == 0
-    assert summary.errored == 0
+    assert summary.files_with_errors == 0
     assert source.joinpath("NZ/AAA/2026/NZ.AAA.10.HHZ.2026.001.mseed").is_file()
 
 
@@ -844,7 +920,7 @@ def test_conflicting_same_start_traces_are_reported(tmp_path):
     summary = waveform.archive_waveforms(source, tmp_path / "archive", max_workers=1)
 
     assert summary.has_issues
-    assert summary.errored == 1
+    assert summary.files_with_errors == 1
     assert summary.issue_samples
 
 
