@@ -1,11 +1,13 @@
 """Instrument-response deconvolution workflows."""
 
 import logging
+import multiprocessing
 import math
 import os
 import subprocess
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
@@ -110,6 +112,7 @@ def deconvolve_waveforms(
     pattern: str = "*.sac",
     max_workers: int = 5,
     batch_size: int | None = None,
+    files_per_pool: int | None = 1024,
     max_error_samples: int = 20,
     save_report: bool | None = True,
     save_log: bool = True,
@@ -129,6 +132,11 @@ def deconvolve_waveforms(
         max_workers: Maximum number of worker processes.
         batch_size: Files submitted per task. By default enough batches are
             created for eight scheduling waves, capped at 32 files each.
+        files_per_pool: Maximum input files per pool generation, across all
+            workers. Defaults to 1024 as an initial tunable limit; None disables
+            recycling. Pools drain and exit before their replacements start.
+            This is not a per-file memory limit. Script callers must use a
+            __main__ guard because workers use the spawn start method.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
             ``True``. ``None`` retains it only when issues occur.
@@ -185,6 +193,12 @@ def deconvolve_waveforms(
         raise ValueError("max_error_samples cannot be negative")
     if batch_size is not None and batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    if files_per_pool is not None and (
+        isinstance(files_per_pool, bool)
+        or not isinstance(files_per_pool, int)
+        or files_per_pool < 1
+    ):
+        raise ValueError("files_per_pool must be a positive integer or None")
     pre_filt = _validate_pre_filt(pre_filt)
     factors = _normalize_decimate_factors(decimate_factors)
     _deconvolution_backend(backend)
@@ -257,6 +271,7 @@ def deconvolve_waveforms(
                 max_error_samples,
                 total,
                 run,
+                files_per_pool=files_per_pool,
             )
             summary = run.complete(
                 DeconvolutionSummary(
@@ -332,58 +347,81 @@ def _run_deconvolution_batches(
     max_error_samples,
     total,
     run,
+    *,
+    files_per_pool=1024,
 ):
     if not targets:
         return _WorkerSummary()
-    target_batches = iter(_batched(targets, batch_size))
-    batches: list[_WorkerSummary] = []
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=_initialize_deconvolution_worker,
-        initargs=(inventory, backend, combined_pz),
-    ) as executor:
-        futures = {}
-        exhausted = False
-        with progress_bar(total=total, desc="Deconvolving", unit="file") as bar:
-            while futures or not exhausted:
-                while not exhausted and len(futures) < max_workers * 2:
-                    try:
-                        batch = next(target_batches)
-                    except StopIteration:
-                        exhausted = True
-                        break
-                    future = executor.submit(
-                        call_with_warnings,
-                        _process_worker_batch,
-                        batch,
-                        src_path,
-                        output_path,
-                        worker_error_samples,
-                        pre_filt,
-                        factors,
-                        trace_filter,
-                    )
-                    futures[future] = batch
-                if not futures:
-                    continue
-                done, _ = wait(futures, return_when=FIRST_COMPLETED)
-                for future in done:
-                    batch = futures.pop(future)
-                    try:
-                        result = resolve_worker_call(future.result())
-                    except Exception as exc:
-                        result = _failed_batch(
+    accumulator = _SummaryAccumulator(max_error_samples)
+    generation_size = files_per_pool or len(targets)
+    with progress_bar(total=total, desc="Deconvolving", unit="file") as bar:
+        for start in range(0, len(targets), generation_size):
+            stop = min(start + generation_size, len(targets))
+            target_batches = (
+                tuple(targets[index : min(index + batch_size, stop)])
+                for index in range(start, stop, batch_size)
+            )
+            run.info(
+                "pool_generation=%d files=%d",
+                start // generation_size + 1,
+                stop - start,
+            )
+            with ProcessPoolExecutor(
+                max_workers=max_workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=_initialize_deconvolution_worker,
+                initargs=(inventory, backend, combined_pz),
+            ) as executor:
+                futures = {}
+                exhausted = False
+                while futures or not exhausted:
+                    while not exhausted and len(futures) < max_workers * 2:
+                        try:
+                            batch = next(target_batches)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                        future = executor.submit(
+                            call_with_warnings,
+                            _process_worker_batch,
                             batch,
                             src_path,
                             output_path,
-                            exc,
                             worker_error_samples,
+                            pre_filt,
+                            factors,
+                            trace_filter,
                         )
-                    batches.append(result)
-                    bar.update(result.total)
-                compact = _combine_batches(batches, max_error_samples)
-                _checkpoint_deconvolution(run, compact, total, output_path)
-    return _combine_batches(batches, max_error_samples)
+                        futures[future] = batch
+                    if not futures:
+                        continue
+                    done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    broken = None
+                    for future in done:
+                        batch = futures.pop(future)
+                        try:
+                            result = resolve_worker_call(future.result())
+                        except BrokenProcessPool as exc:
+                            broken = exc
+                            continue
+                        except Exception as exc:
+                            result = _failed_batch(
+                                batch,
+                                src_path,
+                                output_path,
+                                exc,
+                                worker_error_samples,
+                            )
+                        accumulator.add(result)
+                        bar.update(result.total)
+                    _checkpoint_deconvolution(
+                        run, accumulator.snapshot(), total, output_path
+                    )
+                    if broken is not None:
+                        for future in futures:
+                            future.cancel()
+                        raise broken
+    return accumulator.snapshot()
 
 
 def _process_worker_batch(
@@ -449,23 +487,40 @@ def _checkpoint_deconvolution(run, compact, total, output_path):
     )
 
 
-def _combine_batches(batches, limit: int) -> _WorkerSummary:
-    samples = []
-    filter_samples = []
-    for batch in batches:
-        samples.extend(batch.issue_samples[: max(0, limit - len(samples))])
-        filter_samples.extend(
-            batch.filter_samples[: max(0, limit - len(filter_samples))]
+class _SummaryAccumulator:
+    """Keep counters and bounded samples, never historical worker results."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.counts = dict.fromkeys(
+            ("total", "succeeded", "failed", "skipped", "traces_filtered"), 0
         )
-    return _WorkerSummary(
-        total=sum(x.total for x in batches),
-        succeeded=sum(x.succeeded for x in batches),
-        failed=sum(x.failed for x in batches),
-        issue_samples=tuple(samples),
-        skipped=sum(x.skipped for x in batches),
-        traces_filtered=sum(x.traces_filtered for x in batches),
-        filter_samples=tuple(filter_samples),
-    )
+        self.issue_samples = []
+        self.filter_samples = []
+
+    def add(self, result):
+        for name in self.counts:
+            self.counts[name] += getattr(result, name)
+        self.issue_samples.extend(
+            result.issue_samples[: max(0, self.limit - len(self.issue_samples))]
+        )
+        self.filter_samples.extend(
+            result.filter_samples[: max(0, self.limit - len(self.filter_samples))]
+        )
+
+    def snapshot(self):
+        return _WorkerSummary(
+            **self.counts,
+            issue_samples=tuple(self.issue_samples),
+            filter_samples=tuple(self.filter_samples),
+        )
+
+
+def _combine_batches(batches, limit: int) -> _WorkerSummary:
+    accumulator = _SummaryAccumulator(limit)
+    for batch in batches:
+        accumulator.add(batch)
+    return accumulator.snapshot()
 
 
 def _failed_batch(targets, src_root, output_dir, exc, limit):
@@ -596,66 +651,96 @@ def _process_obspy_targets(
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
 ):
-    succeeded = failed = skipped = 0
-    filtered_traces = 0
+    return _combine_batches(
+        (
+            _process_one_obspy_target(
+                target,
+                inv,
+                src_root,
+                output_dir,
+                limit,
+                pre_filt,
+                decimate_factors,
+                trace_filter,
+            )
+            for target in targets
+        ),
+        limit,
+    )
+
+
+def _process_one_obspy_target(
+    target,
+    inv,
+    src_root,
+    output_dir,
+    limit,
+    pre_filt,
+    decimate_factors,
+    trace_filter=DEFAULT_TRACE_FILTER,
+):
+    succeeded = failed = skipped = filtered_traces = 0
     samples = []
     filter_samples = []
-    for target in targets:
-        base_destination = _destination_for(target, src_root, output_dir)
-        temporary_outputs = []
-        committed_outputs = []
-        try:
-            stream = obspy.read(target)
-            merge_contiguous_segments(stream)
-            kept, rejected = split_traces_by_filter(
-                stream, trace_filter, low_frequency=pre_filt[0]
+    base_destination = _destination_for(target, src_root, output_dir)
+    temporary_outputs = []
+    committed_outputs = []
+    try:
+        stream = obspy.read(target)
+        merge_contiguous_segments(stream)
+        kept, rejected = split_traces_by_filter(
+            stream, trace_filter, low_frequency=pre_filt[0]
+        )
+        filtered_traces += len(rejected)
+        for _, reason in rejected:
+            if len(filter_samples) >= limit:
+                break
+            filter_samples.append(
+                DeconvolutionIssue(target, base_destination, "trace_filtered", reason)
             )
-            filtered_traces += len(rejected)
-            for _, reason in rejected:
-                if len(filter_samples) >= limit:
-                    break
-                filter_samples.append(
-                    DeconvolutionIssue(
-                        target, base_destination, "trace_filtered", reason
-                    )
-                )
-            if not kept:
-                skipped += 1
-                continue
-            processed = remove_response(
-                kept,
-                inv,
-                pre_filt=pre_filt,
-                decimate_factors=decimate_factors,
+        if not kept:
+            skipped += 1
+            return _WorkerSummary(
+                total=1,
+                skipped=1,
+                traces_filtered=filtered_traces,
+                filter_samples=tuple(filter_samples),
             )
-            destinations = _obspy_destinations(target, processed, src_root, output_dir)
-            for trace, destination in zip(processed, destinations, strict=True):
-                temporary = temporary_output_path(destination)
-                temporary_outputs.append((temporary, destination))
-                trace.write(str(temporary), format="SAC")
-                _validate_output_trace(trace, temporary)
-            for temporary, destination in temporary_outputs:
-                commit_output(temporary, destination, overwrite=True)
-                committed_outputs.append(destination)
-        except Exception as exc:
-            for temporary, _ in temporary_outputs:
-                temporary.unlink(missing_ok=True)
-            for destination in committed_outputs:
-                destination.unlink(missing_ok=True)
-            failed += 1
-            if len(samples) < limit:
-                samples.append(
-                    DeconvolutionIssue(
-                        target,
-                        base_destination,
-                        "deconvolution_failed",
-                        f"{type(exc).__name__}: {exc}",
-                    )
+        processed = remove_response(
+            kept,
+            inv,
+            pre_filt=pre_filt,
+            decimate_factors=decimate_factors,
+        )
+        destinations = _obspy_destinations(target, processed, src_root, output_dir)
+        for trace, destination in zip(processed, destinations, strict=True):
+            temporary = temporary_output_path(destination)
+            temporary_outputs.append((temporary, destination))
+            trace.write(str(temporary), format="SAC")
+            _validate_output_trace(trace, temporary)
+        for temporary, destination in temporary_outputs:
+            commit_output(temporary, destination, overwrite=True)
+            committed_outputs.append(destination)
+    except Exception as exc:
+        for temporary, _ in temporary_outputs:
+            temporary.unlink(missing_ok=True)
+        for destination in committed_outputs:
+            destination.unlink(missing_ok=True)
+        failed += 1
+        if len(samples) < limit:
+            samples.append(
+                DeconvolutionIssue(
+                    target,
+                    base_destination,
+                    "deconvolution_failed",
+                    f"{type(exc).__name__}: {exc}",
                 )
-            continue
+            )
+
+    else:
         succeeded += 1
     return _WorkerSummary(
-        total=len(targets),
+        total=1,
         succeeded=succeeded,
         failed=failed,
         issue_samples=tuple(samples),

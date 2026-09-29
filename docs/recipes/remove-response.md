@@ -150,3 +150,27 @@ for issue in summary.issue_samples:
     file is isolated. The combined PZ is removed when the run finishes.
 
 [See all parameters →](../api/deconvolution.md)
+
+## Memory control for large runs
+
+Response removal keeps at most twice `max_workers` submitted tasks and retains
+only cumulative counters and bounded issue samples. Each ObsPy file is handled
+in its own function scope so waveform arrays do not remain referenced while the
+next file is read.
+
+`files_per_pool=1024` limits each process-pool generation to 1024 input files
+across all workers. This initial default is tunable, not a measured optimum.
+After draining the generation, all workers exit before the next pool starts.
+Use a smaller value for more frequent memory reclamation, a larger value to
+reduce initialization overhead, or `None` to disable recycling. The quota is
+independent of `batch_size`; batches are shortened at generation boundaries.
+Inventory is initialized again in each new worker. Workers use `spawn`, so put
+script entry points under `if __name__ == "__main__":`.
+
+Input paths are still collected in memory. Recycling releases memory held by
+retired processes, but does not impose a hard RSS limit or reduce the peak
+needed to process one large file. Choose `max_workers` using measured per-worker
+memory on representative files. Processing formulas, output validation and the
+60-second progress-log interval are unchanged. An unexpectedly broken process
+pool stops the run without automatically retrying files with uncertain output
+state.
