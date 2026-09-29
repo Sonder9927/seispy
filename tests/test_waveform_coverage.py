@@ -1,6 +1,6 @@
 """Waveform archive coverage contracts."""
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -304,3 +304,33 @@ def test_unknown_layout_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="layout"):
         scan_waveform_coverage(tmp_path / "NZ", layout="nonsense")
+
+
+@pytest.mark.parametrize(
+    "convert", [str, date.fromisoformat, datetime.fromisoformat, UTCDateTime]
+)
+def test_coverage_accepts_date_types_through_scan_summary_and_plot(tmp_path, convert):
+    _waveform(tmp_path, "AAA", 2024, 1)
+    _waveform(tmp_path, "AAA", 2024, 2)
+    report = waveform_coverage(
+        tmp_path / "NZ",
+        start_date=convert("2024-01-02"),
+        end_date=convert("2024-01-03"),
+    )
+    try:
+        assert list(report.coverage["date"].dt.date) == [date(2024, 1, 2)]
+        assert report.summary.iloc[0]["expected_days"] == 2
+        assert report.axes.images[0].get_array().shape == (1, 2)
+    finally:
+        plt.close(report.figure)
+
+
+def test_coverage_date_bounds_accept_mixed_and_open_utc_dates():
+    from seispy.waveform.coverage import _date_bounds
+
+    instant = UTCDateTime("2023-08-01T23:59:59.999999Z")
+    assert _date_bounds(instant, None) == (date(2023, 8, 1), None)
+    assert _date_bounds(None, instant) == (None, date(2023, 8, 1))
+    assert _date_bounds(instant, "2023-08-02") == (date(2023, 8, 1), date(2023, 8, 2))
+    with pytest.raises(ValueError, match="start_date must not be later"):
+        _date_bounds(UTCDateTime("2023-08-03"), date(2023, 8, 2))

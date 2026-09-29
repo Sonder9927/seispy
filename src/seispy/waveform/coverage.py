@@ -62,8 +62,8 @@ class WaveformCoverageReport:
 def waveform_coverage(
     net_dir: str | Path,
     *,
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
+    start_date: str | date | datetime | UTCDateTime | None = None,
+    end_date: str | date | datetime | UTCDateTime | None = None,
     extensions: Iterable[str] = (".sac", ".mseed"),
     read_mode: Literal["filename", "header"] = "header",
     layout: str | WaveformLayout = "archive",
@@ -135,8 +135,8 @@ def waveform_coverage(
 def scan_waveform_coverage(
     net_dir: str | Path,
     *,
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
+    start_date: str | date | datetime | UTCDateTime | None = None,
+    end_date: str | date | datetime | UTCDateTime | None = None,
     extensions: Iterable[str] = (".sac", ".mseed"),
     read_mode: Literal["filename", "header"] = "header",
     layout: str | WaveformLayout = "archive",
@@ -222,8 +222,8 @@ def scan_waveform_coverage(
 def summarize_waveform_coverage(
     coverage: pd.DataFrame,
     *,
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
+    start_date: str | date | datetime | UTCDateTime | None = None,
+    end_date: str | date | datetime | UTCDateTime | None = None,
 ) -> pd.DataFrame:
     """Aggregate daily coverage over an inclusive UTC date range."""
     frame = _validate_coverage(coverage)
@@ -257,8 +257,8 @@ def plot_waveform_coverage(
     coverage: pd.DataFrame,
     output_file: str | Path | None = None,
     *,
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
+    start_date: str | date | datetime | UTCDateTime | None = None,
+    end_date: str | date | datetime | UTCDateTime | None = None,
     station_order: Literal["name", "coverage"] = "name",
     color: str = _OKABE_ITO_BLUE,
     title: str = "Waveform data coverage",
@@ -535,6 +535,11 @@ def _normalize_extensions(extensions):
 
 
 def _date_bounds(start, end):
+    # ObsPy timestamps are not accepted by pandas; use their UTC calendar date.
+    if isinstance(start, UTCDateTime):
+        start = start.date
+    if isinstance(end, UTCDateTime):
+        end = end.date
     start_date = pd.Timestamp(start).date() if start is not None else None
     end_date = pd.Timestamp(end).date() if end is not None else None
     if start_date and end_date and start_date > end_date:
