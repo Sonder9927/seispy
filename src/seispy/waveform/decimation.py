@@ -3,7 +3,6 @@
 import logging
 import os
 import subprocess
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Callable, Sequence
 
 import obspy
 import numpy as np
+from seispy._pool import process_batches, validate_files_per_pool
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
@@ -20,7 +20,7 @@ from seispy.workflow import (
     temporary_output_path,
 )
 from scipy.signal import resample_poly
-from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
+from seispy.progress import progress_bar, resolve_worker_call
 
 logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 100
@@ -84,6 +84,7 @@ def decimate_waveforms(
     backend: str = "scipy",
     pattern: str = "*.sac",
     max_workers: int = 5,
+    files_per_pool: int | None = 1024,
     *,
     output_dir: str | Path | None = None,
     max_error_samples: int = 20,
@@ -107,6 +108,9 @@ def decimate_waveforms(
         backend: Processing backend, ``"scipy"`` or ``"sac"``. Both use the
             same SAC FIR coefficients and preserve sample alignment.
         pattern: Recursive file pattern below ``src_dir``.
+        files_per_pool: Input files per pool generation across all workers.
+            Defaults to 1024; None disables recycling. Uses spawn, requiring a
+            __main__ guard in scripts. This is not a per-file memory limit.
         max_workers: Maximum number of file-batch worker processes.
         output_dir: Optional output root. A sibling directory is used by default.
         max_error_samples: Maximum number of failures retained in the summary.
@@ -132,6 +136,7 @@ def decimate_waveforms(
         # => 'decimated'
         ```
     """
+    validate_files_per_pool(files_per_pool)
     run_id = new_run_id()
     backend = backend.lower()
     src_path = Path(src_dir).expanduser().resolve()
@@ -149,7 +154,6 @@ def decimate_waveforms(
     worker_sample_limit = min(max_error_samples, 1)
 
     targets = _input_files(src_path, pattern)
-    target_batches = tuple(_batched(targets, batch_size))
     with BatchRun(
         "decimate",
         output_path,
@@ -178,7 +182,7 @@ def decimate_waveforms(
             batch_size,
         )
         compact = _run_decimation_batches(
-            target_batches,
+            targets,
             worker,
             values,
             src_path,
@@ -187,6 +191,8 @@ def decimate_waveforms(
             max_workers,
             max_error_samples,
             run,
+            batch_size=batch_size,
+            files_per_pool=files_per_pool,
         )
         summary = run.complete(
             DecimationSummary(
@@ -222,7 +228,7 @@ def decimate_waveforms(
 
 
 def _run_decimation_batches(
-    target_batches,
+    targets,
     worker,
     values,
     src_path,
@@ -231,46 +237,42 @@ def _run_decimation_batches(
     max_workers,
     max_error_samples,
     run,
+    *,
+    batch_size,
+    files_per_pool=1024,
 ):
-    results = []
-    total = sum(len(batch) for batch in target_batches)
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for batch in target_batches:
-            args = (
-                batch,
-                values,
-                src_path,
-                output_path,
-                worker_sample_limit,
-            )
-            futures[executor.submit(call_with_warnings, worker, *args)] = batch
-        with progress_bar(total=len(futures), desc="Decimating", unit="batch") as pbar:
-            for future in as_completed(futures):
-                batch = futures[future]
-                try:
-                    results.append(resolve_worker_call(future.result()))
-                except Exception as exc:
-                    results.append(
-                        _failed_batch(
-                            batch,
-                            src_path,
-                            output_path,
-                            exc,
-                            worker_sample_limit,
-                        )
-                    )
-                compact = _combine_batches(results, max_error_samples)
-                run.checkpoint(
-                    completed=compact.total,
-                    total=total,
-                    succeeded=compact.succeeded,
-                    failed=compact.failed,
-                    issue_samples=compact.issue_samples,
-                    output_dir=output_path,
+    compact = _WorkerSummary()
+    total = len(targets)
+    with (
+        process_batches(
+            targets,
+            worker,
+            (values, src_path, output_path, worker_sample_limit),
+            max_workers=max_workers,
+            batch_size=batch_size,
+            files_per_pool=files_per_pool,
+            run=run,
+        ) as results,
+        progress_bar(total=total, desc="Decimating", unit="file") as bar,
+    ):
+        for batch, future in results:
+            try:
+                result = resolve_worker_call(future.result())
+            except Exception as exc:
+                result = _failed_batch(
+                    batch, src_path, output_path, exc, worker_sample_limit
                 )
-                pbar.update(1)
-    return _combine_batches(results, max_error_samples)
+            compact = _combine_batches((compact, result), max_error_samples)
+            bar.update(result.total)
+            run.checkpoint(
+                completed=compact.total,
+                total=total,
+                succeeded=compact.succeeded,
+                failed=compact.failed,
+                issue_samples=compact.issue_samples,
+                output_dir=output_path,
+            )
+    return compact
 
 
 def _normalize_factors(factors):

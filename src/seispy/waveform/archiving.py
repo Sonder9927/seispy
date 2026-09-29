@@ -3,7 +3,6 @@
 import shutil
 import warnings
 from collections import defaultdict
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,7 +11,7 @@ import numpy as np
 from obspy import Stream, read, read_inventory
 from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
-from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
+from seispy.progress import progress_bar, resolve_worker_call
 
 from seispy.archive import (
     WaveformIdentity,
@@ -27,6 +26,7 @@ from seispy.waveform.integrity import (
     unusable_sample_reason,
 )
 from seispy.waveform.mseed_recovery import filter_valid_mseed_records
+from seispy._pool import process_batches, validate_files_per_pool
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
@@ -131,6 +131,7 @@ def archive_waveforms(
     inventory: str | Path | Inventory | None = None,
     pattern: str = "*.mseed.raw",
     max_workers: int = 5,
+    files_per_pool: int | None = 1024,
     overwrite: bool = False,
     discard_corrupt_records: bool = True,
     trace_filter: TraceFilter | None = None,
@@ -159,6 +160,9 @@ def archive_waveforms(
             sample rates.
         pattern: Recursive source filename pattern. Use, for example,
             ``"*.sac"`` to organize existing SAC files.
+        files_per_pool: Input files per pool generation across all workers.
+            Defaults to 1024; None disables recycling. Uses spawn, requiring a
+            __main__ guard in scripts. This is not a per-file memory limit.
         max_workers: Number of isolated validation/archive processes.
         overwrite: Replace existing archive outputs.
         discard_corrupt_records: Recover independently valid records when full
@@ -172,6 +176,7 @@ def archive_waveforms(
         save_report: Persist the continuously updated JSON report.
         save_log: Persist the human-readable run log.
     """
+    validate_files_per_pool(files_per_pool)
     if max_workers < 1 or max_error_samples < 0:
         raise ValueError(
             "max_workers must be positive and max_error_samples non-negative"
@@ -234,69 +239,37 @@ def archive_waveforms(
             output_format,
             max_workers,
         )
-        tasks = iter(files)
-        pending = {}
-        executor = _archive_executor(max_workers, manifest)
-        try:
-            with progress_bar(total=len(files), desc="Archiving", unit="file") as bar:
-                while pending or tasks is not None:
-                    while tasks is not None and len(pending) < max_workers * 3:
-                        try:
-                            path = next(tasks)
-                        except StopIteration:
-                            tasks = None
-                            break
-                        try:
-                            future = executor.submit(
-                                call_with_warnings,
-                                _archive_one,
-                                str(path),
-                                str(source),
-                                str(output),
-                                output_format,
-                                overwrite,
-                                discard_corrupt_records,
-                                trace_filter,
-                            )
-                        except Exception as exc:
-                            result = _failed_result(path, exc)
-                            _record_result(result, counters, issues, max_error_samples)
-                            _log_issue(run, result)
-                            bar.update(1)
-                            _checkpoint_archive(
-                                run,
-                                counters,
-                                issues,
-                                len(files),
-                                source,
-                                output,
-                                output_format,
-                            )
-                            continue
-                        pending[future] = path
-                    if not pending:
-                        continue
-                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        path = pending.pop(future)
-                        try:
-                            result = resolve_worker_call(future.result())
-                        except Exception as exc:
-                            result = _failed_result(path, exc)
-                        _record_result(result, counters, issues, max_error_samples)
-                        _log_issue(run, result)
-                        bar.update(1)
-                        _checkpoint_archive(
-                            run,
-                            counters,
-                            issues,
-                            len(files),
-                            source,
-                            output,
-                            output_format,
-                        )
-        finally:
-            executor.shutdown(wait=True, cancel_futures=True)
+        with (
+            process_batches(
+                files,
+                _archive_path_batch,
+                (
+                    str(source),
+                    str(output),
+                    output_format,
+                    overwrite,
+                    discard_corrupt_records,
+                    trace_filter,
+                ),
+                max_workers=max_workers,
+                files_per_pool=files_per_pool,
+                initializer=_initialize_archive_worker,
+                initargs=(manifest,),
+                run=run,
+            ) as results,
+            progress_bar(total=len(files), desc="Archiving", unit="file") as bar,
+        ):
+            for batch, future in results:
+                try:
+                    result = resolve_worker_call(future.result())
+                except Exception as exc:
+                    result = _failed_result(batch[0], exc)
+                _record_result(result, counters, issues, max_error_samples)
+                _log_issue(run, result)
+                bar.update(1)
+                _checkpoint_archive(
+                    run, counters, issues, len(files), source, output, output_format
+                )
         summary = run.complete(
             WaveformArchiveSummary(
                 run_id=run_id,
@@ -312,12 +285,8 @@ def archive_waveforms(
     return summary
 
 
-def _archive_executor(workers, inventory):
-    return ProcessPoolExecutor(
-        max_workers=workers,
-        initializer=_initialize_archive_worker,
-        initargs=(inventory,),
-    )
+def _archive_path_batch(batch, *args):
+    return _archive_one(str(batch[0]), *args)
 
 
 def _failed_result(path, exc):

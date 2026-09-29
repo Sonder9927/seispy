@@ -1,13 +1,13 @@
 """Convert MiniSEED waveforms to canonical SAC archive paths."""
 
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import obspy
 from seispy.archive import WaveformIdentity
+from seispy._pool import process_batches, validate_files_per_pool
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
@@ -17,7 +17,7 @@ from seispy.workflow import (
     resolve_separate_directory_trees,
     temporary_output_path,
 )
-from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
+from seispy.progress import progress_bar, resolve_worker_call
 
 from seispy.waveform.integrity import merge_short_gaps
 
@@ -89,6 +89,7 @@ def convert_mseed_to_sac(
     pattern: str = "*.miniseed",
     batch_size: int = 1000,
     max_workers: int = 5,
+    files_per_pool: int | None = 1024,
     *,
     max_error_samples: int = 20,
     save_report: bool | None = True,
@@ -101,6 +102,9 @@ def convert_mseed_to_sac(
         output_dir: Destination root for the SAC directory tree.
         pattern: Recursive file pattern used when ``source`` is a directory.
         batch_size: Maximum number of input files assigned to each worker task.
+        files_per_pool: Input files per pool generation across all workers.
+            Defaults to 1024; None disables recycling. Uses spawn, requiring a
+            __main__ guard in scripts. This is not a per-file memory limit.
         max_workers: Maximum number of worker processes.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
@@ -121,6 +125,7 @@ def convert_mseed_to_sac(
         # => 'sac'
         ```
     """
+    validate_files_per_pool(files_per_pool)
     run_id = new_run_id()
     source = Path(source).expanduser().resolve()
     if not source.exists():
@@ -136,7 +141,6 @@ def convert_mseed_to_sac(
     output.mkdir(parents=True, exist_ok=True)
     files = [source] if source.is_file() else sorted(source.rglob(pattern))
     files = [path for path in files if path.is_file()]
-    batches = [files[i : i + batch_size] for i in range(0, len(files), batch_size)]
     with BatchRun(
         "convert_mseed_to_sac",
         output,
@@ -157,11 +161,13 @@ def convert_mseed_to_sac(
         )
         run.info("run_id=%s source=%s output=%s", run_id, source, output)
         combined = _run_conversion_batches(
-            batches,
+            files,
             output,
             max_workers,
             max_error_samples,
             run,
+            batch_size=batch_size,
+            files_per_pool=files_per_pool,
         )
         summary = run.complete(
             WaveformConversionSummary(
@@ -198,39 +204,50 @@ def convert_mseed_to_sac(
     return summary
 
 
-def _run_conversion_batches(batches, output, max_workers, max_error_samples, run):
-    counts = []
-    total = sum(len(batch) for batch in batches)
+def _run_conversion_batches(
+    files,
+    output,
+    max_workers,
+    max_error_samples,
+    run,
+    *,
+    batch_size,
+    files_per_pool=1024,
+):
+    total = len(files)
+    combined = _Counts()
     worker_limit = min(max_error_samples, 1)
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                call_with_warnings, _process_batch, batch, output, worker_limit
-            ): batch
-            for batch in batches
-        }
-        with progress_bar(total=total, desc="Converting MiniSEED", unit="file") as bar:
-            for future in as_completed(futures):
-                batch = futures[future]
-                try:
-                    result = resolve_worker_call(future.result())
-                except Exception as exc:
-                    result = _failed_batch(batch, exc, worker_limit)
-                counts.append(result)
-                combined = _combine(counts, max_error_samples)
-                bar.update(result.total)
-                run.checkpoint(
-                    completed=combined.total,
-                    total=total,
-                    input_completed=combined.total,
-                    succeeded=combined.succeeded,
-                    failed=combined.failed,
-                    traces_written=combined.traces_written,
-                    output_conflicts=combined.conflicts,
-                    issue_samples=combined.samples,
-                    output_dir=output,
-                )
-    return _combine(counts, max_error_samples)
+    with (
+        process_batches(
+            files,
+            _process_batch,
+            (output, worker_limit),
+            max_workers=max_workers,
+            batch_size=batch_size,
+            files_per_pool=files_per_pool,
+            run=run,
+        ) as results,
+        progress_bar(total=total, desc="Converting MiniSEED", unit="file") as bar,
+    ):
+        for batch, future in results:
+            try:
+                result = resolve_worker_call(future.result())
+            except Exception as exc:
+                result = _failed_batch(batch, exc, worker_limit)
+            combined = _combine((combined, result), max_error_samples)
+            bar.update(result.total)
+            run.checkpoint(
+                completed=combined.total,
+                total=total,
+                input_completed=combined.total,
+                succeeded=combined.succeeded,
+                failed=combined.failed,
+                traces_written=combined.traces_written,
+                output_conflicts=combined.conflicts,
+                issue_samples=combined.samples,
+                output_dir=output,
+            )
+    return combined
 
 
 def _process_batch(files, output, limit):

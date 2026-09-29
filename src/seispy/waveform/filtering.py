@@ -2,19 +2,19 @@
 
 import logging
 import math
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 import obspy
 
-from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
+from seispy.progress import progress_bar, resolve_worker_call
 from seispy.waveform.integrity import (
     DEFAULT_TRACE_FILTER,
     TraceFilter,
     split_traces_by_filter,
 )
+from seispy._pool import process_batches, validate_files_per_pool
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
@@ -82,6 +82,7 @@ def filter_waveforms(
     low_frequency: float | None = None,
     extensions: Sequence[str] | str = DEFAULT_EXTENSIONS,
     max_workers: int = 5,
+    files_per_pool: int | None = 1024,
     batch_size: int | None = None,
     overwrite: bool = True,
     max_error_samples: int = 20,
@@ -101,6 +102,9 @@ def filter_waveforms(
         low_frequency: Lowest frequency of interest in hertz, used to enforce
             trace_filter.min_periods. When omitted, min_periods is not applied.
         extensions: File suffixes to scan, for example (".mseed", ".sac").
+        files_per_pool: Input files per pool generation across all workers.
+            Defaults to 1024; None disables recycling. Uses spawn, requiring a
+            __main__ guard in scripts. This is not a per-file memory limit.
         max_workers: Number of worker processes.
         batch_size: Files per worker task; by default enough batches for eight
             scheduling waves, capped at 32.
@@ -121,6 +125,7 @@ def filter_waveforms(
         )
         ```
     """
+    validate_files_per_pool(files_per_pool)
     run_id = new_run_id()
     if max_workers < 1 or max_error_samples < 0:
         raise ValueError(
@@ -177,6 +182,7 @@ def filter_waveforms(
             low_frequency,
             overwrite,
             run,
+            files_per_pool=files_per_pool,
         )
         summary = run.complete(
             WaveformFilterSummary(
@@ -220,51 +226,51 @@ def _run_filter_batches(
     low_frequency,
     overwrite,
     run,
+    *,
+    files_per_pool=1024,
 ):
     total = len(files)
     worker_limit = min(max_error_samples, 1)
-    counts = []
-    batches = [
-        files[index : index + batch_size] for index in range(0, len(files), batch_size)
-    ]
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                call_with_warnings,
-                _process_batch,
-                batch,
+    combined = _Counts()
+    with (
+        process_batches(
+            files,
+            _process_batch,
+            (
                 source_root,
                 output_root,
                 worker_limit,
                 trace_filter,
                 low_frequency,
                 overwrite,
-            ): batch
-            for batch in batches
-        }
-        with progress_bar(total=total, desc="Filtering", unit="file") as bar:
-            for future in as_completed(futures):
-                batch = futures[future]
-                try:
-                    result = resolve_worker_call(future.result())
-                except Exception as exc:
-                    result = _failed_batch(batch, exc, worker_limit)
-                counts.append(result)
-                combined = _combine(counts, max_error_samples)
-                bar.update(result.total)
-                run.checkpoint(
-                    completed=combined.total,
-                    total=total,
-                    succeeded=combined.succeeded,
-                    skipped=combined.skipped,
-                    failed=combined.failed,
-                    traces_total=combined.traces_total,
-                    traces_written=combined.traces_written,
-                    traces_filtered=combined.traces_filtered,
-                    issue_samples=combined.samples,
-                    output_dir=output_root,
-                )
-    return _combine(counts, max_error_samples)
+            ),
+            max_workers=max_workers,
+            batch_size=batch_size,
+            files_per_pool=files_per_pool,
+            run=run,
+        ) as results,
+        progress_bar(total=total, desc="Filtering", unit="file") as bar,
+    ):
+        for batch, future in results:
+            try:
+                result = resolve_worker_call(future.result())
+            except Exception as exc:
+                result = _failed_batch(batch, exc, worker_limit)
+            combined = _combine((combined, result), max_error_samples)
+            bar.update(result.total)
+            run.checkpoint(
+                completed=combined.total,
+                total=total,
+                succeeded=combined.succeeded,
+                skipped=combined.skipped,
+                failed=combined.failed,
+                traces_total=combined.traces_total,
+                traces_written=combined.traces_written,
+                traces_filtered=combined.traces_filtered,
+                issue_samples=combined.samples,
+                output_dir=output_root,
+            )
+    return combined
 
 
 def _process_batch(

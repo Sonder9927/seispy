@@ -69,3 +69,23 @@ function-specific failure counters contain no issues.
 Set `save_report=False` or `save_log=False` to disable either artifact. Passing
 `save_report=None` keeps live checkpoints while the batch runs, but removes the
 report after a clean completion to preserve the earlier issue-only behavior.
+
+## Bounded waveform workers
+
+`archive_waveforms`, `filter_waveforms`, `convert_mseed_to_sac`, and
+`decimate_waveforms` accept `files_per_pool=1024`, matching response removal.
+The quota counts input files across a whole pool, not files per worker. Set it
+to a smaller positive integer for more frequent recycling, or `None` to keep
+one pool. The initial default is tunable, not a measured optimum.
+
+Only `2 * max_workers` tasks are submitted at a time. Batches are created on
+demand and shortened at generation boundaries. The old pool drains and exits
+before the next pool starts. Filtering, conversion and decimation retain only
+cumulative counts and bounded samples; archiving already uses incremental
+counters. Unexpected pool failures stop the run without automatic retries.
+
+Workers use `spawn`; script entry points must use an
+`if __name__ == "__main__":` guard. Input paths are still collected in memory,
+and an individual file can still require substantial decoding/processing
+memory. Recycling is not a hard RSS limit. The 60-second progress logging and
+5-second report checkpoint intervals are unchanged.
