@@ -161,8 +161,9 @@ def archive_waveforms(
         pattern: Recursive source filename pattern. Use, for example,
             ``"*.sac"`` to organize existing SAC files.
         files_per_pool: Input files per pool generation across all workers.
-            Defaults to 1024; None disables recycling. Uses spawn, requiring a
-            __main__ guard in scripts. This is not a per-file memory limit.
+            Defaults to 1024; None disables recycling. Workers use the platform
+            default start method, so scripts need a __main__ guard on spawn
+            platforms (macOS, Windows). This is not a per-file memory limit.
         max_workers: Number of isolated validation/archive processes.
         overwrite: Replace existing archive outputs.
         discard_corrupt_records: Recover independently valid records when full
@@ -256,6 +257,7 @@ def archive_waveforms(
                 initializer=_initialize_archive_worker,
                 initargs=(manifest,),
                 run=run,
+                operation="archive_waveforms",
             ) as results,
             progress_bar(total=len(files), desc="Archiving", unit="file") as bar,
         ):

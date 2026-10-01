@@ -14,6 +14,7 @@ from seispy.workflow import (
     new_run_id,
     temporary_output_path,
 )
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ def format_sac_headers(
         # => 'formatted'
         ```
     """
+    require_reimport_safe_entry_point("format_sac_headers")
     run_id = new_run_id()
     src_path = Path(src_dir).expanduser().resolve()
     dest_path = Path(dest_dir).expanduser().resolve()

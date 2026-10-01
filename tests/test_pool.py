@@ -22,7 +22,7 @@ def _identify(batch):
 
 
 @pytest.mark.parametrize("quota, generations", [(2, 3), (None, 1)])
-def test_real_spawn_generations_and_initializers(quota, generations):
+def test_real_process_generations_and_initializers(quota, generations):
     pids = []
     received = []
     with _pool.process_batches(

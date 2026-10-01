@@ -164,8 +164,12 @@ After draining the generation, all workers exit before the next pool starts.
 Use a smaller value for more frequent memory reclamation, a larger value to
 reduce initialization overhead, or `None` to disable recycling. The quota is
 independent of `batch_size`; batches are shortened at generation boundaries.
-Inventory is initialized again in each new worker. Workers use `spawn`, so put
-script entry points under `if __name__ == "__main__":`.
+The parsed inventory is written once to the run's temporary directory and each
+new worker loads it from there. Workers use the platform default start method
+(`fork` on Linux, `spawn` on macOS and Windows), so on `spawn` platforms put
+script entry points under `if __name__ == "__main__":`. Calling
+`deconvolve_waveforms` at module level without that guard raises `RuntimeError`
+naming the offending line instead of starting workers.
 
 Input paths are still collected in memory. Recycling releases memory held by
 retired processes, but does not impose a hard RSS limit or reduce the peak

@@ -84,8 +84,11 @@ before the next pool starts. Filtering, conversion and decimation retain only
 cumulative counts and bounded samples; archiving already uses incremental
 counters. Unexpected pool failures stop the run without automatic retries.
 
-Workers use `spawn`; script entry points must use an
-`if __name__ == "__main__":` guard. Input paths are still collected in memory,
+Workers use the platform default start method: `fork` on Linux, `spawn` on
+macOS and Windows. On `spawn` platforms script entry points must use an
+`if __name__ == "__main__":` guard, and calling one of these functions at module
+level without it raises `RuntimeError` naming the offending line instead of
+starting workers. Input paths are still collected in memory,
 and an individual file can still require substantial decoding/processing
 memory. Recycling is not a hard RSS limit. The 60-second progress logging and
 5-second report checkpoint intervals are unchanged.

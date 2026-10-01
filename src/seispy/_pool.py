@@ -1,10 +1,10 @@
 """Bounded task submission and non-overlapping process-pool generations."""
 
-import multiprocessing
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings
 
 
@@ -27,14 +27,19 @@ def process_batches(
     initializer=None,
     initargs=(),
     run=None,
+    operation="this operation",
 ):
     """Yield (input batch, completed Future), retaining at most 2W tasks.
 
     Quotas count input files across the entire pool. The consumer must consume
     each Future immediately; it must not retain results or submit more work.
     On consumer failure, cancel pending work and drain workers before returning.
-    Broken pools propagate without retries. Workers use spawn on every platform.
+    Broken pools propagate without retries. Workers use the platform default
+    start method, so on spawn platforms callers from scripts must sit behind a
+    ``__main__`` guard; ``operation`` names the public function in the error
+    raised when they do not.
     """
+    require_reimport_safe_entry_point(operation)
     validate_files_per_pool(files_per_pool)
     if max_workers < 1 or batch_size < 1:
         raise ValueError("max_workers and batch_size must be positive")
@@ -70,7 +75,6 @@ def _results(
             )
         executor = ProcessPoolExecutor(
             max_workers=workers,
-            mp_context=multiprocessing.get_context("spawn"),
             initializer=initializer,
             initargs=initargs,
         )

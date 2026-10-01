@@ -109,8 +109,9 @@ def decimate_waveforms(
             same SAC FIR coefficients and preserve sample alignment.
         pattern: Recursive file pattern below ``src_dir``.
         files_per_pool: Input files per pool generation across all workers.
-            Defaults to 1024; None disables recycling. Uses spawn, requiring a
-            __main__ guard in scripts. This is not a per-file memory limit.
+            Defaults to 1024; None disables recycling. Workers use the platform
+            default start method, so scripts need a __main__ guard on spawn
+            platforms (macOS, Windows). This is not a per-file memory limit.
         max_workers: Maximum number of file-batch worker processes.
         output_dir: Optional output root. A sibling directory is used by default.
         max_error_samples: Maximum number of failures retained in the summary.
@@ -252,6 +253,7 @@ def _run_decimation_batches(
             batch_size=batch_size,
             files_per_pool=files_per_pool,
             run=run,
+            operation="decimate_waveforms",
         ) as results,
         progress_bar(total=total, desc="Decimating", unit="file") as bar,
     ):

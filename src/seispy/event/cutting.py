@@ -16,6 +16,7 @@ from seispy.workflow import (
     new_run_id,
     temporary_output_path,
 )
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.waveform.integrity import merge_contiguous_segments
@@ -134,6 +135,7 @@ def cut_event_waveforms(
         # => True
         ```
     """
+    require_reimport_safe_entry_point("cut_event_waveforms")
     run_id = new_run_id()
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")

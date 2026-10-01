@@ -4,6 +4,7 @@ import logging
 import multiprocessing
 import math
 import os
+import pickle
 import subprocess
 import tempfile
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -16,6 +17,7 @@ import obspy
 import numpy as np
 from obspy.core.inventory import Inventory
 
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 from seispy.waveform.integrity import (
     DEFAULT_TRACE_FILTER,
@@ -135,8 +137,13 @@ def deconvolve_waveforms(
         files_per_pool: Maximum input files per pool generation, across all
             workers. Defaults to 1024 as an initial tunable limit; None disables
             recycling. Pools drain and exit before their replacements start.
-            This is not a per-file memory limit. Script callers must use a
-            __main__ guard because workers use the spawn start method.
+            This is not a per-file memory limit. The parsed inventory is written
+            once to the run's temporary directory and loaded by each worker, so
+            a long run does not re-serialize it per worker. Workers use the
+            platform default start method: on spawn platforms (macOS, Windows)
+            script callers must use a __main__ guard, and calling from an
+            unguarded script raises ``RuntimeError`` naming the offending line
+            instead of starting workers.
         max_error_samples: Maximum number of issues retained in the summary.
         save_report: Write a continuously updated JSON report. Defaults to
             ``True``. ``None`` retains it only when issues occur.
@@ -160,6 +167,10 @@ def deconvolve_waveforms(
         NotADirectoryError: If ``source_dir`` does not exist.
         ValueError: If the backend, limits, or output policy is invalid, or if
             MiniSEED input is selected with the SAC backend.
+        RuntimeError: If the calling script starts this function at module
+            level without an ``if __name__ == "__main__":`` guard while the
+            start method in use re-imports the entry script (``spawn`` or
+            ``forkserver``, the defaults on macOS and Windows).
 
     Notes:
         The default 150-second taper cap and
@@ -182,6 +193,7 @@ def deconvolve_waveforms(
         # => 'deconvolved'
         ```
     """
+    require_reimport_safe_entry_point("deconvolve_waveforms")
     run_id = new_run_id()
     backend = backend.lower()
     src_path = Path(source_dir).expanduser().resolve()
@@ -222,6 +234,7 @@ def deconvolve_waveforms(
     total = len(targets)
     actual_batch_size = _batch_size(total, max_workers, batch_size)
     with tempfile.TemporaryDirectory(prefix="seispy-deconvolution-") as temp_dir:
+        responses_path = _write_worker_inventory(inv, Path(temp_dir) / "inventory.pkl")
         combined_pz = None
         if backend == "sac":
             combined_pz = _write_combined_sacpz(inv, Path(temp_dir) / "responses.pz")
@@ -257,7 +270,7 @@ def deconvolve_waveforms(
             )
             compact = _run_deconvolution_batches(
                 targets,
-                inv,
+                responses_path,
                 backend,
                 combined_pz,
                 src_path,
@@ -324,16 +337,35 @@ _WORKER_BACKEND = None
 _WORKER_COMBINED_PZ = None
 
 
-def _initialize_deconvolution_worker(inventory, backend, combined_pz):
+def _initialize_deconvolution_worker(responses_path, backend, combined_pz):
     global _WORKER_BACKEND, _WORKER_COMBINED_PZ, _WORKER_INVENTORY
-    _WORKER_INVENTORY = inventory
+    _WORKER_INVENTORY = _load_worker_inventory(responses_path)
     _WORKER_BACKEND = backend
     _WORKER_COMBINED_PZ = combined_pz
 
 
+def _write_worker_inventory(inventory, destination):
+    """Spill the parsed inventory once for every worker to load.
+
+    Passing it as a pool initializer argument re-pickled it for every worker of
+    every generation -- tens of gigabytes for a long run -- and left the parent
+    writing that payload into the pipe of a worker that died while importing the
+    entry script, where it blocks forever.
+    """
+    destination = Path(destination)
+    with destination.open("wb") as handle:
+        multiprocessing.reduction.dump(inventory, handle)
+    return destination
+
+
+def _load_worker_inventory(responses_path):
+    with Path(responses_path).open("rb") as handle:
+        return pickle.load(handle)
+
+
 def _run_deconvolution_batches(
     targets,
-    inventory,
+    responses_path,
     backend,
     combined_pz,
     src_path,
@@ -368,9 +400,8 @@ def _run_deconvolution_batches(
             )
             with ProcessPoolExecutor(
                 max_workers=max_workers,
-                mp_context=multiprocessing.get_context("spawn"),
                 initializer=_initialize_deconvolution_worker,
-                initargs=(inventory, backend, combined_pz),
+                initargs=(str(responses_path), backend, combined_pz),
             ) as executor:
                 futures = {}
                 exhausted = False

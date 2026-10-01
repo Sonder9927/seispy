@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 from obspy import Stream, Trace
+from obspy.core.inventory import Inventory, Network, Station
 
 from seispy.progress import WorkerCall
 
@@ -18,6 +19,15 @@ removal = import_module("seispy.deconvolution.removal")
 def _record_pid(function, targets, *args):
     for target in targets:
         target.write_text(str(os.getpid()))
+    return WorkerCall(
+        value=removal._WorkerSummary(total=len(targets), succeeded=len(targets))
+    )
+
+
+def _record_loaded_inventory(function, targets, *args):
+    inventory = removal._WORKER_INVENTORY
+    for target in targets:
+        target.write_text(f"{type(inventory).__name__}:{len(inventory.networks)}")
     return WorkerCall(
         value=removal._WorkerSummary(total=len(targets), succeeded=len(targets))
     )
@@ -53,7 +63,7 @@ def test_real_process_generations_preserve_all_inputs(
     pools = []
 
     def pool(**kwargs):
-        # Exercise real spawn/recycling without loading scientific metadata.
+        # Exercise real process generations/recycling without loading metadata.
         kwargs.pop("initializer")
         kwargs.pop("initargs")
         executor = ProcessPoolExecutor(**kwargs)
@@ -88,6 +98,46 @@ def test_real_process_generations_preserve_all_inputs(
     if quota:
         assert pids[0] == pids[1]
         assert pids[2] == pids[3]
+
+
+def test_workers_load_the_inventory_from_a_file(tmp_path, monkeypatch):
+    target = tmp_path / "0"
+    inventory = Inventory([Network("NZ", stations=[Station("AAA", 0.0, 0.0, 0.0)])])
+    responses_path = removal._write_worker_inventory(
+        inventory, tmp_path / "inventory.pkl"
+    )
+    submitted = {}
+    real_pool = ProcessPoolExecutor
+
+    def pool(**kwargs):
+        submitted.update(kwargs)
+        return real_pool(**kwargs)
+
+    monkeypatch.setattr(removal, "ProcessPoolExecutor", pool)
+    monkeypatch.setattr(removal, "call_with_warnings", _record_loaded_inventory)
+    result = removal._run_deconvolution_batches(
+        [target],
+        responses_path,
+        "obspy",
+        None,
+        tmp_path,
+        tmp_path,
+        1,
+        removal.DEFAULT_PRE_FILTER,
+        (),
+        removal.DEFAULT_TRACE_FILTER,
+        1,
+        1,
+        2,
+        1,
+        Mock(),
+    )
+
+    assert result.total == result.succeeded == 1
+    # The initializer argument stays a small path; the worker still gets the
+    # inventory, loaded from the file the parent wrote once.
+    assert submitted["initargs"] == (str(responses_path), "obspy", None)
+    assert target.read_text() == "Inventory:1"
 
 
 def test_previous_file_stream_is_released_before_next_read(tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ from pathlib import Path
 import obspy
 import pandas as pd
 from obspy import UTCDateTime
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.workflow import BatchRun, new_run_id
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
@@ -45,6 +46,7 @@ def correct_clock_drift(
         )
         ```
     """
+    require_reimport_safe_entry_point("correct_clock_drift")
 
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1")

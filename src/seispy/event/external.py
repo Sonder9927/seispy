@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
 from seispy.workflow import resolve_separate_directory_trees
@@ -46,6 +47,7 @@ def cut_events_binary(
         )
         ```
     """
+    require_reimport_safe_entry_point("cut_events_binary")
     network_dir, output_dir = resolve_separate_directory_trees(net_dir, dest_dir)
     stations = sorted(path for path in network_dir.iterdir() if path.is_dir())
     mktraceiodb = _bundled_command("mktraceiodb")

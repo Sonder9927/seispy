@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import obspy
+from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings, progress_iter, resolve_worker_call
 
 from seispy.archive import WaveformIdentity
@@ -33,6 +34,7 @@ def merge_waveforms_by_day(
         merge_waveforms_by_day("data/sac", "data/sac-merged", pattern="*.sac")
         ```
     """
+    require_reimport_safe_entry_point("merge_waveforms_by_day")
     src_path, output_path = resolve_separate_directory_trees(source_dir, output_dir)
     if not src_path.is_dir():
         raise NotADirectoryError(src_path)
