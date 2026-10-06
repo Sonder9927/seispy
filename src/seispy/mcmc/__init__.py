@@ -3,6 +3,7 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "LABSettings": ("seispy.mcmc.lab", "LABSettings"),
     "init_grids": (
         "seispy.mcmc.workflow",
         "init_grids",

@@ -21,10 +21,18 @@ stopping the others.
 
 ::: seispy.mcmc.collection.collect_results
 
-`collect_results` writes the established summary products for successful grid
-points and continues after per-point failures. Its diagnostic table is printed
-to the terminal by default; pass `diagnostics_path` only when a CSV diagnostic
-file is wanted.
+`collect_results` silently writes `profiles.parquet`, `interfaces.parquet`,
+`diagnostics.parquet`, and `metadata.json`. It preserves the historical
+`x,y,z,vs,misfit,moho` values and adds explicitly named full-chain statistics.
+Updated LAB estimates use per-state mantle gradients, including rejection
+multiplicities. See [collection definitions and quality states](../recipes/mcmc.md#collect-results).
+
+`CollectionSummary.success_count` includes partial historical-only results;
+`posterior_count` and `partial_count` distinguish complete posterior products.
+Read `summary.diagnostics` to manage failures centrally. No automatic print
+or per-grid logger output is emitted.
+
+::: seispy.mcmc.lab.LABSettings
 
 ### Prior bounds
 

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -245,3 +246,38 @@ def test_prepare_points_reports_shallow_profiles(write_mcmc_config):
         prepare_points(
             _stub_fields(target), library, _stub_dispersion(target), cfg, settings
         )
+
+
+def test_initialized_inputs_feed_posterior_collection(tmp_path, capsys):
+    """Use real writer geometry/order rather than a separate collector fixture."""
+    from seispy.mcmc.collection import collect_results
+    from seispy.mcmc.posterior import ModelLayout
+
+    config_path = _write_synthetic_inputs(tmp_path)
+    cfg = json.loads(config_path.read_text())
+    cfg["mcmc_params"]["biasfac"] = 1.7
+    config_path.write_text(json.dumps(cfg))
+    init_grids(config_path)
+    capsys.readouterr()
+    grids = Path(cfg["paths"]["output_dir"])
+    for grid in grids.iterdir():
+        if not (grid / "para.inp").is_file():
+            continue
+        layout = ModelLayout.read(grid / "para.inp")
+        records = (grid / "para.inp").read_text().splitlines()[-len(layout.keys) :]
+        state = [np.mean([float(v) for v in row.split()[2:]]) for row in records]
+        retained = cfg["mcmc_params"]["nsimu"] - cfg["mcmc_params"]["burn_in"] + 1
+        with (grid / "fort.8010").open("w") as stream:
+            stream.write("Mean IAC not calculated\nBest misfit in model 1\n")
+            np.savetxt(stream, np.tile([1.0, *state], (retained, 1)))
+        (grid / "mean_prob.lst").write_text("0 3\n50 4.5\n100 4.6\n")
+        (grid / "moho.lst").write_text("40\n")
+        (grid / "Litmod_output.log").write_text("final result 0 0 0 0 0 1.25\n")
+    summary = collect_results(grids, tmp_path / "results")
+    assert summary.success_count == 4
+    assert summary.diagnostics.status.tolist() == ["ok"] * 4
+    assert capsys.readouterr().out == ""
+    result = pd.read_parquet(summary.output_paths["interfaces"])
+    assert (result.retained_states == 91).all()
+    assert (result.unique_states == 1).all()
+    assert (result.moho == 40).all()
