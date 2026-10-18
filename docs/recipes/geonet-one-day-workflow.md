@@ -184,9 +184,9 @@ for path in outputs:
     print(trace.id, trace.stats.starttime, trace.stats.endtime, path)
 ```
 
-The SciPy decimation backend uses SAC FIR coefficients but does not start the
-SAC executable. Set `SACAUX` or `SACHOME` if SAC is not installed under
-`/usr/local/sac`.
+The SciPy decimation backend uses bundled, pinned SAC Community FIR coefficients.
+It requires no SAC installation, executable, or `SACAUX`/`SACHOME` settings. This
+also applies to integrated decimation with the ObsPy response-removal backend.
 
 ## Part 2: concise workflow from 100 Hz MiniSEED to 25 Hz SAC
 

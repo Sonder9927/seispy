@@ -9,9 +9,18 @@ description: Phase-preserving SAC-compatible waveform decimation.
 
 `waveform.decimate_waveforms(src_dir, factors, ...)`
 
-**Input:** SAC or MiniSEED files and an ordered sequence of integer factors.<br>
-**Output:** a copied directory tree at the reduced sampling rate, unless
-in-place processing is explicitly selected.
+**Input:** SAC files and an ordered sequence of integer factors.<br>
+**Output:** SAC files at the reduced sampling rate in a separate directory tree.
+
+Replace the example paths with your own input and output directories. The output
+directory is created automatically and preserves relative file paths. Input and
+output trees must not overlap. Save each complete example as a Python script;
+the entry-point guard is required for worker processes on macOS and Windows.
+
+| Backend | Requirements |
+| --- | --- |
+| `scipy` (default) | No SAC installation required; FIR coefficients are bundled |
+| `sac` | A configured SAC installation with `sac` available on `PATH` |
 
 ## SciPy example
 
@@ -21,27 +30,37 @@ Pass the ordered decimation factors. Their product is the total reduction;
 ```python
 from seispy import waveform
 
-summary = waveform.decimate_waveforms(
-    "data/deconvolved",
-    factors=[5, 5, 4],
-    backend="scipy",
-    output_dir="data/decimated",
-    max_workers=2,
-    batch_size=100,
-)
+def main():
+    summary = waveform.decimate_waveforms(
+        "data/deconvolved",
+        factors=[5, 5, 4],
+        backend="scipy",
+        pattern="*.sac",
+        output_dir="data/decimated_scipy",
+        max_workers=2,
+        batch_size=100,
+    )
 
-print(f"Decimated: {summary.succeeded}/{summary.total}")
-print(f"Failed: {summary.failed}")
+    print(f"Decimated: {summary.succeeded}/{summary.total}")
+    print(f"Failed: {summary.failed}")
+    print(f"Output: {summary.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 Reports and logs are enabled by default, track every file batch, and flush
 progress periodically. See [Batch reports and logs](batch-reports.md).
 
-The SciPy adapter reads the symmetric FIR coefficients from the local licensed
-SAC installation and applies them with delay-compensated polyphase filtering.
-It does not start SAC, nor does it add detrending or tapering; perform those
-once during response removal when needed. Set `SACAUX` or `SACHOME` if SAC is
-not installed under `/usr/local/sac`.
+The SciPy adapter uses fixed, bundled SAC Community FIR coefficients and applies
+them with delay-compensated polyphase filtering. It needs no SAC installation,
+executable, or `SACAUX`/`SACHOME` settings. The coefficient files for factors
+2 through 7 are pinned to an upstream version and distributed under Apache-2.0;
+see the [upstream project](https://github.com/EarthScope/sac-community).
+It does not add detrending or tapering; perform those once during response
+removal when needed. A local SAC installation or modified local filters do not
+change SciPy results.
 
 Files are collected recursively and then split into global batches, regardless
 of their station directories. This balances workers when stations contain
@@ -49,16 +68,29 @@ different numbers of files while preserving every relative output path.
 
 ## SAC example
 
-For the SAC backend, values are sequential decimation factors:
+This example also changes 100 Hz data to 1 Hz, using SAC's `DECIMATE` command:
 
 ```python
-summary = waveform.decimate_waveforms(
-    "data/deconvolved",
-    factors=[2, 2, 5],
-    backend="sac",
-    output_dir="data/decimated",
-    batch_size=100,
-)
+from seispy import waveform
+
+def main():
+    summary = waveform.decimate_waveforms(
+        "data/deconvolved",
+        factors=[5, 5, 4],
+        backend="sac",
+        pattern="*.sac",
+        max_workers=2,
+        output_dir="data/decimated_sac",
+        batch_size=100,
+    )
+
+    print(f"Decimated: {summary.succeeded}/{summary.total}")
+    print(f"Failed: {summary.failed}")
+    print(f"Output: {summary.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 Both backends require a separate output tree. Source files are never replaced

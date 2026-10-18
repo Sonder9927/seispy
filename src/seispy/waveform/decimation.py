@@ -5,6 +5,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from functools import cache
+from importlib.resources import files
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -95,8 +96,9 @@ def decimate_waveforms(
     """Decimate matching SAC files in balanced process batches.
 
     Both adapters accept the same ordered sequence of SAC-compatible integer
-    factors. The SciPy adapter applies SAC's symmetric FIR filters with
-    delay-compensated polyphase filtering; the SAC adapter invokes ``DECIMATE``.
+    factors. The SciPy adapter applies bundled SAC Community symmetric FIR
+    filters with delay-compensated polyphase filtering and needs no SAC
+    installation; the SAC adapter invokes ``DECIMATE``.
     Files keep their relative names under a separate output tree. By default,
     that tree is the sibling directory ``<src_dir>_decimated``. Source files
     are never modified or removed.
@@ -105,8 +107,9 @@ def decimate_waveforms(
         src_dir: Root directory searched recursively for waveform files.
         factors: One factor or an ordered sequence of factors from 2 through 7.
             The output rate is the input rate divided by their product.
-        backend: Processing backend, ``"scipy"`` or ``"sac"``. Both use the
-            same SAC FIR coefficients and preserve sample alignment.
+        backend: Processing backend, ``"scipy"`` or ``"sac"``. SciPy uses pinned,
+            bundled SAC Community FIR coefficients; only the SAC backend needs
+            a SAC installation. Both preserve sample alignment.
         pattern: Recursive file pattern below ``src_dir``.
         files_per_pool: Input files per pool generation across all workers.
             Defaults to 1024; None disables recycling. Workers use the platform
@@ -385,19 +388,9 @@ def _sac_fir_coefficients(factor):
 
 
 def _sac_filter_file(factor):
-    candidates = []
-    if sacaux := os.environ.get("SACAUX"):
-        candidates.append(Path(sacaux) / "fir" / f"dec{factor}")
-    if sachome := os.environ.get("SACHOME"):
-        candidates.append(Path(sachome) / "aux" / "fir" / f"dec{factor}")
-    candidates.append(Path("/usr/local/sac/aux/fir") / f"dec{factor}")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise FileNotFoundError(
-        f"SAC FIR filter dec{factor} was not found; set SACAUX or SACHOME "
-        "to a licensed SAC installation"
-    )
+    """Return pinned package data, including when installed from a wheel."""
+    _normalize_factors(factor)
+    return files("seispy.waveform").joinpath("_fir", f"dec{factor}")
 
 
 def _sac_compatible_decimate_trace(trace, factors):

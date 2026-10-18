@@ -13,7 +13,6 @@ from obspy.core.inventory.response import Response
 from seispy.waveform.decimation import (
     _sac_compatible_decimate_trace,
     _sac_decimate_batch,
-    _sac_filter_file,
     _scipy_decimate_batch,
 )
 from seispy.deconvolution.removal import (
@@ -93,10 +92,6 @@ def _metrics(first, second, edge_samples=1000):
 def _require_sac_decimation():
     if shutil.which("sac") is None:
         pytest.skip("SAC executable is not installed")
-    try:
-        _sac_filter_file(4)
-    except FileNotFoundError:
-        pytest.skip("SAC decimation FIR coefficients are not installed")
 
 
 @pytest.fixture

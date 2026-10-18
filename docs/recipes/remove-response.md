@@ -1,6 +1,6 @@
 ---
 title: Remove instrument response
-description: Deconvolve SAC files with StationXML while preserving source data.
+description: Deconvolve waveform files with StationXML while preserving source data.
 ---
 
 # Remove instrument response
@@ -17,29 +17,85 @@ description: Deconvolve SAC files with StationXML while preserving source data.
 Download response-level StationXML that covers the network, stations, channels,
 and recording interval. See [Station metadata](download-inventory.md).
 
-## Example
+<a id="example"></a>
+
+## Backend examples
+
+Replace the example paths with your own directories and StationXML file. The
+output directory is created automatically; input and output trees must not
+overlap. Save each complete example as a Python script. The entry-point guard
+is required for worker processes on macOS and Windows.
+
+| Backend | Input | Requirements |
+| --- | --- | --- |
+| `obspy` (default) | SAC or MiniSEED | Response-level StationXML; integrated decimation uses bundled SAC Community FIR coefficients and needs no SAC installation |
+| `sac` | SAC | Response-level StationXML and a configured `sac` executable on `PATH` |
+
+### ObsPy example
+
+Read MiniSEED and write response-corrected SAC files to a new directory:
 
 ```python
 from seispy import deconvolution
 from seispy.waveform import TraceFilter
 
-summary = deconvolution.deconvolve_waveforms(
-    "data/mseed",
-    "data/metadata/stations.xml",
-    backend="obspy",
-    pattern="*.mseed",
-    output_dir="data/sac_deconvolved",
-    max_workers=2,
-    trace_filter=TraceFilter(
-        min_duration_seconds=120,
-        min_samples=1000,
-        min_periods=1,   # >= 1 period of the 0.004 Hz pre-filter corner
-    ),
-)
+def main():
+    summary = deconvolution.deconvolve_waveforms(
+        "data/mseed",
+        "data/metadata/stations.xml",
+        backend="obspy",
+        pattern="*.mseed",
+        output_dir="data/sac_deconvolved",
+        max_workers=2,
+        trace_filter=TraceFilter(
+            min_duration_seconds=120,
+            min_samples=1000,
+            min_periods=1,   # >= 1 period of the 0.004 Hz pre-filter corner
+        ),
+    )
 
-print(f"Processed: {summary.succeeded}/{summary.total}")
-print(f"Failed: {summary.failed}")
-print(f"Filtered traces: {summary.traces_filtered}, skipped: {summary.skipped}")
+    print(f"Processed: {summary.succeeded}/{summary.total}")
+    print(f"Failed: {summary.failed}")
+    print(f"Filtered traces: {summary.traces_filtered}, skipped: {summary.skipped}")
+    print(f"Output: {summary.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### SAC example
+
+Read SAC files and write response-corrected SAC files to a new directory:
+
+```python
+from seispy import deconvolution
+from seispy.waveform import TraceFilter
+
+def main():
+    summary = deconvolution.deconvolve_waveforms(
+        "data/sac",
+        "data/metadata/stations.xml",
+        backend="sac",
+        pattern="*.sac",
+        output_dir="data/sac_deconvolved_sac",
+        max_workers=2,
+        batch_size=32,
+        trace_filter=TraceFilter(
+            min_duration_seconds=120,
+            min_samples=1000,
+            min_periods=1,
+        ),
+    )
+
+    print(f"Processed: {summary.succeeded}/{summary.total}")
+    print(f"Failed: {summary.failed}")
+    print(f"Filtered traces: {summary.traces_filtered}, skipped: {summary.skipped}")
+    print(f"Output: {summary.output_dir}")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 Reports and logs are enabled by default under `output_dir/logs` and flush batch
@@ -126,9 +182,9 @@ workflow:
     that the adjusted third corner remains above the highest frequency required
     by the analysis.
 
-Every generated file is validated before it replaces or accompanies the
-source. Empty, constant, non-finite, truncated, time-shifted, or sampling-rate
-mismatched output is rejected. ObsPy sample values are checked directly in the
+Every generated file is validated before it is committed to the output tree.
+Empty, constant, non-finite, truncated, time-shifted, or sampling-rate mismatched
+output is rejected. ObsPy sample values are checked directly in the
 already-loaded processed stream; SAC output uses its stored amplitude extrema.
 Only fixed-size headers are reread, avoiding a second full read of every daily
 waveform.
