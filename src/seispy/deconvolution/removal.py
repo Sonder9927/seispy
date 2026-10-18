@@ -68,6 +68,7 @@ class _WorkerSummary:
     skipped: int = 0
     traces_filtered: int = 0
     filter_samples: tuple[DeconvolutionIssue, ...] = ()
+    existing_skipped: int = 0
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,10 @@ class DeconvolutionSummary(BatchSummary):
         total: Number of waveform files considered.
         succeeded: Number processed successfully.
         failed: Number that failed deconvolution.
-        skipped: Number whose traces were all filtered out before processing.
+        skipped: Number skipped because all traces were filtered or all expected
+            outputs were already complete.
+        existing_skipped: Input files skipped because every expected output was
+            already complete (included in ``skipped``).
         traces_filtered: Number of individual traces filtered out.
         issue_samples: Bounded sample of processing failures.
         filter_samples: Bounded sample of filtered traces and their reasons.
@@ -99,6 +103,7 @@ class DeconvolutionSummary(BatchSummary):
     skipped: int = 0
     traces_filtered: int = 0
     filter_samples: tuple[DeconvolutionIssue, ...] = ()
+    existing_skipped: int = 0
 
     @property
     def has_issues(self) -> bool:
@@ -121,6 +126,7 @@ def deconvolve_waveforms(
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     decimate_factors: int | Sequence[int] | None = None,
     trace_filter: TraceFilter = DEFAULT_TRACE_FILTER,
+    overwrite: bool = True,
 ) -> DeconvolutionSummary:
     """Deconvolve every matching waveform in a directory tree.
 
@@ -159,6 +165,11 @@ def deconvolve_waveforms(
         trace_filter: Skip traces that cannot be processed meaningfully, such
             as single-sample, very short, or constant traces. Filtering is
             counted as skipped, never as a failure.
+        overwrite: Recompute and replace outputs by default. If False, skip an
+            input only when all expected outputs pass header and file-length
+            checks. Missing or invalid outputs cause the whole input to be
+            recomputed, replacing any other outputs for that input. Reuse the
+            same inventory, processing parameters and software version.
 
     Returns:
         Processing counts, sampled issues, output location, and run duration.
@@ -203,6 +214,8 @@ def deconvolve_waveforms(
         raise ValueError("max_workers must be at least 1")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
+    if not isinstance(overwrite, bool):
+        raise ValueError("overwrite must be a boolean")
     if batch_size is not None and batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     if files_per_pool is not None and (
@@ -252,13 +265,14 @@ def deconvolve_waveforms(
                 failed=0,
                 skipped=0,
                 traces_filtered=0,
+                existing_skipped=0,
                 issue_samples=(),
                 filter_samples=(),
                 output_dir=output_path,
             )
             run.info(
                 "run_id=%s backend=%s source_dir=%s output_dir=%s pattern=%s "
-                "max_workers=%d batch_size=%d decimate_factors=%s",
+                "max_workers=%d batch_size=%d decimate_factors=%s overwrite=%s",
                 run_id,
                 backend,
                 src_path,
@@ -267,6 +281,7 @@ def deconvolve_waveforms(
                 max_workers,
                 actual_batch_size,
                 factors,
+                overwrite,
             )
             compact = _run_deconvolution_batches(
                 targets,
@@ -285,6 +300,7 @@ def deconvolve_waveforms(
                 total,
                 run,
                 files_per_pool=files_per_pool,
+                overwrite=overwrite,
             )
             summary = run.complete(
                 DeconvolutionSummary(
@@ -293,6 +309,7 @@ def deconvolve_waveforms(
                     succeeded=compact.succeeded,
                     failed=compact.failed,
                     skipped=compact.skipped,
+                    existing_skipped=compact.existing_skipped,
                     traces_filtered=compact.traces_filtered,
                     issue_samples=compact.issue_samples,
                     filter_samples=compact.filter_samples,
@@ -327,7 +344,8 @@ def deconvolve_waveforms(
                 )
     print(
         f"Deconvolution complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed, {summary.skipped} skipped."
+        f"{summary.failed} failed, {summary.skipped} skipped "
+        f"({summary.existing_skipped} already complete)."
     )
     return summary
 
@@ -381,6 +399,7 @@ def _run_deconvolution_batches(
     run,
     *,
     files_per_pool=1024,
+    overwrite=True,
 ):
     if not targets:
         return _WorkerSummary()
@@ -422,6 +441,7 @@ def _run_deconvolution_batches(
                             pre_filt,
                             factors,
                             trace_filter,
+                            overwrite,
                         )
                         futures[future] = batch
                     if not futures:
@@ -463,6 +483,7 @@ def _process_worker_batch(
     pre_filt,
     factors,
     trace_filter=DEFAULT_TRACE_FILTER,
+    overwrite=True,
 ):
     if _WORKER_BACKEND == "obspy":
         return _process_obspy_targets(
@@ -474,6 +495,7 @@ def _process_worker_batch(
             pre_filt,
             factors,
             trace_filter,
+            overwrite=overwrite,
         )
     if _WORKER_BACKEND == "sac":
         environment = os.environ.copy()
@@ -489,6 +511,7 @@ def _process_worker_batch(
             environment,
             factors,
             trace_filter,
+            overwrite=overwrite,
         )
     raise ValueError(f"Unknown backend: {_WORKER_BACKEND}")
 
@@ -512,6 +535,7 @@ def _checkpoint_deconvolution(run, compact, total, output_path):
         failed=compact.failed,
         skipped=compact.skipped,
         traces_filtered=compact.traces_filtered,
+        existing_skipped=compact.existing_skipped,
         issue_samples=compact.issue_samples,
         filter_samples=compact.filter_samples,
         output_dir=output_path,
@@ -524,7 +548,15 @@ class _SummaryAccumulator:
     def __init__(self, limit):
         self.limit = limit
         self.counts = dict.fromkeys(
-            ("total", "succeeded", "failed", "skipped", "traces_filtered"), 0
+            (
+                "total",
+                "succeeded",
+                "failed",
+                "skipped",
+                "traces_filtered",
+                "existing_skipped",
+            ),
+            0,
         )
         self.issue_samples = []
         self.filter_samples = []
@@ -681,6 +713,7 @@ def _process_obspy_targets(
     pre_filt,
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
+    overwrite=True,
 ):
     return _combine_batches(
         (
@@ -693,6 +726,7 @@ def _process_obspy_targets(
                 pre_filt,
                 decimate_factors,
                 trace_filter,
+                overwrite=overwrite,
             )
             for target in targets
         ),
@@ -709,6 +743,7 @@ def _process_one_obspy_target(
     pre_filt,
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
+    overwrite=True,
 ):
     succeeded = failed = skipped = filtered_traces = 0
     samples = []
@@ -737,6 +772,20 @@ def _process_one_obspy_target(
                 traces_filtered=filtered_traces,
                 filter_samples=tuple(filter_samples),
             )
+        destinations = _obspy_destinations(target, kept, src_root, output_dir)
+        if not overwrite:
+            for trace in kept:
+                _final_sampling_rate(
+                    trace.stats.sampling_rate, decimate_factors, pre_filt
+                )
+            if _existing_outputs_complete(kept, destinations, decimate_factors):
+                return _WorkerSummary(
+                    total=1,
+                    skipped=1,
+                    existing_skipped=1,
+                    traces_filtered=filtered_traces,
+                    filter_samples=tuple(filter_samples),
+                )
         processed = remove_response(
             kept,
             inv,
@@ -826,9 +875,10 @@ def _process_sac_batch(
     environment,
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
+    overwrite=True,
 ):
     """Run a bounded group of files in one SAC process."""
-    failed = skipped = 0
+    failed = skipped = existing_skipped = 0
     filtered_traces = 0
     samples = []
     filter_samples = []
@@ -868,6 +918,12 @@ def _process_sac_batch(
             final_rate = _final_sampling_rate(
                 trace.stats.sampling_rate, decimate_factors, pre_filt
             )
+            if not overwrite and _existing_outputs_complete(
+                (trace,), (destination,), decimate_factors
+            ):
+                skipped += 1
+                existing_skipped += 1
+                continue
             f1, f2, f3, f4 = _effective_pre_filt(pre_filt, final_rate)
             _response_epoch_for_trace(inv, trace)
             taper_width = _sac_taper_width(trace)
@@ -928,6 +984,8 @@ def _process_sac_batch(
                     pre_filt,
                     environment,
                     decimate_factors,
+                    trace_filter,
+                    overwrite=overwrite,
                 )
                 for group in (prepared[:middle], prepared[middle:])
             ]
@@ -936,6 +994,7 @@ def _process_sac_batch(
                 failed=failed,
                 issue_samples=tuple(samples),
                 skipped=skipped,
+                existing_skipped=existing_skipped,
                 traces_filtered=filtered_traces,
                 filter_samples=tuple(filter_samples),
             )
@@ -969,6 +1028,7 @@ def _process_sac_batch(
         skipped=skipped,
         traces_filtered=filtered_traces,
         filter_samples=tuple(filter_samples),
+        existing_skipped=existing_skipped,
     )
 
 
@@ -1027,6 +1087,31 @@ def _validate_deconvolved_file(
     # SAC maintains these extrema while writing. They provide a constant and
     # non-finite check without reading millions of samples back from disk.
     _validate_sac_extrema(output_trace)
+
+
+def _existing_outputs_complete(expected, destinations, decimate_factors=()) -> bool:
+    """Check all outputs without loading their sample arrays or removing response."""
+    if not destinations:
+        return False
+    for trace, destination in zip(expected, destinations, strict=True):
+        try:
+            output = obspy.read(str(destination), headonly=True)[0]
+            _validate_trace_headers(trace, output, decimate_factors)
+            if output.id != trace.id:
+                return False
+            sac = output.stats.sac
+            if sac.get("iftype") != 1 or not sac.get("leven", True):
+                return False
+            version = int(sac.get("nvhdr", 6))
+            if version not in (6, 7):
+                return False
+            expected_size = 632 + 4 * output.stats.npts + (176 if version == 7 else 0)
+            if destination.stat().st_size != expected_size:
+                return False
+            _validate_sac_extrema(output)
+        except Exception:
+            return False
+    return True
 
 
 def _validate_output_trace(expected, output) -> None:

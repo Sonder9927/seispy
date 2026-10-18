@@ -101,6 +101,61 @@ if __name__ == "__main__":
 Reports and logs are enabled by default under `output_dir/logs` and flush batch
 progress periodically. See [Batch reports and logs](batch-reports.md).
 
+## Resume after an interruption
+
+`overwrite=True` is the default: every selected input is processed again and
+its outputs are replaced. Set `overwrite=False` to avoid repeating response
+removal for inputs whose complete output set is already available:
+
+```python
+from seispy import deconvolution
+
+
+def main():
+    summary = deconvolution.deconvolve_waveforms(
+        "data/mseed",
+        "data/metadata/stations.xml",
+        backend="obspy",
+        pattern="*.mseed",
+        output_dir="data/sac_deconvolved",
+        overwrite=False,
+        max_workers=2,
+        # Keep pre_filt, decimate_factors and trace_filter as in the first run.
+    )
+    print(f"Processed: {summary.succeeded}")
+    print(f"Already complete: {summary.existing_skipped}")
+    print(f"Failed: {summary.failed}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+For ObsPy, the input is still read, merged and quality-filtered to determine
+all expected SAC filenames. One MiniSEED file can yield several segments;
+response removal is skipped only when **all** expected outputs pass basic
+checks: identity, sampling rate, point count, start time, SAC header amplitude
+extrema, and complete file length. Expected sampling rates and counts include
+any integrated decimation. The output sample arrays are not reread, so this
+is a basic integrity check, not a check for every possible data corruption.
+
+If any output is missing, unreadable or invalid, the entire input file is
+processed again. Existing valid sibling outputs for that input are also
+replaced; `overwrite=False` protects complete input output sets, rather than
+preventing all individual file replacements. The same option applies to SAC
+inputs and the SAC backend.
+
+Use the original raw input, the same output directory, and the same response
+inventory, processing parameters and software version. Existence and basic
+integrity cannot establish which parameters produced an old output. Free enough
+disk space before retrying: temporary new outputs coexist with old outputs
+until they are committed. Existing unrelated files are not removed.
+
+`summary.skipped` includes both completely quality-filtered inputs and inputs
+with already complete outputs. `summary.existing_skipped` counts only the latter
+and is also saved in the JSON run report. These counters count input files,
+not individual output SAC segments.
+
 ## Skip unusable traces
 
 Pass a shared `TraceFilter` to skip traces that cannot be deconvolved

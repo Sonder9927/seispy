@@ -19,6 +19,14 @@ to the separate [Inventory interface](inventory.md).
     lowering guarantees a valid taper, but does not guarantee that the adjusted
     band still covers the user's scientific target.
 
+`overwrite=True` recomputes and replaces outputs by default. With
+`overwrite=False`, an input is skipped only if all expected SAC outputs pass
+basic header and file-length checks; otherwise the whole input is recomputed,
+including any existing sibling segments. MiniSEED is read and filtered before
+this decision. `summary.existing_skipped` counts complete inputs skipped this
+way and is included in `summary.skipped`. Keep the inventory, parameters and
+software version unchanged when resuming. See [resuming interrupted runs](../recipes/remove-response.md#resume-after-an-interruption).
+
 ::: seispy.deconvolution.removal.deconvolve_waveforms
 
 ### Skip unusable traces
