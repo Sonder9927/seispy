@@ -4,8 +4,20 @@ import pandas as pd
 from obspy import UTCDateTime
 
 
+def _integer_second_window(event: dict) -> dict:
+    """Floor the cut window, retaining the precise event origin separately."""
+    origin = event.get("origin", event["start"])
+    start = UTCDateTime(ns=origin.ns // 1_000_000_000 * 1_000_000_000)
+    return {
+        **event,
+        "origin": origin,
+        "start": start,
+        "end": start + (event["end"] - event["start"]),
+    }
+
+
 def load_events(catalog: str | Path, time_window: float) -> list[dict]:
-    """Load event metadata without discarding sub-second origin times."""
+    """Load integer-second cut windows and retain precise event origins."""
     frame = pd.read_csv(
         catalog,
         parse_dates=["time"],
@@ -15,14 +27,16 @@ def load_events(catalog: str | Path, time_window: float) -> list[dict]:
     for _, row in frame.iterrows():
         start = UTCDateTime(row["time"].to_pydatetime())
         events.append(
-            {
-                "start": start,
-                "end": start + time_window,
-                "latitude": float(row["latitude"]),
-                "longitude": float(row["longitude"]),
-                "depth": float(row["depth"]),
-                "mag": float(row["mag"]),
-            }
+            _integer_second_window(
+                {
+                    "start": start,
+                    "end": start + time_window,
+                    "latitude": float(row["latitude"]),
+                    "longitude": float(row["longitude"]),
+                    "depth": float(row["depth"]),
+                    "mag": float(row["mag"]),
+                }
+            )
         )
     return events
 
@@ -155,7 +169,7 @@ def write_event_catalog(frame: pd.DataFrame, output_file: str | Path) -> None:
         write_event_catalog(events, "events.cat")
         ```
     """
-    times = pd.to_datetime(frame["time"], utc=True).dt.strftime("%Y/%m/%d,%H:%M:%S")
+    times = pd.to_datetime(frame["time"], utc=True).dt.strftime("%Y/%m/%d,%H:%M:%S.%f")
     Path(output_file).write_text(
         "".join(f"{value}\n" for value in times), encoding="utf-8"
     )

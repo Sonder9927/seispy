@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from obspy import UTCDateTime
+from seispy.archive import WaveformIdentity
+from seispy.event.archive_index import WaveformRecord
 
 module = import_module("seispy.event.cutting")
 
@@ -36,7 +38,16 @@ def test_no_data_is_counted_with_one_sample(tmp_path):
 def test_read_failures_are_compact(tmp_path):
     inputs = [tmp_path / f"{index}.sac" for index in range(3)]
     index = SimpleNamespace(
-        overlapping=lambda *args: tuple(SimpleNamespace(path=path) for path in inputs)
+        overlapping=lambda *args: tuple(
+            WaveformRecord(
+                path,
+                WaveformIdentity("NZ", "AAA", "", "BHZ", _event()["start"]),
+                _event()["start"],
+                _event()["end"],
+                1.0,
+            )
+            for path in inputs
+        )
     )
     with patch.object(module.obspy, "read", side_effect=RuntimeError("bad SAC")):
         result = module.cut_event_station(

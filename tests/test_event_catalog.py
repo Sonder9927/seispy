@@ -20,7 +20,9 @@ def test_load_events_preserves_subsecond_origin_time(tmp_path):
 
     event = load_events(catalog, 10)[0]
 
-    assert event["start"].microsecond == 678_000
+    assert event["start"].microsecond == 0
+    assert event["origin"].microsecond == 678_000
+    assert event["end"] - event["start"] == 10
 
 
 def test_station_csv_requires_network_for_multiple_networks(tmp_path):

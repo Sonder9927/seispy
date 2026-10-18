@@ -6,6 +6,7 @@ _EXPORTS = {
     "cut_event_waveforms": ("seispy.event.cutting", "cut_event_waveforms"),
     "CutEventIssue": ("seispy.event.cutting", "CutEventIssue"),
     "CutEventSummary": ("seispy.event.cutting", "CutEventSummary"),
+    "CutEventCoverage": ("seispy.event.cutting", "CutEventCoverage"),
     "cut_events_binary": ("seispy.event.external", "cut_events_binary"),
     "filter_events": ("seispy.event.catalog", "filter_events"),
     "write_event_catalog": ("seispy.event.catalog", "write_event_catalog"),

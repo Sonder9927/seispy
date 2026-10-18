@@ -2,6 +2,16 @@
 
 Prepare event catalogs and cut event windows from continuous waveform data.
 
+Both cutters request windows beginning at the event origin floored to an
+integer UTC second, ending at that start plus `time_window`. The precise origin
+is retained in SAC `o`; samples are selected on the original grid without
+interpolation. Python preserves gaps as separate files rather than padding
+missing data with zero. See [time alignment, filenames, and discontinuous-data
+behavior](../recipes/cut-events.md) before comparing backends.
+
+External cutting tools are supplied separately; their source and binaries are
+not distributed with SeisPy.
+
 ## Functions
 
 ### Filter event catalogs

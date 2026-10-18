@@ -149,8 +149,8 @@ def test_cut_keeps_same_channel_different_locations_separate(tmp_path):
     outputs = sorted((tmp_path / "events").rglob("*.sac"))
     assert result.succeeded == 1
     assert result.outputs == 2
-    assert any(".10.BHZ.sac" in path.name for path in outputs)
-    assert any(".20.BHZ.sac" in path.name for path in outputs)
+    assert any(".10.BHZ." in path.name for path in outputs)
+    assert any(".20.BHZ." in path.name for path in outputs)
 
 
 def test_cut_preserves_gaps_as_named_segments(tmp_path):
@@ -168,7 +168,8 @@ def test_cut_preserves_gaps_as_named_segments(tmp_path):
 
     outputs = sorted((tmp_path / "events").rglob("*.sac"))
     assert result.outputs == 2
-    assert all("NZ.WEL.--.BHZ.T" in path.name for path in outputs)
+    assert all(path.name.startswith("NZ.WEL.--.BHZ.") for path in outputs)
+    assert [path.name.rsplit(".", 2)[1] for path in outputs] == ["s01", "s02"]
     assert [path.parent.parts[-2:] for path in outputs] == [
         ("NZ", "WEL"),
         ("NZ", "WEL"),

@@ -19,6 +19,7 @@ class WaveformRecord:
     identity: WaveformIdentity
     starttime: UTCDateTime
     endtime: UTCDateTime
+    delta: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,17 @@ class WaveformArchiveIndex:
     def __init__(self, buckets, issues=()):
         self._buckets = buckets
         self.issues = tuple(issues)
+        stations = defaultdict(dict)
+        for key, records in buckets.items():
+            stations[key[:2]].update((record.path, record) for record in records)
+        self._stations = {
+            key: tuple(sorted(records.values(), key=lambda item: item.path))
+            for key, records in stations.items()
+        }
+        self._padding = {
+            key: max(record.delta for record in records) / 2
+            for key, records in self._stations.items()
+        }
 
     @classmethod
     def build(
@@ -58,7 +70,11 @@ class WaveformArchiveIndex:
                 if stations is not None and station_key not in stations:
                     continue
                 record = WaveformRecord(
-                    path, identity, trace.stats.starttime, trace.stats.endtime
+                    path,
+                    identity,
+                    trace.stats.starttime,
+                    trace.stats.endtime,
+                    trace.stats.delta,
                 )
                 for day in _covered_days(record.starttime, record.endtime):
                     buckets[(*station_key, day)].append(record)
@@ -78,24 +94,24 @@ class WaveformArchiveIndex:
 
     @property
     def station_keys(self) -> tuple[tuple[str, str], ...]:
-        return tuple(sorted({key[:2] for key in self._buckets}))
+        return tuple(sorted(self._stations))
 
     def records_for_station(self, network, station) -> tuple[WaveformRecord, ...]:
-        records = {}
-        for key, items in self._buckets.items():
-            if key[:2] == (network, station):
-                records.update((item.path, item) for item in items)
-        return tuple(sorted(records.values(), key=lambda item: item.path))
+        return self._stations.get((network, station), ())
 
     def overlapping(
         self, network: str, station: str, starttime, endtime
     ) -> tuple[WaveformRecord, ...]:
         """Return records whose header time spans intersect the requested window."""
         unique = {}
-        for day in _covered_days(starttime, endtime):
+        padding = self._padding.get((network, station), 0)
+        for day in _covered_days(starttime - padding, endtime + padding):
             for record in self._buckets.get((network, station, day), ()):
                 if intervals_overlap(
-                    record.starttime, record.endtime, starttime, endtime
+                    record.starttime,
+                    record.endtime,
+                    starttime - record.delta / 2,
+                    endtime + record.delta / 2,
                 ):
                     unique[record.path] = record
         return tuple(sorted(unique.values(), key=lambda item: item.path))
@@ -104,21 +120,62 @@ class WaveformArchiveIndex:
 class WaveformReader:
     """Bounded LRU cache for full waveform reads during chronological cuts."""
 
-    def __init__(self, max_files: int = 8):
+    def __init__(self, max_files: int = 8, max_bytes: int = 256 * 1024**2):
         if max_files < 1:
             raise ValueError("max_files must be at least 1")
+        if max_bytes < 0:
+            raise ValueError("max_bytes cannot be negative")
         self._max_files = max_files
+        self._max_bytes = max_bytes
         self._cache = OrderedDict()
+        self._cached_bytes = 0
 
-    def read(self, record: WaveformRecord):
+    @property
+    def cached_bytes(self):
+        """Bytes of sample arrays retained in the cache, excluding metadata."""
+        return self._cached_bytes
+
+    def read(
+        self, record: WaveformRecord, *, starttime=None, endtime=None, padding_samples=0
+    ):
+        """Return independent samples, copying only the requested window.
+
+        Full reads remain available for overlap comparisons. A record larger
+        than the byte budget is read but never retained. The budget controls
+        retained arrays, not peak memory during reads, copies, or merging.
+        """
         try:
             stream = self._cache.pop(record.path)
         except KeyError:
             stream = obspy.read(record.path)
-        self._cache[record.path] = stream
-        while len(self._cache) > self._max_files:
-            self._cache.popitem(last=False)
-        return stream.copy()
+            for trace in stream:
+                trace.data.flags.writeable = False
+            size = sum(trace.data.nbytes for trace in stream)
+            if size <= self._max_bytes:
+                self._cache[record.path] = stream
+                self._cached_bytes += size
+        else:
+            self._cache[record.path] = stream
+        while (
+            len(self._cache) > self._max_files or self._cached_bytes > self._max_bytes
+        ):
+            _, removed = self._cache.popitem(last=False)
+            self._cached_bytes -= sum(trace.data.nbytes for trace in removed)
+        if len(stream) != 1:
+            raise ValueError("SAC file must contain exactly one trace")
+        if WaveformIdentity.from_trace(stream[0]) != record.identity:
+            raise ValueError("SAC identity changed after archive indexing")
+        if starttime is None and endtime is None:
+            return stream.copy()
+        result = obspy.Stream()
+        for trace in stream:
+            padding = padding_samples * trace.stats.delta
+            first = starttime - padding if starttime is not None else None
+            last = endtime + padding if endtime is not None else None
+            # Trace.slice copies metadata but shares sample storage. Copy only
+            # after slicing so callers can mutate without touching the cache.
+            result += trace.slice(first, last, nearest_sample=True).copy()
+        return result
 
 
 def intervals_overlap(first_start, first_end, second_start, second_end) -> bool:

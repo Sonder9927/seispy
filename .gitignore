@@ -19,3 +19,7 @@ logs/
 
 # Virtual environments
 .venv
+
+# Locally supplied private event-cutting toolchain (not distributed)
+/cut_data_linux/
+/bin/
