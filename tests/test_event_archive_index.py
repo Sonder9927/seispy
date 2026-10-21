@@ -170,10 +170,9 @@ def test_cut_preserves_gaps_as_named_segments(tmp_path):
     assert result.outputs == 2
     assert all(path.name.startswith("NZ.WEL.--.BHZ.") for path in outputs)
     assert [path.name.rsplit(".", 2)[1] for path in outputs] == ["s01", "s02"]
-    assert [path.parent.parts[-2:] for path in outputs] == [
-        ("NZ", "WEL"),
-        ("NZ", "WEL"),
-    ]
+    assert all(
+        path.parent == tmp_path / "events" / "20250102000000" for path in outputs
+    )
 
 
 def test_public_cutting_workflow_uses_arbitrary_source_layout(tmp_path):
@@ -203,8 +202,10 @@ def test_public_cutting_workflow_uses_arbitrary_source_layout(tmp_path):
 
     assert summary.succeeded == 2
     assert summary.outputs_written == 2
-    assert (output / "20250102T000000123" / "NZ" / "WEL").is_dir()
-    assert (output / "20250102T000000123" / "NZ" / "ABC").is_dir()
+    assert {str(path.relative_to(output)) for path in output.rglob("*.sac")} == {
+        "20250102000000/NZ.WEL.10.BHZ.20250102000000.sac",
+        "20250102000000/NZ.ABC.10.BHZ.20250102000000.sac",
+    }
 
 
 def test_existing_event_output_is_not_overwritten(tmp_path):

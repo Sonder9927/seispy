@@ -125,6 +125,7 @@ def deconvolve_waveforms(
     save_log: bool = True,
     pre_filt: PreFilter = DEFAULT_PRE_FILTER,
     decimate_factors: int | Sequence[int] | None = None,
+    post_decimate_factors: int | Sequence[int] | None = None,
     trace_filter: TraceFilter = DEFAULT_TRACE_FILTER,
     overwrite: bool = True,
 ) -> DeconvolutionSummary:
@@ -159,9 +160,15 @@ def deconvolve_waveforms(
             requested low-frequency corners.
         decimate_factors: Optional factor or ordered factors from 2 through 7.
             After detrending and tapering, decimation with anti-alias filtering
-            is applied before instrument-response removal. The final Nyquist
+            is applied before instrument-response removal. The response-removal Nyquist
             frequency must stay above the second ``pre_filt`` corner. By
             default, no decimation is performed.
+        post_decimate_factors: Optional factor or ordered factors from 2 through
+            7, applied after response removal and before writing the final SAC.
+            No intermediate waveform file or extra float32 conversion is made
+            between response removal and post-decimation on the ObsPy backend.
+            ``pre_filt`` is evaluated at the response-removal sampling rate,
+            after ``decimate_factors`` only. Defaults to no post-decimation.
         trace_filter: Skip traces that cannot be processed meaningfully, such
             as single-sample, very short, or constant traces. Filtering is
             counted as skipped, never as a failure.
@@ -186,10 +193,10 @@ def deconvolve_waveforms(
     Notes:
         The default 150-second taper cap and
         ``pre_filt=(0.004, 0.006, 4.0, 5.0)`` target surface-wave periods up to
-        150 seconds and body-wave frequencies up to 2 Hz. With integrated
-        decimation, the final Nyquist frequency is checked before response
-        removal. High-frequency pre-filter corners are lowered to fit below
-        Nyquist when possible. Processing fails if the second corner leaves no
+        150 seconds and body-wave frequencies up to 2 Hz. With pre-response
+        decimation, Nyquist is checked at the response-removal rate, before
+        any post-decimation. High-frequency pre-filter corners are lowered to
+        fit below Nyquist when possible. Processing fails if the second corner leaves no
         room for a rolloff below ``0.95 * Nyquist``; the caller must still
         confirm that the adjusted passband covers the scientific frequency
         range of interest.
@@ -226,6 +233,7 @@ def deconvolve_waveforms(
         raise ValueError("files_per_pool must be a positive integer or None")
     pre_filt = _validate_pre_filt(pre_filt)
     factors = _normalize_decimate_factors(decimate_factors)
+    post_factors = _normalize_decimate_factors(post_decimate_factors)
     _deconvolution_backend(backend)
     output_path = _resolve_output_dir(src_path, output_dir)
     worker_error_samples = min(max_error_samples, 1)
@@ -272,7 +280,8 @@ def deconvolve_waveforms(
             )
             run.info(
                 "run_id=%s backend=%s source_dir=%s output_dir=%s pattern=%s "
-                "max_workers=%d batch_size=%d decimate_factors=%s overwrite=%s",
+                "max_workers=%d batch_size=%d decimate_factors=%s "
+                "post_decimate_factors=%s overwrite=%s",
                 run_id,
                 backend,
                 src_path,
@@ -281,6 +290,7 @@ def deconvolve_waveforms(
                 max_workers,
                 actual_batch_size,
                 factors,
+                post_factors,
                 overwrite,
             )
             compact = _run_deconvolution_batches(
@@ -301,6 +311,7 @@ def deconvolve_waveforms(
                 run,
                 files_per_pool=files_per_pool,
                 overwrite=overwrite,
+                post_decimate_factors=post_factors,
             )
             summary = run.complete(
                 DeconvolutionSummary(
@@ -400,6 +411,7 @@ def _run_deconvolution_batches(
     *,
     files_per_pool=1024,
     overwrite=True,
+    post_decimate_factors=(),
 ):
     if not targets:
         return _WorkerSummary()
@@ -442,6 +454,7 @@ def _run_deconvolution_batches(
                             factors,
                             trace_filter,
                             overwrite,
+                            post_decimate_factors,
                         )
                         futures[future] = batch
                     if not futures:
@@ -484,6 +497,7 @@ def _process_worker_batch(
     factors,
     trace_filter=DEFAULT_TRACE_FILTER,
     overwrite=True,
+    post_decimate_factors=(),
 ):
     if _WORKER_BACKEND == "obspy":
         return _process_obspy_targets(
@@ -496,6 +510,7 @@ def _process_worker_batch(
             factors,
             trace_filter,
             overwrite=overwrite,
+            post_decimate_factors=post_decimate_factors,
         )
     if _WORKER_BACKEND == "sac":
         environment = os.environ.copy()
@@ -512,6 +527,7 @@ def _process_worker_batch(
             factors,
             trace_filter,
             overwrite=overwrite,
+            post_decimate_factors=post_decimate_factors,
         )
     raise ValueError(f"Unknown backend: {_WORKER_BACKEND}")
 
@@ -714,6 +730,7 @@ def _process_obspy_targets(
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
     overwrite=True,
+    post_decimate_factors=(),
 ):
     return _combine_batches(
         (
@@ -727,6 +744,7 @@ def _process_obspy_targets(
                 decimate_factors,
                 trace_filter,
                 overwrite=overwrite,
+                post_decimate_factors=post_decimate_factors,
             )
             for target in targets
         ),
@@ -744,6 +762,7 @@ def _process_one_obspy_target(
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
     overwrite=True,
+    post_decimate_factors=(),
 ):
     succeeded = failed = skipped = filtered_traces = 0
     samples = []
@@ -778,7 +797,9 @@ def _process_one_obspy_target(
                 _final_sampling_rate(
                     trace.stats.sampling_rate, decimate_factors, pre_filt
                 )
-            if _existing_outputs_complete(kept, destinations, decimate_factors):
+            if _existing_outputs_complete(
+                kept, destinations, (*decimate_factors, *post_decimate_factors)
+            ):
                 return _WorkerSummary(
                     total=1,
                     skipped=1,
@@ -792,6 +813,9 @@ def _process_one_obspy_target(
             pre_filt=pre_filt,
             decimate_factors=decimate_factors,
         )
+        if post_decimate_factors:
+            for trace in processed:
+                _sac_compatible_decimate_trace(trace, post_decimate_factors)
         destinations = _obspy_destinations(target, processed, src_root, output_dir)
         for trace, destination in zip(processed, destinations, strict=True):
             temporary = temporary_output_path(destination)
@@ -876,6 +900,7 @@ def _process_sac_batch(
     decimate_factors,
     trace_filter=DEFAULT_TRACE_FILTER,
     overwrite=True,
+    post_decimate_factors=(),
 ):
     """Run a bounded group of files in one SAC process."""
     failed = skipped = existing_skipped = 0
@@ -919,7 +944,7 @@ def _process_sac_batch(
                 trace.stats.sampling_rate, decimate_factors, pre_filt
             )
             if not overwrite and _existing_outputs_complete(
-                (trace,), (destination,), decimate_factors
+                (trace,), (destination,), (*decimate_factors, *post_decimate_factors)
             ):
                 skipped += 1
                 existing_skipped += 1
@@ -945,9 +970,10 @@ def _process_sac_batch(
                 f"trans from pol s {combined_pz} to none freq "
                 f"{f1:g} {f2:g} {f3:g} {f4:g}",
                 "mul 1.0e9",
-                f"w {temporary}",
             )
         )
+        commands.extend(f"decimate {factor}" for factor in post_decimate_factors)
+        commands.append(f"w {temporary}")
 
     if prepared:
         try:
@@ -986,6 +1012,7 @@ def _process_sac_batch(
                     decimate_factors,
                     trace_filter,
                     overwrite=overwrite,
+                    post_decimate_factors=post_decimate_factors,
                 )
                 for group in (prepared[:middle], prepared[middle:])
             ]
@@ -1008,7 +1035,7 @@ def _process_sac_batch(
                 _validate_deconvolved_file(
                     temporary,
                     expected=expected,
-                    decimate_factors=decimate_factors,
+                    decimate_factors=(*decimate_factors, *post_decimate_factors),
                 )
                 commit_output(temporary, destination, overwrite=True)
             except Exception as exc:

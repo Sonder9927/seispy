@@ -77,7 +77,8 @@ def test_obspy_preprocesses_then_decimates_before_removing_response():
     assert calls == ["detrend", "detrend", "taper", "decimate", "response"]
 
 
-def test_sac_decimation_commands_precede_response_removal(tmp_path):
+@pytest.mark.parametrize("post", [(), (5,)])
+def test_sac_decimation_commands_precede_response_removal(tmp_path, post):
     source_root = tmp_path / "source"
     station = source_root / "STA"
     station.mkdir(parents=True)
@@ -113,6 +114,7 @@ def test_sac_decimation_commands_precede_response_removal(tmp_path):
             remove_response.DEFAULT_PRE_FILTER,
             {},
             (5, 5, 4),
+            post_decimate_factors=post,
         )
 
     assert result.succeeded == 1
@@ -120,3 +122,7 @@ def test_sac_decimation_commands_precede_response_removal(tmp_path):
     assert script.index("rmean; rtr; taper") < script.index("decimate 5")
     assert script.index("decimate 5") < script.index("trans from pol")
     assert script.index("decimate 4") < script.index("trans from pol")
+    if post:
+        assert (
+            script.index("mul 1.0e9") < script.rindex("decimate 5") < script.index("w ")
+        )

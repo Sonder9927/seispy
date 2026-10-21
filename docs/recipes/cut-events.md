@@ -9,7 +9,7 @@ description: Extract event-centered windows from continuous SAC or MiniSEED arch
 
 `event.cut_event_waveforms(source_dir, event_csv, output_dir=..., ...)`
 
-**Output:** `event/network/station` directories containing losslessly merged SAC
+**Output:** `output_dir/YYYYmmddHHMMSS/` directories containing losslessly merged SAC
 windows. Gaps and conflicting overlaps remain as explicitly named segments.
 
 ### Inputs
@@ -107,8 +107,9 @@ SAC reference time is the integer-second cut start. `o` stores
 the original event's fractional-second offset, while `b` and `e` locate the first
 and last samples relative to that reference. Existing `a`, `f`, and `t0`–`t9`
 markers are shifted to preserve their absolute times. All segments of an event
-share the same reference. Event directory names retain microseconds when the
-origin is not aligned to milliseconds, avoiding sub-millisecond collisions.
+share the same reference. Event directories use the UTC event origin formatted
+as `%Y%m%d%H%M%S`. Catalogs containing multiple events in the same UTC second
+are rejected before writing because their output paths would collide.
 Distance and azimuth headers are recalculated for the new event when both event
 and station coordinates are available; stale geometry is removed otherwise.
 
@@ -118,15 +119,16 @@ Every Python output filename includes the event time through UTC integer
 seconds, even when the waveform is split into segments:
 
 ```text
-NZ.ABAZ.11.HHZ.20240102000000.sac       # one continuous output
-NZ.ABAZ.11.HHZ.20240102000000.s01.sac   # first segment
-NZ.ABAZ.11.HHZ.20240102000000.s02.sac   # second segment
+output_dir/20240102000000/NZ.ABAZ.11.HHZ.20240102000000.sac
+output_dir/20240102000000/NZ.ABAZ.11.HHZ.20240102000000.s01.sac
+output_dir/20240102000000/NZ.ABAZ.11.HHZ.20240102000000.s02.sac
 ```
 
 The timestamp is the event time, not the individual segment start. Segment
 start times are stored in the SAC headers. Empty location codes use `--`.
-Event directories retain the precise origin to distinguish events within the
-same second. Existing files are not renamed automatically.
+Files are placed directly in the event directory, without network or station
+subdirectories. Fractional origin times remain in SAC `o`. Existing files are
+not renamed automatically.
 
 ## Discontinuous data: Python versus external tools
 
@@ -195,9 +197,8 @@ For continuous data on an integer-second sample grid, integer-Hz rates and
 integer-second windows, the two methods select identical samples, including
 the last sample. Arbitrary fractional window lengths or off-grid source times
 can still expose the C cutter's one-microsecond endpoint subtraction.
-The binary wrapper rejects catalogs with more than one event in the same
-integer second, because the C output directory naming would collide; Python
-retains precise event directory identities.
+Both wrappers reject catalogs with more than one event in the same integer
+second to avoid output path collisions.
 For opt-in compiled-cutter regression tests, set `SEISPY_CUT_BIN_DIR` to the
 directory containing both executables and run
 `pytest tests/test_event_binary_equivalence.py`.

@@ -101,6 +101,58 @@ if __name__ == "__main__":
 Reports and logs are enabled by default under `output_dir/logs` and flush batch
 progress periodically. See [Batch reports and logs](batch-reports.md).
 
+## Remove response and write only the final sampling rate
+
+Use `decimate_factors` before response removal and `post_decimate_factors`
+after response removal. Both default to `None` and accept integer factors
+from 2 through 7. For 100 Hz input, the following workflow performs
+100 Hz → 25 Hz → response removal → 5 Hz, writing only the final 5 Hz SAC:
+
+```python
+from seispy import deconvolution
+
+
+def main():
+    summary = deconvolution.deconvolve_waveforms(
+        "data/mseed",
+        "data/metadata/stations.xml",
+        backend="obspy",
+        pattern="*.mseed",
+        output_dir="data/sac_5hz",
+        decimate_factors=[4],
+        post_decimate_factors=[5],
+        pre_filt=(0.004, 0.006, 4.0, 5.0),
+        overwrite=False,
+        max_workers=2,
+    )
+    print(f"Processed: {summary.succeeded}, already complete: {summary.existing_skipped}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The ObsPy backend applies the bundled SAC Community FIR coefficients in memory;
+no 25 Hz waveform is written or reread. The float64 response-removal result
+feeds the post-decimation filter directly, without an extra float32 conversion
+between those stages. The final SAC waveform is still stored as float32.
+Consequently this workflow need not be bit-identical to writing and rereading
+a 25 Hz SAC between the two operations. The SAC backend similarly applies
+post-decimation after response transfer and before its final write.
+
+`pre_filt` is evaluated at the **response-removal rate** (25 Hz here), not the
+final output rate. The example retains the requested high-frequency corners
+at 4 and 5 Hz before the final anti-alias filter. This differs from putting
+`[4, 5]` entirely in `decimate_factors`, which removes response at 5 Hz and
+adjusts those corners to 2 and 2.375 Hz. Choose the final sampling rate and
+anti-alias passband to match the frequencies needed by the analysis.
+
+With `overwrite=False`, expected output rates and sample counts include both
+sets of factors. Changing their split, filter settings or inventory requires
+`overwrite=True` or a new output directory, even if the final rate is unchanged;
+resume checks cannot identify the processing history from headers alone.
+Normal logging and atomic temporary writes of the final output remain enabled.
+
 ## Resume after an interruption
 
 `overwrite=True` is the default: every selected input is processed again and
@@ -120,7 +172,7 @@ def main():
         output_dir="data/sac_deconvolved",
         overwrite=False,
         max_workers=2,
-        # Keep pre_filt, decimate_factors and trace_filter as in the first run.
+        # Keep both factor sets, pre_filt and trace_filter as in the first run.
     )
     print(f"Processed: {summary.succeeded}")
     print(f"Already complete: {summary.existing_skipped}")
@@ -136,7 +188,7 @@ all expected SAC filenames. One MiniSEED file can yield several segments;
 response removal is skipped only when **all** expected outputs pass basic
 checks: identity, sampling rate, point count, start time, SAC header amplitude
 extrema, and complete file length. Expected sampling rates and counts include
-any integrated decimation. The output sample arrays are not reread, so this
+both pre-response and post-response decimation. The output sample arrays are not reread, so this
 is a basic integrity check, not a check for every possible data corruption.
 
 If any output is missing, unreadable or invalid, the entire input file is
@@ -185,10 +237,10 @@ part of this workflow, pass `decimate_factors=[5, 5, 4]`, for example, to change
 100 Hz data to 1 Hz. Each factor must be an integer from 2 through 7. SeisPy
 removes the mean and trend, tapers the trace, then applies the SAC-compatible
 anti-alias filter at each decimation stage before removing the instrument
-response. The final Nyquist frequency must remain above the second `pre_filt`
-corner; otherwise that file fails with a clear error. Upper `pre_filt` corners
-are reduced when needed to finish the frequency taper below the final Nyquist
-frequency.
+response. The Nyquist frequency at response removal must remain above the
+second `pre_filt` corner; otherwise that file fails with a clear error. Upper
+`pre_filt` corners are reduced when needed to finish the frequency taper below
+the response-removal Nyquist frequency.
 
 The ObsPy backend also accepts MiniSEED by selecting it with, for example,
 `pattern="*.mseed"`. Output is always SAC: a single trace keeps the input stem
@@ -227,8 +279,9 @@ workflow:
 !!! warning "Nyquist adjustment during integrated decimation"
 
     When `decimate_factors` is set, SeisPy evaluates `pre_filt` against the
-    final sampling rate before removing the response. If the requested fourth
-    corner reaches or exceeds the final Nyquist frequency, the third and fourth
+    response-removal sampling rate, after pre-decimation but before any
+    post-decimation. If the requested fourth
+    corner reaches or exceeds the response-removal Nyquist frequency, the third and fourth
     corners automatically fall back to at most `0.80 × Nyquist` and
     `0.95 × Nyquist`. This keeps the frequency taper valid, but narrows the
     usable high-frequency band. If the second corner reaches or exceeds the

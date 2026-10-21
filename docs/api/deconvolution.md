@@ -12,7 +12,8 @@ to the separate [Inventory interface](inventory.md).
     The default `pre_filt=(0.004, 0.006, 4.0, 5.0)` and the 150-second taper
     cap are selected for workflows studying surface-wave periods up to 150
     seconds and body-wave frequencies up to 2 Hz. When `decimate_factors` is
-    provided, Nyquist is checked at the final sampling rate. High-frequency
+    provided, Nyquist is checked at the response-removal sampling rate,
+    before any `post_decimate_factors` are applied. High-frequency
     pre-filter corners that no longer fit are lowered automatically. The second
     corner must remain below the adjusted fourth corner (`0.95 × Nyquist`) so
     there is room for a valid rolloff; otherwise an error is raised. Automatic
@@ -26,6 +27,14 @@ including any existing sibling segments. MiniSEED is read and filtered before
 this decision. `summary.existing_skipped` counts complete inputs skipped this
 way and is included in `summary.skipped`. Keep the inventory, parameters and
 software version unchanged when resuming. See [resuming interrupted runs](../recipes/remove-response.md#resume-after-an-interruption).
+
+`decimate_factors` runs before response removal; `post_decimate_factors` runs
+afterward, in memory before writing the final SAC. For 100 Hz input, `[4]`
+before and `[5]` after gives 25 Hz response removal and 5 Hz final output.
+Only the pre-response factors affect `pre_filt`. ObsPy does not insert a
+float32 round-trip between response removal and post-decimation; final SAC
+storage is float32. Resume checks use the sampling rate and sample count after
+both stages. See the [single-write workflow](../recipes/remove-response.md#remove-response-and-write-only-the-final-sampling-rate).
 
 ::: seispy.deconvolution.removal.deconvolve_waveforms
 

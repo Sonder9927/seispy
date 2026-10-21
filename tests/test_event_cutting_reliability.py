@@ -263,16 +263,37 @@ def test_progress_counts_do_not_duplicate_or_drop_tasks(tmp_path, workers):
     assert sum(len(x.samples) for x in results) == 6
 
 
-def test_distinct_microsecond_events_do_not_collide(tmp_path):
+def test_same_second_event_does_not_overwrite_existing_output(tmp_path):
     root = tmp_path / "source"
     source_trace(root)
     index = WaveformArchiveIndex.build(root)
-    for offset in (0.123001, 0.123999):
-        result = cut_event_station(
-            event(offset), STATION, tmp_path / "out", archive_index=index
-        )
-        assert result.succeeded == 1
-    assert len(list((tmp_path / "out").rglob("*.sac"))) == 2
+    first = cut_event_station(
+        event(0.123001), STATION, tmp_path / "out", archive_index=index
+    )
+    path = next((tmp_path / "out").rglob("*.sac"))
+    original = path.read_bytes()
+    second = cut_event_station(
+        event(0.123999), STATION, tmp_path / "out", archive_index=index
+    )
+    assert first.succeeded == 1
+    assert second.failed == second.existing_outputs == 1
+    assert path.read_bytes() == original
+    assert len(list((tmp_path / "out").rglob("*.sac"))) == 1
+
+
+def test_public_cutter_rejects_same_second_events_before_writing(tmp_path):
+    root = tmp_path / "source"
+    source_trace(root)
+    catalog = tmp_path / "events.csv"
+    catalog.write_text(
+        "time,latitude,longitude,depth,mag\n"
+        "2024-01-02T00:00:00.123001Z,1,2,3,4\n"
+        "2024-01-02T00:00:00.123999Z,1,2,3,4\n"
+    )
+    output = tmp_path / "out"
+    with pytest.raises(ValueError, match="same UTC second"):
+        cut_event_waveforms(root, catalog, output_dir=output, max_workers=1)
+    assert not output.exists()
 
 
 def test_parallel_progress_can_be_closed_early(tmp_path):
@@ -356,3 +377,7 @@ def test_output_names_use_event_second_and_short_segment_suffix(tmp_path, fragme
         [f"{prefix}.s01.sac", f"{prefix}.s02.sac"] if fragmented else [f"{prefix}.sac"]
     )
     assert names == expected
+    assert all(
+        p.parent == tmp_path / "out" / "20240102000000"
+        for p in (tmp_path / "out").rglob("*.sac")
+    )

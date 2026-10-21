@@ -153,8 +153,10 @@ def cut_event_waveforms(
     Args:
         source_dir: Any directory tree containing SAC or MiniSEED waveforms.
             Directory names do not need to encode network, station, or date metadata.
-        event_csv: Event table consumed by :func:`load_events`.
-        output_dir: Destination root. Defaults to a sibling named
+        event_csv: Event table consumed by :func:`load_events`. Events must
+            occupy distinct UTC seconds to avoid output path collisions.
+        output_dir: Destination root. SAC files are placed directly in
+            ``YYYYmmddHHMMSS`` event directories. Defaults to a sibling named
             ``<source_dir.name>_events`` and must not be inside ``source_dir``.
         station_csv: Optional station table keyed by network and station.
         time_window: Window length in seconds, beginning at the event origin
@@ -213,6 +215,12 @@ def cut_event_waveforms(
         raise ValueError("output_dir must not be source_dir or one of its descendants")
 
     events = load_events(event_csv, time_window)
+    event_names = [_event_name(item["origin"]) for item in events]
+    if len(event_names) != len(set(event_names)):
+        raise ValueError(
+            "event_csv contains multiple events in the same UTC second; "
+            "second-resolution output paths would collide"
+        )
     events.sort(key=lambda item: item["start"])
     archive_index = WaveformArchiveIndex.build(source, pattern=pattern)
     stations = load_stations(set(archive_index.station_keys), station_csv)
@@ -593,7 +601,7 @@ def cut_event_station(
         max_error_samples if max_coverage_samples is None else max_coverage_samples
     )
     if waveform_data:
-        event_dir = Path(dest_dir) / event_name / network / station_name
+        event_dir = Path(dest_dir) / event_name
         event_dir.mkdir(parents=True, exist_ok=True)
         for identity_key, stream in waveform_data.items():
             try:
@@ -757,8 +765,7 @@ def _channel_coverage(traces, identity, event):
 
 
 def _event_name(starttime):
-    name = starttime.strftime("%Y%m%dT%H%M%S%f")
-    return name if starttime.microsecond % 1000 else name[:-3]
+    return starttime.strftime("%Y%m%d%H%M%S")
 
 
 def _event_output_name(identity_key, event_time, segment_index):

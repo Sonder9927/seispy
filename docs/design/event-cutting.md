@@ -1,6 +1,6 @@
 ---
 title: Event cutting design
-description: How continuous SAC files are selected and cut into event windows.
+description: How continuous SAC or MiniSEED files are selected and cut into event windows.
 ---
 
 # Event cutting design
@@ -13,10 +13,10 @@ event window.
 
 Each cut window begins at the UTC integer second containing the event origin
 (floor) and ends at that start plus `time_window`. The actual origin remains
-in the event identity and SAC `o` marker; it is not rounded in the source
+in the SAC `o` marker; it is not rounded in the source
 catalog. Sample-grid selection uses nearest samples without interpolation.
 
-Work is partitioned by the network/station identities found in SAC headers, not
+Work is partitioned by the network/station identities found in waveform headers, not
 by station directories. Each process receives one station at a time and handles
 its events chronologically. Full waveform reads use a bounded LRU cache; returned
 windows are copied so processing one event cannot mutate cached data used by
@@ -26,8 +26,9 @@ the cut window. Workers publish bounded incremental counters through a bounded
 process queue while retaining the station cache; completed futures advertise
 their message counts so final queue messages are never lost.
 
-Output grouping and filenames keep the complete network, station, location, and
-channel identity. Directly contiguous records and sample-identical overlaps are
+Outputs use `output_dir/YYYYmmddHHMMSS/NET.STA.LOC.CHA.YYYYmmddHHMMSS.sac`,
+with the complete network, station, location, and channel identity in each filename.
+Catalogs with multiple events in the same UTC second are rejected before writing. Directly contiguous records and sample-identical overlaps are
 merged without synthesizing samples. Gaps and conflicting overlaps are retained
 as separate segments. Filenames always include the event UTC timestamp through
 seconds; multiple segments append `.s01`, `.s02`, and so on. Existing outputs
