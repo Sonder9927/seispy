@@ -1,6 +1,6 @@
 ---
 title: Cut event windows
-description: Extract event-centered windows from continuous SAC archives.
+description: Extract event-centered windows from continuous SAC or MiniSEED archives.
 ---
 
 # Cut event windows
@@ -14,7 +14,7 @@ windows. Gaps and conflicting overlaps remain as explicitly named segments.
 
 ### Inputs
 
-- Any directory tree containing SAC files; directory names and layout are ignored
+- Any directory tree containing SAC or MiniSEED files; directory names and layout are ignored
 - An event CSV with time, longitude, latitude, depth, and magnitude
 - Optionally, a station metadata CSV
 
@@ -38,17 +38,54 @@ print(f"Outputs: {summary.outputs_written}")
 print(f"No data: {summary.no_data}")
 ```
 
+## Cut directly from a MiniSEED archive
+
+MiniSEED output from `waveform.archive_waveforms` can be used directly without
+converting the continuous archive to SAC:
+
+```python
+from seispy import event, waveform
+
+if __name__ == "__main__":
+    waveform.archive_waveforms(
+        "data/raw", "data/archive", output_format="mseed",
+    )
+    summary = event.cut_event_waveforms(
+        "data/archive", "data/catalog/events.csv",
+        pattern="*.mseed",
+        output_dir="data/events",
+        station_csv="data/metadata/stations.csv",
+        time_window=10_800,
+    )
+```
+
+The filename pattern still defaults to `"*.sac"` for existing callers. Set
+`pattern="*.mseed"` for MiniSEED input. Output is always SAC. Multi-trace files
+are indexed by individual trace, including separate channels, stations, and
+segments; cross-day traces are selected only once per window. File reads are
+shared through the per-worker cache when the file fits its budget. Gaps and
+conflicting overlaps remain segmented, just as with SAC input.
+
+MiniSEED has no SAC headers. The cutter creates event and time headers, and
+uses the optional station CSV for `latitude`, `longitude`, `elevation`, and
+`depth`. Without station coordinates these fields and derived geometry remain
+undefined. Supply the station CSV even if StationXML was used to validate the
+archive: MiniSEED does not retain those coordinates or SAC picks. Existing SAC
+input continues to preserve its station metadata and absolute pick times.
+
+## Window selection
+
 `time_window` is measured from the integer UTC second containing the event
 origin (floor, not rounding): an origin at `12:34:56.789` produces a window
 from `12:34:56.000` to `12:34:56.000 + time_window`. No interpolation is
 performed; sample selection still follows the input waveform grid.
-SeisPy reads each SAC header once to build a `(network, station, UTC day)` overlap index. Stations
+SeisPy reads each waveform file's headers once to build a `(network, station, UTC day)` overlap index. Stations
 are processed concurrently, while each worker handles one station's events in
 chronological order and reuses a bounded waveform cache. Selection is based on
 actual header identity and time coverage rather than paths or filename dates.
 
 `output_dir` defaults to a sibling named `<source_dir.name>_events`. It cannot be
-inside `source_dir`, so a later run never indexes its own products. Blank SAC
+inside `source_dir`, so a later run never indexes its own products. Blank
 location codes remain blank and are represented as `--` only in filenames.
 
 If `station_csv` is supplied, it must identify rows by `network,station` when

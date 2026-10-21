@@ -25,7 +25,7 @@ to a working example; change the paths and selectors to match your data.
 | Multiple SAC segments per day | one file per channel-day | [Merge continuous SAC files](recipes/merge-sac.md#example) |
 | Raw-count waveforms plus StationXML | physical units | [Remove instrument response](recipes/remove-response.md#example) |
 | High-rate waveforms | a lower sampling rate | [Decimate waveforms](recipes/decimate.md#scipy-example) |
-| Continuous SAC plus an event CSV | event windows | [Cut event windows](recipes/cut-events.md#example) |
+| Continuous SAC or MiniSEED plus an event CSV | event windows | [Cut event windows](recipes/cut-events.md#example) |
 | Event SAC plus metadata tables | populated SAC headers | [Format event SAC headers](recipes/format-headers.md#example) |
 | SAC plus drift metadata | corrected timestamps | [Correct station clock drift](recipes/correct-clock-drift.md#example) |
 | Three-component SAC plus orientation metadata | corrected horizontals | [Correct sensor orientation](recipes/correct-orientation.md#example) |

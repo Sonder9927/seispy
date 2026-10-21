@@ -1,4 +1,4 @@
-"""One-pass header index for continuous SAC event cutting."""
+"""One-pass header index for continuous SAC/MiniSEED event cutting."""
 
 from __future__ import annotations
 
@@ -20,6 +20,12 @@ class WaveformRecord:
     starttime: UTCDateTime
     endtime: UTCDateTime
     delta: float = 0.0
+    trace_index: int = 0
+
+    @property
+    def key(self):
+        """Identify a source trace independently of its day buckets."""
+        return self.path, self.trace_index
 
 
 @dataclass(frozen=True)
@@ -36,9 +42,9 @@ class WaveformArchiveIndex:
         self.issues = tuple(issues)
         stations = defaultdict(dict)
         for key, records in buckets.items():
-            stations[key[:2]].update((record.path, record) for record in records)
+            stations[key[:2]].update((record.key, record) for record in records)
         self._stations = {
-            key: tuple(sorted(records.values(), key=lambda item: item.path))
+            key: tuple(sorted(records.values(), key=lambda item: item.key))
             for key, records in stations.items()
         }
         self._padding = {
@@ -62,22 +68,30 @@ class WaveformArchiveIndex:
         for path in sorted(item for item in root.rglob(pattern) if item.is_file()):
             try:
                 stream = obspy.read(path, headonly=True)
-                if len(stream) != 1:
-                    raise ValueError("SAC file must contain exactly one trace")
-                trace = stream[0]
-                identity = WaveformIdentity.from_trace(trace)
-                station_key = (identity.network, identity.station)
-                if stations is not None and station_key not in stations:
-                    continue
-                record = WaveformRecord(
-                    path,
-                    identity,
-                    trace.stats.starttime,
-                    trace.stats.endtime,
-                    trace.stats.delta,
-                )
-                for day in _covered_days(record.starttime, record.endtime):
-                    buckets[(*station_key, day)].append(record)
+                if not stream:
+                    raise ValueError("Waveform file contains no traces")
+                records = []
+                for trace_index, trace in enumerate(stream):
+                    if trace.stats.npts == 0:
+                        continue
+                    identity = WaveformIdentity.from_trace(trace)
+                    station_key = (identity.network, identity.station)
+                    if stations is not None and station_key not in stations:
+                        continue
+                    records.append(
+                        WaveformRecord(
+                            path,
+                            identity,
+                            trace.stats.starttime,
+                            trace.stats.endtime,
+                            trace.stats.delta,
+                            trace_index,
+                        )
+                    )
+                for record in records:
+                    station_key = (record.identity.network, record.identity.station)
+                    for day in _covered_days(record.starttime, record.endtime):
+                        buckets[(*station_key, day)].append(record)
             except Exception as exc:
                 issues.append(ArchiveIndexIssue(path, f"{type(exc).__name__}: {exc}"))
         frozen = {key: tuple(records) for key, records in buckets.items()}
@@ -113,8 +127,8 @@ class WaveformArchiveIndex:
                     starttime - record.delta / 2,
                     endtime + record.delta / 2,
                 ):
-                    unique[record.path] = record
-        return tuple(sorted(unique.values(), key=lambda item: item.path))
+                    unique[record.key] = record
+        return tuple(sorted(unique.values(), key=lambda item: item.key))
 
 
 class WaveformReader:
@@ -161,14 +175,21 @@ class WaveformReader:
         ):
             _, removed = self._cache.popitem(last=False)
             self._cached_bytes -= sum(trace.data.nbytes for trace in removed)
-        if len(stream) != 1:
-            raise ValueError("SAC file must contain exactly one trace")
-        if WaveformIdentity.from_trace(stream[0]) != record.identity:
-            raise ValueError("SAC identity changed after archive indexing")
+        if record.trace_index >= len(stream):
+            raise ValueError("Waveform trace disappeared after archive indexing")
+        trace = stream[record.trace_index]
+        if (
+            WaveformIdentity.from_trace(trace) != record.identity
+            or trace.stats.starttime != record.starttime
+            or trace.stats.endtime != record.endtime
+            or (record.delta and trace.stats.delta != record.delta)
+        ):
+            raise ValueError("Waveform trace headers changed after archive indexing")
+        selected = obspy.Stream(traces=[trace])
         if starttime is None and endtime is None:
-            return stream.copy()
+            return selected.copy()
         result = obspy.Stream()
-        for trace in stream:
+        for trace in selected:
             padding = padding_samples * trace.stats.delta
             first = starttime - padding if starttime is not None else None
             last = endtime + padding if endtime is not None else None

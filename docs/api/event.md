@@ -9,6 +9,11 @@ interpolation. Python preserves gaps as separate files rather than padding
 missing data with zero. See [time alignment, filenames, and discontinuous-data
 behavior](../recipes/cut-events.md) before comparing backends.
 
+The Python cutter accepts SAC or MiniSEED input and always writes SAC. Use
+`pattern="*.mseed"` to cut directly from `waveform.archive_waveforms` MiniSEED
+output; the default remains `"*.sac"`. Station coordinates for MiniSEED input
+can be supplied through `station_csv`.
+
 External cutting tools are supplied separately; their source and binaries are
 not distributed with SeisPy.
 

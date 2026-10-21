@@ -148,11 +148,11 @@ def cut_event_waveforms(
     save_report: bool | None = True,
     save_log: bool = True,
 ) -> CutEventSummary:
-    """Cut event windows from continuous SAC data.
+    """Cut SAC event windows from continuous SAC or MiniSEED data.
 
     Args:
-        source_dir: Any directory tree containing SAC waveforms. Directory names
-            do not need to encode network, station, or date metadata.
+        source_dir: Any directory tree containing SAC or MiniSEED waveforms.
+            Directory names do not need to encode network, station, or date metadata.
         event_csv: Event table consumed by :func:`load_events`.
         output_dir: Destination root. Defaults to a sibling named
             ``<source_dir.name>_events`` and must not be inside ``source_dir``.
@@ -160,7 +160,8 @@ def cut_event_waveforms(
         time_window: Window length in seconds, beginning at the event origin
             floored to an integer UTC second. The precise origin remains in
             the output event identity and SAC ``o`` header.
-        pattern: Recursive source filename pattern.
+        pattern: Recursive source filename pattern. Defaults to ``"*.sac"``;
+            use ``"*.mseed"`` for MiniSEED archives. Output is always SAC.
         max_workers: Station workers. Defaults to the smaller of 5 and the CPU
             count. Each worker reuses waveform reads across chronological events.
         max_error_samples: Maximum number of issues retained in the summary.
@@ -530,7 +531,7 @@ def cut_event_station(
                     network,
                     station_name,
                     "no_data",
-                    "no matching SAC files found",
+                    "no matching waveform traces found",
                 ),
             )
         return _CutCounts(tasks=1, failed=1, no_data=1, samples=samples)
@@ -555,7 +556,9 @@ def cut_event_station(
                     padding_samples=2,
                 )
             if len(st) != 1:
-                raise ValueError("SAC file must contain exactly one trace")
+                raise ValueError(
+                    "Indexed waveform record must select exactly one trace"
+                )
             tr = st[0]
             identity = WaveformIdentity.from_trace(tr)
             key = (
@@ -810,8 +813,10 @@ def _trimmed_trace(merged_tr, event, station):
     # in o, and shift existing picks to preserve their absolute times.
     nztimes, _ = utcdatetime_to_sac_nztimes(event["start"])
     reference = get_sac_reftime(nztimes)
+    if "sac" not in trimed_tr.stats:
+        trimed_tr.stats.sac = {}
     sac = trimed_tr.stats.sac
-    old_reference = get_sac_reftime(sac)
+    old_reference = get_sac_reftime(sac) if sac else reference
     for name in ("a", "f", *(f"t{i}" for i in range(10))):
         value = sac.get(name)
         if value is not None and value != -12345.0:

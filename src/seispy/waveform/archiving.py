@@ -150,7 +150,9 @@ def archive_waveforms(
     Empty traces do not determine archive identity. Constant (flat-line) and
     non-finite traces are skipped rather than failed and are counted under
     traces_filtered. Native waveform reads run in isolated worker processes.
-    Source files are never modified or removed.
+    Source files are never modified or removed. MiniSEED outputs can be passed
+    directly to :func:`seispy.event.cut_event_waveforms` with
+    ``pattern="*.mseed"`` to create event SAC windows.
 
     Args:
         source_dir: Root containing raw MiniSEED responses or SAC files.
