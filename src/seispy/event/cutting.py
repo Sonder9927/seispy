@@ -13,7 +13,7 @@ import numpy as np
 import obspy
 from obspy.core.compatibility import round_away
 from obspy.io.sac.util import get_sac_reftime, utcdatetime_to_sac_nztimes
-from obspy.geodetics import gps2dist_azimuth, kilometer2degrees
+from seispy._sac_geometry import sac_geometry
 from seispy.archive import WaveformIdentity
 from seispy.workflow import (
     BatchRun,
@@ -860,22 +860,7 @@ def _trimmed_trace(merged_tr, event, station):
             header_updates[sac_name] = value
 
     trimed_tr.stats.sac.update(header_updates)
-    # Setting lcalda alone does not refresh existing distance fields when an
-    # ObsPy Trace is serialized. Never carry geometry from another event.
-    for name in ("dist", "az", "baz", "gcarc"):
-        sac.pop(name, None)
-    coordinates = [sac.get(name) for name in ("evla", "evlo", "stla", "stlo")]
-    if all(
-        value is not None and value != -12345.0 and np.isfinite(value)
-        for value in coordinates
-    ):
-        distance, azimuth, back_azimuth = gps2dist_azimuth(*coordinates)
-        sac.update(
-            dict(
-                dist=distance / 1000,
-                az=azimuth,
-                baz=back_azimuth,
-                gcarc=kilometer2degrees(distance / 1000),
-            )
-        )
+    sac.update(
+        sac_geometry(*(sac.get(name) for name in ("evla", "evlo", "stla", "stlo")))
+    )
     return trimed_tr

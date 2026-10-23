@@ -45,3 +45,7 @@ fills gaps with zero, while Python preserves the available segments. Agreement
 is expected for contiguous data on aligned integer-Hz grids with integer-second
 windows, not for missing data or unresolved conflicts. External sources and
 executables are user-supplied and are not part of this repository.
+
+Geometry uses the shared SAC header calculation: WGS84 ellipsoidal distance
+with GeographicLib and geocentric great-circle azimuths and angular distance.
+See [Distance and azimuth convention](../recipes/format-headers.md#distance-and-azimuth-convention).

@@ -26,7 +26,8 @@ root:
 <output>/logs/reports/<task>-<run_id>.json
 ```
 
-For in-place decimation or response removal, `<output>` is the source root.
+For in-place header formatting, decimation or response removal, `<output>` is
+the source root.
 
 ## Interpret run status
 

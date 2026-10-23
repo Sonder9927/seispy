@@ -316,7 +316,7 @@ def test_parallel_worker_failure_is_propagated(tmp_path):
 
 
 def test_event_distance_headers_are_recalculated(tmp_path):
-    from obspy.geodetics import gps2dist_azimuth
+    from seispy._sac_geometry import sac_geometry
 
     root = tmp_path / "source"
     path = source_trace(root)
@@ -333,10 +333,9 @@ def test_event_distance_headers_are_recalculated(tmp_path):
     assert result.succeeded == 1
     output = next((tmp_path / "out").rglob("*.sac"))
     raw = read(output)[0].stats.sac
-    expected = gps2dist_azimuth(35.0, 105.0, 30.0, 110.0)
-    assert raw.dist == pytest.approx(expected[0] / 1000, rel=1e-6)
-    assert raw.az == pytest.approx(expected[1], rel=1e-6)
-    assert raw.baz == pytest.approx(expected[2], rel=1e-6)
+    expected = sac_geometry(35.0, 105.0, 30.0, 110.0)
+    for key in ("dist", "az", "baz", "gcarc"):
+        assert raw[key] == pytest.approx(expected[key], rel=1e-6)
 
 
 def test_empty_half_sample_edge_does_not_discard_other_segments(tmp_path):
