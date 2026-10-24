@@ -58,6 +58,7 @@ nav:
       - Process waveforms:
           - MiniSEED to SAC: recipes/convert-miniseed.md
           - Merge by day: recipes/merge-sac.md
+          - Hourly to daily MiniSEED: recipes/hourly-to-daily.md
           - Remove response: recipes/remove-response.md
           - Decimate: recipes/decimate.md
       - Events and corrections:

@@ -3,6 +3,7 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "DailyMergeSummary": ("seispy.waveform.merge", "DailyMergeSummary"),
     "archive_waveforms": ("seispy.waveform.archiving", "archive_waveforms"),
     "WaveformArchiveIssue": (
         "seispy.waveform.archiving",

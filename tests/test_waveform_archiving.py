@@ -965,3 +965,35 @@ def test_merge_waveforms_by_day_separates_midnight_chunks(tmp_path):
         "NZ.HLRZ.10.EHE.2014.128.merged.sac",
     ]
     assert not (output / "merge-errors.txt").exists()
+
+
+def test_inventory_partial_epoch_warns_without_discarding_trace(monkeypatch):
+    from obspy.core.inventory import Channel, Network, Station
+
+    trace = _trace_at(
+        "2026-01-01", data=np.arange(100, dtype=np.int32), sampling_rate=10
+    )
+    channel = Channel(
+        code=trace.stats.channel,
+        location_code=trace.stats.location,
+        latitude=0,
+        longitude=0,
+        elevation=0,
+        depth=0,
+        sample_rate=10,
+        start_date=trace.stats.starttime + 2,
+    )
+    station = Station(
+        code=trace.stats.station,
+        latitude=0,
+        longitude=0,
+        elevation=0,
+        channels=[channel],
+    )
+    inventory = Inventory(
+        [Network(code=trace.stats.network, stations=[station])], "test"
+    )
+    monkeypatch.setattr(archiving, "_WORKER_INVENTORY", inventory)
+    warnings = archiving._inventory_warnings([trace])
+    assert len(warnings) == 1
+    assert "complete trace" in warnings[0]

@@ -522,9 +522,17 @@ def _validate_inventory(stream):
         channels = [channel for net in selected for sta in net for channel in sta]
         if not channels:
             raise ValueError(f"no inventory epoch matches {trace.id}")
+        covering = [
+            channel
+            for channel in channels
+            if (channel.start_date is None or channel.start_date <= stats.starttime)
+            and (channel.end_date is None or channel.end_date >= stats.endtime)
+        ]
+        if not covering:
+            raise ValueError(f"no inventory epoch covers the complete trace {trace.id}")
         if not any(
             abs(float(channel.sample_rate) - float(stats.sampling_rate)) <= 1e-6
-            for channel in channels
+            for channel in covering
         ):
             raise ValueError(
                 f"sample rate {stats.sampling_rate} does not match inventory "
