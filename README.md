@@ -49,7 +49,6 @@ only the optional workflows you need:
 ```bash
 uv sync --extra plot       # waveform-coverage plots
 uv sync --extra mcmc       # MCMC preparation and result collection
-uv sync --extra notebook   # interactive tutorials
 uv sync --all-extras       # every optional workflow
 ```
 
@@ -82,19 +81,12 @@ For complete, copyable workflows, start with the
 The documentation covers expected directory layouts, input tables, safety
 notes, output summaries, and the full public API.
 
-## Interactive GeoNet tutorial
+## OBS processing example
 
-To learn the complete workflow from raw StationXML analysis and location-code
-selection to XML-guided 100 Hz MiniSEED downloads, open the Chinese Marimo
-notebook from the repository root:
-
-```bash
-uv run marimo edit notebooks/geonet_nz_100hz_download.py
-```
-
-Use `uv run marimo run notebooks/geonet_nz_100hz_download.py` for a read-only
-application view. The notebook does not start the large waveform download until
-you explicitly click its download button.
+For ocean-bottom records that have already been resampled and noise-corrected,
+see the [OBS processing recipe](https://sonder9927.github.io/seispy/recipes/obs-processing.html).
+It calls independent archive, response-removal, clock-shift and orientation
+functions, retaining BHH only in the original archive.
 
 ## Development
 

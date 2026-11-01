@@ -83,6 +83,29 @@ summary = download.download_waveforms(
 )
 ```
 
+## Select complete sensor groups
+
+When preparing an XML-guided download, inspect
+`inventory.analyze_inventory(...)` for sample rates, locations and overlapping
+epochs before selecting the desired inventory. Keep these selection decisions
+explicit:
+
+- Select the network, region, time interval, sample rate and seismic channels
+  needed by the study.
+- Keep all three axes of a sensor group in the same location and valid time
+  interval. Do not combine one location's vertical with another's horizontals.
+- If equipment changed at different times, preserve the successive epochs.
+  If two complete sensor groups overlap in time, choose deliberately using
+  coverage and instrument metadata; a larger location code is not a universal
+  preference rule.
+- Preserve metadata gaps. A download selector cannot make an absent sensor
+  epoch valid.
+
+These are study-specific choices, not a fixed list of preferred stations or
+location windows. Save the selected response-level XML alongside the raw
+inventory so the download decisions remain inspectable. See the
+[Inventory interface](../api/inventory.md) for analysis and selection functions.
+
 !!! note "Restricted metadata"
 
     Pass both `username` and `password` when the FDSN service requires

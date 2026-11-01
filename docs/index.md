@@ -34,7 +34,7 @@ to a working example; change the paths and selectors to match your data.
 ## Complete workflows
 
 - [GeoNet: download and process one day](recipes/geonet-one-day-workflow.md)
-- [Interactive GeoNet notebook](recipes/geonet-100hz-notebook.md)
+- [OBS: archive, remove response, shift clocks, and rotate axes](recipes/obs-processing.md)
 
 ## Reference
 

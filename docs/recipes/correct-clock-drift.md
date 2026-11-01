@@ -16,8 +16,7 @@ description: Shift SAC timestamps from a StationXML linear clock model without r
 
 ## Example
 
-Run this after external station-name normalization, archival and seismic
-response removal. The current sample rate comes from the input SAC: OBS
+Run this after archival and seismic response removal. The current sample rate comes from the input SAC: OBS
 recordings acquired at 100 Hz and previously resampled to 50 Hz remain 50 Hz.
 BHH is excluded by the default channel selection.
 
@@ -28,7 +27,7 @@ from seispy import waveform
 def main():
     summary = waveform.correct_clock_drift(
         "data/obs/sac_deconvolved",
-        "data/obs/metadata/obs_stations.xml",
+        "data/obs/metadata/obs_inventory.xml",
         output_dir="data/obs/sac_clock_corrected",
         max_workers=2,
     )

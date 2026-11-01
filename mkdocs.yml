@@ -69,7 +69,7 @@ nav:
       - MCMC: recipes/mcmc.md
       - Complete workflows:
           - GeoNet one day: recipes/geonet-one-day-workflow.md
-          - Interactive notebook: recipes/geonet-100hz-notebook.md
+          - OBS processing: recipes/obs-processing.md
   - API reference:
       - Overview: api/index.md
       - Download: api/download.md

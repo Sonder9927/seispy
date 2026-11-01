@@ -17,8 +17,8 @@ cd seispy
 uv sync
 ```
 
-Run Python through the project environment with `uv run python`, or copy the
-following cells into a notebook using the same environment.
+Run Python through the project environment with `uv run python`. Save the
+complete example below as a Python script.
 
 ## Complete example
 

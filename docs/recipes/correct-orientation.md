@@ -27,7 +27,7 @@ from seispy import waveform
 def main():
     summary = waveform.correct_orientation(
         "data/obs/sac_clock_corrected",
-        "data/obs/metadata/obs_stations.xml",
+        "data/obs/metadata/obs_inventory.xml",
         output_dir="data/obs/sac_oriented",
         components=("BHZ", "BHN", "BHE"),
         apply_tilt=False,

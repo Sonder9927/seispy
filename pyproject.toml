@@ -22,9 +22,7 @@ mcmc = [
   "pyarrow>=25.0.1,<26",
   "xarray>=2025.1",
 ]
-notebook = ["marimo>=0.24.0"]
 all = [
-  "marimo>=0.24.0",
   "matplotlib>=3.10",
   "netcdf4>=1.7.4",
   "pyarrow>=25.0.1,<26",
@@ -46,7 +44,7 @@ dev = [
   "matplotlib>=3.10",
 ]
 docs = [
-  "mkdocs>=1.6.1",
+  "mkdocs>=1.6.1,<2",
   "mkdocs-material>=9.7.7",
   "mkdocstrings[python]>=1.0.6",
   "matplotlib>=3.10",
