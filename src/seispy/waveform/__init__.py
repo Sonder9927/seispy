@@ -3,6 +3,10 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "correct_clock_drift": ("seispy.waveform.clock", "correct_clock_drift"),
+    "correct_orientation": ("seispy.waveform.orientation", "correct_orientation"),
+    "CorrectionSummary": ("seispy.waveform._correction", "CorrectionSummary"),
+    "CorrectionIssue": ("seispy.waveform._correction", "CorrectionIssue"),
     "DailyMergeSummary": ("seispy.waveform.merge", "DailyMergeSummary"),
     "archive_waveforms": ("seispy.waveform.archiving", "archive_waveforms"),
     "WaveformArchiveIssue": (

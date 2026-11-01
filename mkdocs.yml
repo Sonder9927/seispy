@@ -61,11 +61,11 @@ nav:
           - Hourly to daily MiniSEED: recipes/hourly-to-daily.md
           - Remove response: recipes/remove-response.md
           - Decimate: recipes/decimate.md
-      - Events and corrections:
-          - Cut events: recipes/cut-events.md
-          - SAC headers: recipes/format-headers.md
           - Clock drift: recipes/correct-clock-drift.md
           - Orientation: recipes/correct-orientation.md
+      - Events and headers:
+          - Cut events: recipes/cut-events.md
+          - SAC headers: recipes/format-headers.md
       - MCMC: recipes/mcmc.md
       - Complete workflows:
           - GeoNet one day: recipes/geonet-one-day-workflow.md
@@ -78,7 +78,6 @@ nav:
       - Deconvolution: api/deconvolution.md
       - Decimate: api/decimate.md
       - Events: api/event.md
-      - Corrections: api/correct.md
       - MCMC: api/mcmc.md
   - Configuration and concepts:
       - Archive layout: design/archive-layout.md

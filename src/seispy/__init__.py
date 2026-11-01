@@ -7,7 +7,6 @@ _MODULES = {
     name: f"seispy.{name}"
     for name in (
         "archive",
-        "correct",
         "deconvolution",
         "download",
         "event",
@@ -21,7 +20,6 @@ _MODULES = {
 if TYPE_CHECKING:
     from seispy import (
         archive,
-        correct,
         deconvolution,
         download,
         event,

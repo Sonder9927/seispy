@@ -41,6 +41,14 @@ workflows.
 
 ::: seispy.waveform.headers.format_sac_headers
 
+### Correct clock drift
+
+::: seispy.waveform.clock.correct_clock_drift
+
+### Correct component orientation
+
+::: seispy.waveform.orientation.correct_orientation
+
 ## Result models
 
 These immutable summaries are returned by the corresponding batch functions.
@@ -65,3 +73,9 @@ Applications normally do not instantiate them directly.
 ### SAC formatting summary
 
 ::: seispy.waveform.headers.SacHeaderSummary
+
+### Waveform correction summary
+
+::: seispy.waveform._correction.CorrectionSummary
+
+::: seispy.waveform._correction.CorrectionIssue

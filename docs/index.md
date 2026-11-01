@@ -27,8 +27,8 @@ to a working example; change the paths and selectors to match your data.
 | High-rate waveforms | a lower sampling rate | [Decimate waveforms](recipes/decimate.md#scipy-example) |
 | Continuous SAC or MiniSEED plus an event CSV | event windows | [Cut event windows](recipes/cut-events.md#example) |
 | Event SAC plus metadata tables | populated SAC headers | [Format event SAC headers](recipes/format-headers.md#example) |
-| SAC plus drift metadata | corrected timestamps | [Correct station clock drift](recipes/correct-clock-drift.md#example) |
-| Three-component SAC plus orientation metadata | corrected horizontals | [Correct sensor orientation](recipes/correct-orientation.md#example) |
+| SAC plus StationXML clock model | shifted timestamps | [Correct station clock drift](recipes/correct-clock-drift.md#example) |
+| Three-component SAC plus StationXML directions | corrected Z/N/E | [Correct sensor orientation](recipes/correct-orientation.md#example) |
 | Inversion source datasets | grid inputs and collected results | [Run the MCMC workflow](recipes/mcmc.md#generate-grid-inputs) |
 
 ## Complete workflows
