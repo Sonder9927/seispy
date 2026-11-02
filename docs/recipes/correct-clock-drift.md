@@ -108,3 +108,30 @@ Identical three-component windows receive identical time shifts. If component
 windows differ, check the output grids; rotation will not interpolate them.
 
 [See all parameters](../api/waveform.md#correct-clock-drift).
+
+## Event directories
+
+Set `layout="event"` when the input root contains one subdirectory per event.
+The default `layout="archive"` retains continuous archive behavior. Event names
+are opaque identifiers; the functions do not infer origin times from them.
+Root `logs` and hidden directories are ignored. Matching SAC files directly
+under the root are rejected in event mode.
+
+Clock correction preserves event-relative input paths and filenames. Orientation
+groups by event, network, station and location instead of coverage day, so
+cross-midnight windows remain together and overlapping events remain isolated.
+Rotated files are written as `EVENT/NET.STA.LOC.CHA.EVENT.sac`, with `.s01`,
+`.s02`, etc. for multiple segments of one component. Blank locations use `--`.
+Reports and logs are written under the output root.
+
+```python
+if __name__ == "__main__":
+    waveform.correct_clock_drift(
+        "data/events_in", "data/metadata/inventory.xml",
+        output_dir="data/events_out", layout="event", max_workers=4,
+    )
+```
+
+Clock offsets are evaluated at each input record's midpoint. Correcting daily
+records before event cutting can therefore give slightly different timestamps
+from correcting the cut event records. Neither mode interpolates samples.

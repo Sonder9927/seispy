@@ -68,8 +68,10 @@ nav:
           - SAC headers: recipes/format-headers.md
       - MCMC: recipes/mcmc.md
       - Complete workflows:
-          - GeoNet one day: recipes/geonet-one-day-workflow.md
-          - OBS processing: recipes/obs-processing.md
+          - GeoNet continuous data: recipes/geonet-one-day-workflow.md
+          - OBS continuous data: recipes/obs-processing.md
+          - Teleseismic events from MiniSEED: recipes/teleseismic-processing.md
+          - OBS teleseismic events: recipes/obs-teleseismic.md
   - API reference:
       - Overview: api/index.md
       - Download: api/download.md

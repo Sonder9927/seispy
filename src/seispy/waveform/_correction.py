@@ -37,7 +37,7 @@ class CorrectionIssue:
 
 @dataclass(frozen=True)
 class CorrectionSummary(BatchSummary):
-    """Counters count files for clocks and station/location/day groups for rotation."""
+    """Counters count files for clocks and station/location/day or event groups for rotation."""
 
     total: int
     succeeded: int
@@ -61,6 +61,7 @@ def inputs(
     max_workers,
     files_per_pool,
     max_error_samples,
+    layout="archive",
 ):
     if (
         isinstance(max_workers, bool)
@@ -70,11 +71,22 @@ def inputs(
         raise ValueError("max_workers must be a positive integer")
     if max_error_samples < 0:
         raise ValueError("max_error_samples cannot be negative")
+    if layout not in {"archive", "event"}:
+        raise ValueError("layout must be archive or event")
     validate_files_per_pool(files_per_pool)
     source, output = resolve_separate_directory_trees(source_dir, output_dir)
     if not source.is_dir():
         raise NotADirectoryError(source)
     files = tuple(sorted(p for p in source.rglob(pattern) if p.is_file()))
+    if layout == "event":
+        files = tuple(
+            p
+            for p in files
+            if p.relative_to(source).parts[0] != "logs"
+            and not p.relative_to(source).parts[0].startswith(".")
+        )
+        if any(len(p.relative_to(source).parts) < 2 for p in files):
+            raise ValueError("event layout requires files inside event subdirectories")
     if not files:
         raise ValueError("No waveform files matched")
     inv = (
@@ -136,9 +148,12 @@ def mark(tr, operation):
     tr.stats.sac[slot] = marker
 
 
-def write_group(traces, output, overwrite):
+def write_group(traces, output, overwrite, *, destinations=None):
     """Stage and verify all outputs, then commit with rollback on ordinary errors."""
-    destinations = [WaveformIdentity.from_trace(t).sac_path(output) for t in traces]
+    if destinations is None:
+        destinations = [WaveformIdentity.from_trace(t).sac_path(output) for t in traces]
+    if len(destinations) != len(traces):
+        raise ValueError("Expected one destination per output trace")
     if len(set(destinations)) != len(destinations):
         raise ValueError("Several output segments map to the same canonical filename")
     if not overwrite and any(p.exists() for p in destinations):

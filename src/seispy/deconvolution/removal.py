@@ -7,6 +7,7 @@ import os
 import pickle
 import subprocess
 import tempfile
+import warnings
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -1092,9 +1093,12 @@ def _response_epoch_for_trace(inv, trace):
             float(metadata_rate), float(trace_rate), rtol=1e-7, atol=1e-9
         )
     ):
-        raise ValueError(
+        warnings.warn(
             f"sample rate mismatch for {trace.id}: waveform={trace_rate}, "
-            f"inventory={metadata_rate}"
+            f"inventory={metadata_rate}; expected for previously decimated data. "
+            "The original response is evaluated at the waveform sampling rate.",
+            UserWarning,
+            stacklevel=2,
         )
     selected.get_response(trace.id, stats.starttime)
     return selected, channel

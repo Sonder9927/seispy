@@ -181,3 +181,44 @@ def test_failed_sac_decimation_batch_writes_no_output(tmp_path):
 
     assert summary.failed == 3
     assert not list(output.rglob("*.sac"))
+
+
+@pytest.mark.parametrize("output_format", [None, "mseed", "sac"])
+def test_mseed_decimation_preserves_filtered_samples(tmp_path, output_format):
+    from obspy import UTCDateTime
+
+    source = tmp_path / "source"
+    source.mkdir()
+    trace = Trace(np.arange(4000, dtype=np.int32))
+    trace.stats.update(
+        dict(
+            network="XX",
+            station="AAA",
+            channel="BHZ",
+            sampling_rate=100,
+            starttime=UTCDateTime("2024-01-01"),
+        )
+    )
+    target = source / "day.mseed"
+    trace.write(str(target), format="MSEED", encoding="STEIM2")
+    expected = trace.copy()
+    decimate._sac_compatible_decimate_trace(expected, (4,))
+    output = tmp_path / "output"
+    result = decimate._scipy_decimate_batch(
+        [target],
+        (4,),
+        source,
+        output,
+        1,
+        output_format=output_format,
+    )
+    assert result.succeeded == 1, result.issue_samples
+    actual = read(str(output / ("day.sac" if output_format == "sac" else "day.mseed")))[
+        0
+    ]
+    assert actual.stats.sampling_rate == 25
+    assert actual.stats.starttime == trace.stats.starttime
+    np.testing.assert_array_equal(actual.data, expected.data)
+    if output_format != "sac":
+        assert actual.stats.mseed.encoding == "FLOAT32"
+    np.testing.assert_array_equal(read(str(target))[0].data, trace.data)

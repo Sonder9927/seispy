@@ -1,35 +1,33 @@
 ---
-title: Process OBS records after noise correction
-description: Archive 50 Hz ocean-bottom SAC, decimate to 25 Hz before response removal, shift clocks, and rotate axes.
+title: OBS continuous data
+description: Archive 50 Hz OBS SAC and produce daily 5 Hz displacement with clock and orientation corrections.
 ---
 
-# Process OBS records after noise correction
+# OBS continuous data
 
-Ocean-bottom seismometers (OBS) in this example are released from a ship and
-free-fall to the seafloor. Their horizontal axes need not point north and east,
-and their autonomous clocks can accumulate drift during deployment. Ocean
-currents and pressure variations also introduce tilt and seafloor-compliance
-noise. Transfer functions between horizontal, pressure and vertical observations
-can predict coherent noise for subtraction from the vertical component. See
-[Improving ambient noise cross-correlations in the noisy ocean bottom environment of the Juan de Fuca plate](https://academic.oup.com/gji/article/210/3/1787/3898835)
-for a published application.
+Archive the prepared OBS records, remove instrument responses, correct clock
+drift, and rotate the seismic axes. The result is daily 5 Hz Z/N/E displacement
+in nanometers. For earthquake windows and final 1 Hz products, reuse the source
+archive in [OBS teleseismic events](obs-teleseismic.md).
 
-This recipe begins after the supplied data have undergone these steps:
+## Source processing history
 
-1. The instruments recorded **100 Hz MiniSEED**.
-2. ObsPy `resample` reduced the records to **50 Hz**.
-3. Transfer-function processing reduced noise on Z that was coherent with the
-   horizontal components (tilt noise) and pressure observations (seafloor-compliance noise).
-4. The prepared records were saved as daily SAC files under `data/obs/sac_Zdenoise`.
+These ocean-bottom seismometers free-fall to the seafloor. Their horizontal
+axes need not point north and east, and autonomous clocks accumulate drift.
+Ocean currents and pressure variations introduce tilt and seafloor-compliance
+noise. The supplied data have already undergone:
 
-These steps are the input's processing history; the example does not repeat
-this resampling or transfer-function noise correction. **Subtracting tilt noise
-from Z is different from rotating three axes using their signed inclinations.**
-This OBS example does not apply three-dimensional tilt correction.
+1. Acquisition as 100 Hz MiniSEED.
+2. Reduction to 50 Hz with ObsPy `resample`.
+3. Transfer-function subtraction of Z noise coherent with horizontal and
+   pressure observations.
+4. Storage as daily SAC in `data/obs/sac_Zdenoise`.
 
-Transfer-function noise correction is also distinct from instrument-response
-removal. This example assumes the seismic inputs have not yet been deconvolved
-into physical units and retain their original instrument-response amplitude scale.
+This recipe does not repeat those steps. Transfer-function noise subtraction
+is distinct from instrument-response removal and three-dimensional axis
+rotation. Inputs must still retain their instrument-response amplitude scale.
+For an example of the noise method, see
+[Improving ambient noise cross-correlations in the noisy ocean bottom environment of the Juan de Fuca plate](https://academic.oup.com/gji/article/210/3/1787/3898835).
 
 ## Input and metadata
 
@@ -72,23 +70,21 @@ correction; that does not require processing it again here.
 
 ## Processing order
 
-**Archive at 50 Hz → decimate seismic channels to 25 Hz and remove their
-responses → shift clocks → rotate horizontal axes → retain Z/N/E at 25 Hz.**
+**Archive 50 Hz counts → decimate to 25 Hz and remove response → shift clocks
+→ rotate axes at 25 Hz → decimate to daily 5 Hz Z/N/E.**
 
-Response removal is evaluated at 25 Hz before clock shifting and before axes
-are mixed, allowing each sensor axis to use its own response. Time labels are
-then corrected before rotation on a shared sample grid. The program does not
-interpolate mismatched components into alignment.
+Remove each raw axis response before mixing axes. Correct timestamps before
+rotation, which requires a shared sample grid. Keep `01_archive` unchanged:
+it is also the starting point for [OBS event processing](obs-teleseismic.md).
+The continuous and event workflows are two branches from that archive; the
+event workflow does not require running the remaining daily stages first.
 
 <a id="example"></a>
 
 ## Runnable example
 
-Prepare the environment with `uv sync`. Save the complete code below as a
-Python script in the repository root, then run `uv run python <script.py>`.
-On a server, change `ROOT` to the directory containing the same input structure.
-The script calls independent public functions; it does not require a separate
-OBS pipeline interface.
+Run `uv sync`, save the complete script in the repository root, and run
+`uv run python <script.py>`. On a server, adjust `ROOT` to your data directory.
 
 ```python
 from pathlib import Path
@@ -100,11 +96,13 @@ ROOT = Path("data/obs")
 SRC = ROOT / "sac_Zdenoise"
 INVENTORY = ROOT / "metadata" / "obs_inventory.xml"
 WORK = ROOT / "processed"
+MAX_WORKERS = 4
 
 ARCHIVE = WORK / "01_archive"
 DECONVOLVED = WORK / "02_displacement_nm"
 CLOCK = WORK / "03_clock_shifted"
 ORIENTED = WORK / "04_zne"
+FINAL = WORK / "05_zne_5hz"
 
 
 def main():
@@ -115,7 +113,7 @@ def main():
         output_format="sac",
         inventory=INVENTORY,
         pattern="*.sac",
-        max_workers=4,
+        max_workers=MAX_WORKERS,
         overwrite=False,
     )
     print(archived)
@@ -130,7 +128,7 @@ def main():
         pattern="*BH[ZNE]*.sac",
         pre_filt=(0.004, 0.006, 4.0, 5.0),
         decimate_factors=[2],
-        max_workers=4,
+        max_workers=MAX_WORKERS,
         overwrite=False,
     )
     print(response)
@@ -139,8 +137,9 @@ def main():
         DECONVOLVED,
         INVENTORY,
         output_dir=CLOCK,
+        layout="archive",
         channels=("BHZ", "BHN", "BHE"),
-        max_workers=4,
+        max_workers=MAX_WORKERS,
         overwrite=False,
     )
     print(clocks)
@@ -149,108 +148,77 @@ def main():
         CLOCK,
         INVENTORY,
         output_dir=ORIENTED,
+        layout="archive",
         components=("BHZ", "BHN", "BHE"),
         apply_tilt=False,
-        max_workers=4,
+        max_workers=MAX_WORKERS,
         overwrite=False,
     )
     print(orientation)
-    print(f"Final Z/N/E archive: {ORIENTED}")
+    final = waveform.decimate_waveforms(
+        ORIENTED, factors=[5], output_dir=FINAL,
+        max_workers=MAX_WORKERS,
+    )
+    print(final)
+    print(f"Final 5 Hz Z/N/E archive: {FINAL}")
 
 
 if __name__ == "__main__":
     main()
 ```
 
-Stage outputs and inputs use separate directory trees. Keep the `main()` call
-inside the entry-point guard so the script works with multiprocessing across
-platforms.
+The script prints stage summaries. Inspect failures and warnings before using
+subsequent products; it does not automatically stop after every partial failure.
+Keep the guarded entry point for multiprocessing across platforms.
 
-The script prints each summary; inspect failures and
-warnings before using subsequent products, because it does not automatically
-stop on a returned partial-failure summary.
-
-## Settings and interpretation
-
-`decimate_factors=[2]` runs inside response removal: remove the mean and linear
-trend, apply the time taper, apply anti-alias FIR filtering and factor-two
-decimation, then deconvolve. This does not repeat the upstream ObsPy `resample`.
-
-At 25 Hz the Nyquist frequency is 12.5 Hz, above the 4/5 Hz high-side pre-filter
-corners, so those corners remain unchanged. No post-response decimation is
-requested. The input XML continues to describe the 50 Hz source records; do
-not change its source sampling rate to 25 Hz merely to describe derived products.
-
-| Operation | Setting | Result |
-| --- | --- | --- |
-| Archive | All `*.sac`, cross-checked with XML | BHH and three seismic channels preserved |
-| Response | ObsPy; `decimate_factors=[2]`; pre-filter 0.004/0.006/4/5 Hz | BHZ/BHN/BHE displacement in nm at 25 Hz |
-| Time taper | Existing default: Hann, at most 5% and 150 s per edge | Same validated response preprocessing |
-| Water level | Existing backend uses `water_level=None` | Pre-filter limits the inverse-response band |
-| Sample rate | 50 Hz archive, factor-two pre-response decimation | Subsequent products remain 25 Hz |
-| Clock | Offset evaluated at the record midpoint | Constant time-label shift, no interpolation |
-| Orientation | XML directions, `apply_tilt=False` | True N/E, upward Z preserved |
-
-Clock shifting retains the calculated fractional-sample offset without rounding
-to the 0.04 s output sampling interval. Samples, count and sampling interval do
-not change. This is the agreed **midpoint-shift approximation, not a correction
-of the entire linear time scale**.
-
-Each clock record reports the endpoint residual bound
-`abs(rate) * duration / 2`. For the largest drift rate in this sample, a day has
-about a 6.2 ms endpoint residual. Shifted adjacent days may have small apparent
-gaps or overlaps. The example does not fill them or claim a perfectly
-continuous corrected time scale.
-
-Components must share a sample grid before rotation. Different record lengths
-can yield different midpoint clock offsets; fractional-sample misalignment is
-reported rather than interpolated. Compatible segments can merge losslessly.
-Rotation writes only common valid coverage and preserves real gaps. Review any
-reported trimming.
-
-`apply_tilt=False` still writes Z alongside N/E. For future land-station data,
-`apply_tilt=True` requires actual Azimuth and signed Dip for all three axes.
-The current OBS XML marks dips as nominal and cannot support three-dimensional
-tilt correction; a scalar tilt magnitude does not establish the missing direction.
-
-## Outputs and checks
-
-All four stages use the canonical archive layout:
+## Output layout
 
 ```text
-processed/
-├── 01_archive/1A/<station>/2024/*.sac
-├── 02_displacement_nm/1A/<station>/2024/*.sac
-├── 03_clock_shifted/1A/<station>/2024/*.sac
-└── 04_zne/1A/<station>/2024/*.sac
+data/obs/processed/
+├── 01_archive/NET/STA/YYYY/*.sac          # 50 Hz counts, including BHH
+├── 02_displacement_nm/NET/STA/YYYY/*.sac  # 25 Hz seismic displacement
+├── 03_clock_shifted/NET/STA/YYYY/*.sac    # 25 Hz, corrected timestamps
+├── 04_zne/NET/STA/YYYY/*.sac              # 25 Hz, upward Z and true N/E
+└── 05_zne_5hz/NET/STA/YYYY/*.sac          # Final 5 Hz Z/N/E
 ```
 
-The supplied 2024-07-20 sample has 12 stations and four channels per station:
-expect 48 archived SAC files and 36 seismic files in each subsequent stage.
-The archive remains 50 Hz; subsequent products are 25 Hz, with a complete day
-reduced from 4,320,000 to 2,160,000 samples. Orientation counts 12
-station/location/day groups and writes 36 files. If an additional station has
-no XML orientation, resolve that metadata before rotating it.
+Reports and logs accompany each stage. All inputs and the source XML remain
+unchanged. Reuse `01_archive` in [OBS teleseismic events](obs-teleseismic.md);
+`02_displacement_nm` through `05_zne_5hz` are already calibrated products and must
+not be deconvolved again with the source response.
 
-Inspect [batch reports and logs](batch-reports.md) at each stage, especially
-archive metadata warnings, quality-filtered response traces, clock shifts and
-residuals, missing components and trimmed coverage. `summary.ok` reflects
-archive warnings/failures, but quality-filtered response skips are not
-necessarily failures; review the counters too.
+## Checks and interpretation
 
-Clock and orientation stages do not resume or skip existing outputs. Existing
-destinations fail unless `overwrite=True`; no `.corrections` records are written.
-Response removal has its own output-integrity checks.
-Use new stage directories when changing settings, especially when replacing
-previous 50 Hz products with 25 Hz products. If an interruption leaves an
-incomplete correction group, inspect the log and use that function's
-`overwrite=True` repair mode.
+- **Response and rate:** the explicit pre-filter is SeisPy's default
+  `(0.004, 0.006, 4.0, 5.0)` Hz. Integrated `[2]` decimation detrends and tapers
+  the 50 Hz inputs, filters and reduces them to 25 Hz, then removes response.
+  The 4/5 Hz corners remain below Nyquist. Keep the 50 Hz inventory unchanged;
+  the integrated reduction does not cause an input sampling-rate warning.
+  The ObsPy backend uses `water_level=None`.
+- **Final rate:** after clock and orientation correction at 25 Hz, factor
+  `[5]` applies anti-alias filtering and reduces the daily products to 5 Hz.
+  Displacement remains in nanometers.
+- **Clock:** a constant shift is evaluated at each record midpoint. Samples,
+  count and sampling interval remain unchanged, with no interpolation or
+  rounding to the 0.04 s sample grid. The endpoint residual bound is
+  `abs(rate) * duration / 2`, recorded in the log. Adjacent corrected daily
+  records can have small gaps or overlaps.
+- **Axes:** `layout="archive"` pairs station/location/day records.
+  `apply_tilt=False` corrects horizontal directions and retains upward Z.
+  Different component coverage can yield different clock shifts; fractional
+  misalignment is rejected. Rotation writes common valid coverage and preserves
+  real gaps. Three-dimensional correction requires measured signed axis dips;
+  the nominal OBS dips do not support it.
+- **Repeats:** correction functions do not resume or skip existing outputs.
+  Use a new stage directory when changing settings, or explicitly set
+  `overwrite=True` to replace current outputs. SAC marks prevent correcting
+  already corrected input. Response removal has separate integrity checks.
 
-Final SAC headers describe upward Z, true N and E, with updated `cmpaz/cmpinc`;
-amplitudes remain nm. The original XML describes source responses and raw axes,
-not instructions to deconvolve or rotate final products again. Inputs and the
-source XML remain unchanged.
+Check [reports and logs](batch-reports.md) for metadata warnings, filtered
+traces, missing components, time alignment and trimmed coverage. Final SAC
+`cmpaz/cmpinc` describe Z/N/E, while the original XML still describes raw axes.
 
-[Clock correction details](correct-clock-drift.md) ·
-[Orientation details](correct-orientation.md) ·
-[Response removal details](remove-response.md)
+[Clock correction](correct-clock-drift.md) ·
+[Orientation correction](correct-orientation.md) ·
+[Response removal](remove-response.md) ·
+[OBS teleseismic events](obs-teleseismic.md)

@@ -126,3 +126,42 @@ def test_sac_decimation_commands_precede_response_removal(tmp_path, post):
         assert (
             script.index("mul 1.0e9") < script.rindex("decimate 5") < script.index("w ")
         )
+
+
+@pytest.mark.parametrize("rate", [100, 25])
+def test_response_epoch_allows_prior_decimation_with_warning(rate):
+    import warnings
+    from obspy.core.inventory import Channel, Inventory, Network, Station, Response
+
+    trace = Trace(np.arange(100, dtype=np.float32))
+    trace.stats.update(
+        dict(
+            network="XX",
+            station="AAA",
+            location="",
+            channel="BHZ",
+            sampling_rate=rate,
+            starttime=UTCDateTime("2024-01-01"),
+        )
+    )
+    channel = Channel(
+        "BHZ",
+        "",
+        0,
+        0,
+        0,
+        0,
+        sample_rate=100,
+        response=Response.from_paz([0j], [-1 + 0j], 1, 1),
+    )
+    inventory = Inventory(
+        [Network("XX", [Station("AAA", 0, 0, 0, channels=[channel])])], "test"
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        selected, result = remove_response._response_epoch_for_trace(inventory, trace)
+    assert result.sample_rate == 100
+    assert selected.get_response(trace.id, trace.stats.starttime)
+    assert len(caught) == (1 if rate == 25 else 0)
+    if caught:
+        assert "sample rate mismatch" in str(caught[0].message)

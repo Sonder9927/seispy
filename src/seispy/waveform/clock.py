@@ -33,6 +33,7 @@ def correct_clock_drift(
     output_dir: str | Path,
     channels: Sequence[str] = ("BHZ", "BHN", "BHE"),
     pattern: str = "*.sac",
+    layout: str = "archive",
     max_workers: int = 4,
     files_per_pool: int | None = 1024,
     overwrite: bool = False,
@@ -53,8 +54,13 @@ def correct_clock_drift(
     This is not a full linear time-axis correction. Identical Z/N/E windows
     receive the same shift; rotation subsequently rejects misaligned grids.
 
-    Sources and inventory are preserved. Outputs use canonical SAC paths and
-    SAC kuser0='SPCLK'; this reserved field must be empty on first input.
+    layout="archive" writes canonical continuous archive paths. layout="event"
+    preserves paths and filenames beneath each direct event subdirectory.
+    Event names remain unchanged when timestamps shift.
+
+    Sources and inventory are preserved. Archive outputs use canonical SAC
+    paths. All outputs carry SAC kuser0='SPCLK'; this reserved field must be
+    empty on first input.
     Reprocessing corrected input is rejected. Existing outputs fail unless
     overwrite=True, which recalculates and replaces them.
     Counters count input files; unselected channels (including BHH by default)
@@ -64,7 +70,7 @@ def correct_clock_drift(
         raise ValueError(
             "channels must be a nonempty sequence of distinct channel codes"
         )
-    _, output, files, inv = inputs(
+    source, output, files, inv = inputs(
         source_dir,
         output_dir,
         inventory,
@@ -72,6 +78,7 @@ def correct_clock_drift(
         max_workers,
         files_per_pool,
         max_error_samples,
+        layout,
     )
     tasks, issues, ignored = [], [], 0
     destinations = set()
@@ -97,11 +104,15 @@ def correct_clock_drift(
             model = _clock_model(fields)
             planned = tr.copy()
             planned.stats.starttime -= _offset(planned, model)
-            target = WaveformIdentity.from_trace(planned).sac_path(output)
+            target = (
+                output / path.relative_to(source)
+                if layout == "event"
+                else WaveformIdentity.from_trace(planned).sac_path(output)
+            )
             if target in destinations:
                 raise ValueError("Multiple inputs map to the same corrected SAC path")
             destinations.add(target)
-            tasks.append(dict(paths=(path,), model=model))
+            tasks.append(dict(paths=(path,), model=model, destination=target))
         except Exception as exc:
             issues.append(CorrectionIssue("", path, f"{type(exc).__name__}: {exc}"))
     return run(
@@ -178,7 +189,9 @@ def _clock_batch(tasks, output, overwrite):
                 -offset,
                 abs(model["rate"]) * (tr.stats.npts - 1) / tr.stats.sampling_rate / 2,
             )
-            written = write_group([tr], output, overwrite)
+            written = write_group(
+                [tr], output, overwrite, destinations=[task["destination"]]
+            )
             results.append(dict(status="succeeded", files_written=written))
         except Exception as exc:
             results.append(failure(task["paths"], exc))

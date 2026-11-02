@@ -25,7 +25,11 @@ from seispy.workflow import (
 from seispy._main_guard import require_reimport_safe_entry_point
 from seispy.progress import call_with_warnings, progress_bar, resolve_worker_call
 
-from seispy.waveform.integrity import merge_contiguous_segments
+from seispy.waveform.integrity import (
+    TraceFilter,
+    merge_contiguous_segments,
+    split_traces_by_filter,
+)
 from seispy.event.archive_index import WaveformArchiveIndex, WaveformReader
 from seispy.event.catalog import _integer_second_window, load_events, load_stations
 
@@ -75,6 +79,8 @@ class _CutCounts:
     gapped_channels: int = 0
     overlapping_channels: int = 0
     existing_outputs: int = 0
+    traces_filtered: int = 0
+    skipped: int = 0
     coverage_samples: tuple[CutEventCoverage, ...] = ()
 
 
@@ -99,6 +105,8 @@ class CutEventSummary(BatchSummary):
         gapped_channels: Windows with internal gaps between segments.
         overlapping_channels: Windows with unresolved overlapping segments.
         existing_outputs: Existing files preserved instead of overwritten.
+        traces_filtered: Cut segments rejected by the optional trace filter.
+        skipped: Event/station tasks with only filtered segments.
         coverage_samples: Bounded details of partial or segmented windows.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
@@ -122,6 +130,8 @@ class CutEventSummary(BatchSummary):
     gapped_channels: int = 0
     overlapping_channels: int = 0
     existing_outputs: int = 0
+    traces_filtered: int = 0
+    skipped: int = 0
     coverage_samples: tuple[CutEventCoverage, ...] = ()
 
     @property
@@ -142,6 +152,7 @@ def cut_event_waveforms(
     station_csv: str | Path | None = None,
     time_window: float = 10800,
     pattern: str = "*.sac",
+    trace_filter: TraceFilter | None = None,
     max_workers: int | None = None,
     max_error_samples: int = 20,
     cache_max_bytes: int = 256 * 1024**2,
@@ -158,6 +169,9 @@ def cut_event_waveforms(
         output_dir: Destination root. SAC files are placed directly in
             ``YYYYmmddHHMMSS`` event directories. Defaults to a sibling named
             ``<source_dir.name>_events`` and must not be inside ``source_dir``.
+        trace_filter: Optional policy applied to each continuous cut segment
+            before writing. None preserves all segments. Filtered segments are
+            counted separately; a fully filtered task is skipped, not failed.
         station_csv: Optional station table keyed by network and station.
         time_window: Window length in seconds, beginning at the event origin
             floored to an integer UTC second. The precise origin remains in
@@ -233,6 +247,8 @@ def cut_event_waveforms(
         gapped_channels=0,
         overlapping_channels=0,
         existing_outputs=0,
+        traces_filtered=0,
+        skipped=0,
     )
     coverage_samples = []
     read_failed = len(archive_index.issues)
@@ -294,6 +310,7 @@ def cut_event_waveforms(
                 max_error_samples,
                 workers,
                 cache_max_bytes,
+                trace_filter=trace_filter,
             ):
                 tasks_done += result.tasks
                 succeeded += result.succeeded
@@ -361,7 +378,9 @@ def cut_event_waveforms(
             )
     print(
         f"Cut events complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed, {summary.outputs_written} outputs written."
+        f"{summary.failed} failed, {summary.skipped} skipped, "
+        f"{summary.traces_filtered} segments filtered, "
+        f"{summary.outputs_written} outputs written."
     )
     return summary
 
@@ -372,6 +391,7 @@ _WORKER_MAX_ERROR_SAMPLES = 0
 _WORKER_CACHE_BYTES = 256 * 1024**2
 _WORKER_PROGRESS = None
 _WORKER_STOP = None
+_WORKER_TRACE_FILTER = None
 
 
 def _station_results(
@@ -381,11 +401,18 @@ def _station_results(
     max_error_samples,
     max_workers,
     cache_max_bytes=256 * 1024**2,
+    trace_filter=None,
 ):
     if max_workers == 1:
         for station, records in tasks:
             yield from _iter_station_counts(
-                station, records, events, output_dir, max_error_samples, cache_max_bytes
+                station,
+                records,
+                events,
+                output_dir,
+                max_error_samples,
+                cache_max_bytes,
+                trace_filter,
             )
         return
 
@@ -403,6 +430,7 @@ def _station_results(
                 cache_max_bytes,
                 progress,
                 stop,
+                trace_filter,
             ),
         ) as executor:
             pending = set()
@@ -447,10 +475,17 @@ def _station_results(
 
 
 def _initialize_cut_worker(
-    events, output_dir, max_error_samples, cache_max_bytes, progress, stop
+    events,
+    output_dir,
+    max_error_samples,
+    cache_max_bytes,
+    progress,
+    stop,
+    trace_filter=None,
 ):
     global _WORKER_EVENTS, _WORKER_OUTPUT_DIR, _WORKER_MAX_ERROR_SAMPLES
-    global _WORKER_CACHE_BYTES, _WORKER_PROGRESS, _WORKER_STOP
+    global _WORKER_CACHE_BYTES, _WORKER_PROGRESS, _WORKER_STOP, _WORKER_TRACE_FILTER
+    _WORKER_TRACE_FILTER = trace_filter
     _WORKER_EVENTS = events
     _WORKER_OUTPUT_DIR = output_dir
     _WORKER_MAX_ERROR_SAMPLES = max_error_samples
@@ -472,6 +507,7 @@ def _cut_station_events(station, records):
         _WORKER_OUTPUT_DIR,
         _WORKER_MAX_ERROR_SAMPLES,
         _WORKER_CACHE_BYTES,
+        _WORKER_TRACE_FILTER,
     ):
         while not _WORKER_STOP.is_set():
             try:
@@ -485,7 +521,9 @@ def _cut_station_events(station, records):
     return sent
 
 
-def _iter_station_counts(station, records, events, output_dir, limit, cache_bytes):
+def _iter_station_counts(
+    station, records, events, output_dir, limit, cache_bytes, trace_filter=None
+):
     index = WaveformArchiveIndex.from_records(records)
     reader = WaveformReader(max_bytes=cache_bytes)
     batch = []
@@ -500,6 +538,7 @@ def _iter_station_counts(station, records, events, output_dir, limit, cache_byte
             waveform_reader=reader,
             max_error_samples=max(0, limit - issues_used),
             max_coverage_samples=max(0, limit - coverage_used),
+            trace_filter=trace_filter,
         )
         issues_used += len(result.samples)
         coverage_used += len(result.coverage_samples)
@@ -521,6 +560,7 @@ def cut_event_station(
     waveform_reader=None,
     max_error_samples=1,
     max_coverage_samples=None,
+    trace_filter: TraceFilter | None = None,
 ) -> _CutCounts:
     """Cut one event-station window using a reusable header index."""
     event = _integer_second_window(event)
@@ -594,7 +634,7 @@ def cut_event_station(
                     )
                 )
 
-    outputs = existing_outputs = no_data = 0
+    outputs = existing_outputs = no_data = traces_filtered = 0
     channels = partial_channels = gapped_channels = overlapping_channels = 0
     coverage_samples = []
     coverage_limit = (
@@ -602,7 +642,6 @@ def cut_event_station(
     )
     if waveform_data:
         event_dir = Path(dest_dir) / event_name
-        event_dir.mkdir(parents=True, exist_ok=True)
         for identity_key, stream in waveform_data.items():
             try:
                 merged = merge_contiguous_segments(stream)
@@ -616,8 +655,12 @@ def cut_event_station(
                     _trimmed_trace(segment, event, station) for segment in segments
                 ]
                 trimmed = [trace for trace in trimmed if trace is not None]
+                if trace_filter is not None:
+                    trimmed, rejected = split_traces_by_filter(trimmed, trace_filter)
+                    traces_filtered += len(rejected)
                 if not trimmed:
                     continue
+                event_dir.mkdir(parents=True, exist_ok=True)
                 coverage = _channel_coverage(trimmed, identity_key, event)
                 channels += 1
                 partial_channels += int(coverage.coverage_fraction < 1)
@@ -672,7 +715,10 @@ def cut_event_station(
                             f"{type(exc).__name__}: {exc}",
                         )
                     )
-    if not outputs:
+    skipped = int(
+        not outputs and traces_filtered > 0 and channels == 0 and not had_issue
+    )
+    if not outputs and not skipped:
         no_data = int(not had_issue and channels == 0)
         had_issue = True
         if len(samples) < max_error_samples:
@@ -687,7 +733,9 @@ def cut_event_station(
             )
     return _CutCounts(
         tasks=1,
-        succeeded=int(not had_issue),
+        succeeded=int(not had_issue and not skipped),
+        skipped=skipped,
+        traces_filtered=traces_filtered,
         failed=int(had_issue),
         outputs=outputs,
         read_failed=read_failed,
@@ -795,6 +843,8 @@ def _combine_cut_counts(items, limit):
         gapped_channels=sum(item.gapped_channels for item in items),
         overlapping_channels=sum(item.overlapping_channels for item in items),
         existing_outputs=sum(item.existing_outputs for item in items),
+        traces_filtered=sum(item.traces_filtered for item in items),
+        skipped=sum(item.skipped for item in items),
         coverage_samples=tuple(
             sample for item in items for sample in item.coverage_samples
         )[:limit],

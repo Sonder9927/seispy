@@ -44,7 +44,7 @@ def test_merge_groups_flat_archive_by_header_channel_and_day(tmp_path):
     bhz = next(files for key, files in groups.items() if key[3] == "BHZ")
     output = tmp_path / "merged"
     assert _merge_targets(bhz, output) is None
-    merged = WaveformIdentity.from_trace(first_trace).sac_path(output, merged=True)
+    merged = WaveformIdentity.from_trace(first_trace).sac_path(output)
     assert merged.is_file()
     assert len(read(merged)) == 1
     assert all(path.is_file() for path in bhz)

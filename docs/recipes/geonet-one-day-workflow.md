@@ -1,304 +1,131 @@
 ---
-title: Process one day of GeoNet data
-description: Process 100 Hz GeoNet MiniSEED into response-removed 1 Hz or 25 Hz SAC.
+title: GeoNet continuous data
+description: Download one day of 100 Hz GeoNet data and produce calibrated 25 Hz and 5 Hz SAC.
 ---
 
-# Process one day of GeoNet data
+# GeoNet continuous data
 
-This recipe uses public GeoNet data from **2025-01-01 00:00:00 to
-2025-01-02 00:00:00 UTC**. It selects the 100 Hz `HH?` channels at `NZ.ABAZ`
-and `NZ.AKFZ`.
+Download one day of public GeoNet data, retain a 100 Hz MiniSEED archive,
+and produce displacement in nanometers at 25 Hz and 5 Hz. This example is
+for continuous records. To extract earthquakes from the resulting archive,
+continue with [Teleseismic events from MiniSEED](teleseismic-processing.md).
 
-It presents two workflows:
+## Inputs
 
-1. **Complete workflow:** download → MiniSEED to SAC → remove response →
-   resample, producing response-removed 1 Hz SAC.
-2. **Concise workflow:** download → remove response with the ObsPy backend and
-   integrated decimation, producing response-removed 25 Hz SAC directly from
-   MiniSEED.
+The example requests `2025-01-01` through `2025-01-02` UTC for `NZ.ABAZ` and
+`NZ.AKFZ`, selecting the 100 Hz `HH?` channels. `HH?` includes both numbered
+horizontal channels (`HH1`/`HH2`) and named horizontal channels (`HHN`/`HHE`).
+Response removal preserves those channel labels and does not rotate axes.
+The script downloads the required StationXML as well as the waveforms.
 
-Both workflows preserve the succeeded MiniSEED files.
+## Processing order
 
-## Shared configuration and download
+**Download → archive 100 Hz MiniSEED → decimate to 25 Hz and remove response
+→ decimate calibrated SAC to 5 Hz.**
 
-Install the project from the repository root:
+The ObsPy response backend reads MiniSEED directly, avoiding a continuous
+100 Hz SAC intermediate. Factor 4 runs before response removal; factors
+`[5]` run afterward. Both use the bundled SAC-compatible anti-alias FIR
+filters and need no SAC installation. For backend comparisons and decimation
+order checks, see [numerical validation](decimate.md#numerical-validation-of-decimation-order).
 
-```bash
-uv sync
-```
+## Runnable example
 
-Save the following configuration in a Python script. GeoNet uses numbered
-horizontal channels at `ABAZ` (`HH1`, `HH2`) and named horizontal channels at
-`AKFZ` (`HHE`, `HHN`), so use `channel="HH?"` rather than listing component
-names explicitly.
+Run `uv sync`, save this complete script in the repository root, and run it
+with `uv run python <script.py>`. All processing stages use separate directories.
 
 ```python
 from pathlib import Path
 
-from obspy import read
-
 from seispy import deconvolution, download, waveform
-from seispy.waveform import TraceFilter
-
-
-FDSN_BASE_URL = "https://service.geonet.org.nz"
-NETWORK = "NZ"
-STATIONS = ["ABAZ", "AKFZ"]
-CHANNEL = "HH?"
-START = "2025-01-01T00:00:00"
-END = "2025-01-02T00:00:00"  # FDSN end times are exclusive.
 
 ROOT = Path("data/geonet/2025-01-01")
-STATIONXML = ROOT / "metadata" / "NZ_ABAZ_AKFZ_HH_2025-01-01.xml"
-RAW = ROOT / "00_waveform_staging"
-MSEED = ROOT / "01_mseed"
+INVENTORY = ROOT / "metadata" / "inventory.xml"
+STAGING = ROOT / "00_waveform_staging"
+ARCHIVE = ROOT / "01_mseed"
+DISPLACEMENT = ROOT / "02_displacement_25hz"
+FINAL = ROOT / "03_displacement_5hz"
+MAX_WORKERS = 4
 
 
-def require_ok(stage, summary):
-    """Stop on partial failure and point to the diagnostic report."""
-    if not summary.ok:
-        raise RuntimeError(
-            f"{stage} did not complete successfully; "
-            f"see {summary.report_path or 'the terminal output'}"
-        )
+def main():
+    inventory = download.download_inventory(
+        INVENTORY,
+        client="https://service.geonet.org.nz",
+        network="NZ", station="ABAZ,AKFZ", location="*", channel="HH?",
+        starttime="2025-01-01", endtime="2025-01-02",
+        level="response",
+    )
+    downloaded = download.download_waveforms(
+        STAGING,
+        client="https://service.geonet.org.nz",
+        network="NZ", station=["ABAZ", "AKFZ"], location="*", channel="HH?",
+        starttime="2025-01-01", endtime="2025-01-02",
+        inventory=inventory, overwrite=False,
+    )
+    print(downloaded)
+
+    archived = waveform.archive_waveforms(
+        STAGING, ARCHIVE,
+        output_format="mseed", inventory=inventory,
+        trace_filter=waveform.TraceFilter(min_duration_seconds=60),
+        max_workers=MAX_WORKERS,
+    )
+    print(archived)
+
+    response = deconvolution.deconvolve_waveforms(
+        ARCHIVE, INVENTORY,
+        pattern="*.mseed", output_dir=DISPLACEMENT,
+        pre_filt=(0.004, 0.006, 4.0, 5.0),
+        decimate_factors=[4],
+        max_workers=MAX_WORKERS,
+    )
+    print(response)
+
+    final = waveform.decimate_waveforms(
+        DISPLACEMENT, factors=[5], output_dir=FINAL,
+        max_workers=MAX_WORKERS,
+    )
+    print(final)
 
 
-inventory = download.download_inventory(
-    STATIONXML,
-    client=FDSN_BASE_URL,
-    network=NETWORK,
-    station=",".join(STATIONS),
-    location="*",
-    channel=CHANNEL,
-    starttime=START,
-    endtime=END,
-    level="response",
-)
-
-# Verify that every selected channel is 100 Hz before choosing factors.
-channels = [channel for net in inventory for sta in net for channel in sta]
-if len(channels) != 6:
-    raise RuntimeError(f"Expected 6 active channels, found {len(channels)}")
-rates = sorted({float(channel.sample_rate) for channel in channels})
-if rates != [100.0]:
-    raise RuntimeError(f"Expected only 100 Hz channels, found {rates}")
-
-raw_waveforms = download.download_waveforms(
-    RAW,
-    client=FDSN_BASE_URL,
-    network=NETWORK,
-    station=STATIONS,
-    location="*",
-    channel=CHANNEL,
-    starttime=START,
-    endtime=END,
-    inventory=inventory,
-    network_workers=10,
-    max_retries=3,
-    retry_backoff=2.0,
-    overwrite=False,
-    save_report=True,
-)
-require_ok("raw waveform download", raw_waveforms)
-
-waveforms = waveform.archive_waveforms(
-    RAW,
-    MSEED,
-    output_format="mseed",
-    inventory=inventory,
-    max_workers=5,
-    trace_filter=TraceFilter(min_duration_seconds=60),
-)
-require_ok("MiniSEED archive", waveforms)
+if __name__ == "__main__":
+    main()
 ```
-
-## Part 1: complete workflow from 100 Hz MiniSEED to 1 Hz SAC
-
-This version keeps conversion, response removal, and resampling as separate
-stages. The intermediate SAC files make each transformation easy to inspect.
-
-```text
-100 Hz MiniSEED
-    ↓ convert_mseed_to_sac
-100 Hz raw-count SAC
-    ↓ deconvolution
-100 Hz displacement SAC (nm)
-    ↓ decimate 5 × 5 × 4
-1 Hz displacement SAC (nm)
-```
-
-Append the following code to the shared download script:
-
-```python
-SAC_COUNTS_100HZ = ROOT / "02_sac_counts_100hz"
-SAC_DISP_100HZ = ROOT / "03_sac_displacement_nm_100hz"
-SAC_DISP_1HZ = ROOT / "04_sac_displacement_nm_1hz"
-
-# 1. Convert the succeeded MiniSEED files to raw-count SAC.
-converted = waveform.convert_mseed_to_sac(
-    MSEED,
-    SAC_COUNTS_100HZ,
-    pattern="*.mseed",
-    max_workers=2,
-    save_report=True,
-)
-require_ok("MiniSEED-to-SAC conversion", converted)
-
-# 2. Remove the response without changing the 100 Hz sampling rate.
-deconvolved = deconvolution.deconvolve_waveforms(
-    SAC_COUNTS_100HZ / NETWORK,
-    STATIONXML,
-    backend="obspy",
-    pattern="*.sac",
-    output_dir=SAC_DISP_100HZ / NETWORK,
-    max_workers=2,
-    pre_filt=[0.004, 0.006, 4, 5],
-    save_report=True,
-)
-require_ok("Instrument-response removal", deconvolved)
-
-# 3. Resample from 100 Hz to 1 Hz in SAC-compatible stages.
-resampled = waveform.decimate_waveforms(
-    SAC_DISP_100HZ / NETWORK,
-    factors=[5, 5, 4],
-    backend="scipy",
-    pattern="*.sac",
-    output_dir=SAC_DISP_1HZ / NETWORK,
-    max_workers=2,
-    save_report=True,
-)
-require_ok("Resampling to 1 Hz", resampled)
-
-# 4. Validate every final waveform.
-outputs = sorted(SAC_DISP_1HZ.rglob("*.sac"))
-if len(outputs) != 6:
-    raise RuntimeError(f"Expected 6 final SAC files, found {len(outputs)}")
-
-for path in outputs:
-    trace = read(path)[0]
-    assert trace.stats.network == NETWORK
-    assert trace.stats.station in STATIONS
-    assert trace.stats.channel.startswith("HH")
-    assert trace.stats.sampling_rate == 1.0
-    assert trace.stats.npts > 0
-    print(trace.id, trace.stats.starttime, trace.stats.endtime, path)
-```
-
-The SciPy decimation backend uses bundled, pinned SAC Community FIR coefficients.
-It requires no SAC installation, executable, or `SACAUX`/`SACHOME` settings. This
-also applies to integrated decimation with the ObsPy response-removal backend.
-
-## Part 2: concise workflow from 100 Hz MiniSEED to 25 Hz SAC
-
-The ObsPy response-removal backend can read MiniSEED directly. Supplying
-`decimate_factors=4` makes it detrend and taper each trace, apply the
-SAC-compatible anti-alias filter, decimate from 100 Hz to 25 Hz, and then remove
-the instrument response. No raw-count SAC intermediate is needed.
-
-Append this code to the shared download script instead of Part 1:
-
-```python
-SAC_DISP_25HZ = ROOT / "02_sac_displacement_nm_25hz"
-
-deconvolved = deconvolution.deconvolve_waveforms(
-    MSEED / NETWORK,
-    STATIONXML,
-    backend="obspy",
-    pattern="*.mseed",
-    output_dir=SAC_DISP_25HZ / NETWORK,
-    max_workers=2,
-    decimate_factors=4,
-    pre_filt=[0.004, 0.006, 4, 5],
-    save_report=True,
-)
-require_ok("25 Hz response removal", deconvolved)
-
-outputs = sorted(SAC_DISP_25HZ.rglob("*.sac"))
-if len(outputs) != 6:
-    raise RuntimeError(f"Expected 6 final SAC files, found {len(outputs)}")
-
-for path in outputs:
-    trace = read(path)[0]
-    assert trace.stats.sampling_rate == 25.0
-    assert trace.stats.npts > 0
-    print(trace.id, trace.stats.starttime, trace.stats.endtime, path)
-```
-
-Here the final Nyquist frequency is 12.5 Hz, so the complete pre-filter
-`(0.004, 0.006, 4.0, 5.0)` remains valid without adjustment. Every decimation
-factor must be an integer from 2 through 7. If a requested factor would put the
-second `pre_filt` corner at or above the final Nyquist frequency, that waveform
-fails safely instead of being processed with an invalid frequency band.
-
-## Numerical comparison of processing branches
-
-SeisPy includes a deterministic numerical regression test covering all four
-25 Hz branches:
-
-| Response backend | Decimation order |
-| --- | --- |
-| ObsPy | integrated before response removal |
-| ObsPy | independent after response removal |
-| SAC | integrated before response removal |
-| SAC | independent after response removal |
-
-The test signal is sampled at 100 Hz and contains 0.1, 1, 4, and 20 Hz
-components plus seeded noise. Every branch uses the same response model,
-`pre_filt=(0.004, 0.006, 4, 5)`, factor 4, and SAC FIR coefficients. Metrics
-exclude 1,000 samples at each 25 Hz output edge, where finite-record taper and
-filter transients are expected.
-
-Results from the reference macOS ARM64 environment with SAC installed:
-
-| Comparison | Correlation | Normalized RMS difference | Peak-relative difference |
-| --- | ---: | ---: | ---: |
-| ObsPy, decimate before vs. after response removal | 0.99999999999 | 0.00000382 | 0.00000689 |
-| SAC, decimate before vs. after response removal | 0.99999999999 | 0.00000365 | 0.00000663 |
-| SAC vs. ObsPy, decimate before response removal | 0.99994861 | 0.01014335 | 0.01516561 |
-| SAC vs. ObsPy, decimate after response removal | 0.99994861 | 0.01014337 | 0.01516551 |
-
-The decimation order therefore has negligible interior impact for this
-band-limited test. SAC and ObsPy remain strongly correlated, but differ by
-about 1% normalized RMS because their detrending, tapering, response evaluation,
-and numerical precision are not bit-for-bit identical. The test treats this as
-a bounded backend difference rather than requiring exact equality.
-
-The automated acceptance limits are stricter than a file-exists check:
-
-- every branch must produce finite 25 Hz data with exactly 30,000 samples;
-- before-versus-after comparisons must have correlation above `0.999999` and
-  normalized RMS difference below `1e-5`;
-- SAC-versus-ObsPy comparisons must have correlation above `0.999` and
-  normalized RMS difference below `0.02`.
-
-The cross-backend test is marked as an integration test and skips only when the
-SAC executable or its FIR coefficient files are unavailable. Unit tests still
-verify factor validation, Nyquist rejection, command order, failure isolation,
-source preservation, and output-header validation without SAC.
 
 ## Output layout
-
-The two alternatives produce separate, inspectable directory trees:
 
 ```text
 data/geonet/2025-01-01/
 ├── metadata/
-│   ├── NZ_ABAZ_AKFZ_HH_2025-01-01.xml
-│   └── NZ_ABAZ_AKFZ_HH_2025-01-01.csv
-├── 01_mseed_raw/
-├── 02_sac_counts_100hz/             # Part 1
-├── 03_sac_displacement_nm_100hz/    # Part 1
-├── 04_sac_displacement_nm_1hz/      # Part 1 final output
-└── 02_sac_displacement_nm_25hz/     # Part 2 final output
+│   ├── inventory.xml
+│   └── inventory.csv
+├── 00_waveform_staging/
+├── 01_mseed/NET/STA/YYYY/*.mseed
+├── 02_displacement_25hz/NET/STA/YYYY/*.sac
+└── 03_displacement_5hz/NET/STA/YYYY/*.sac
 ```
 
-Waveform directories are organized by `network/station/year`, with year and
-Julian day retained in each canonical filename. Existing valid MiniSEED files
-are skipped, so the download step can safely resume an interrupted archive.
+`01_mseed` remains in instrument counts at 100 Hz. Both displacement products
+retain the source component directions. Keep the inventory with the archive;
+use the coordinate CSV exported with the inventory when cutting events.
 
-All times are UTC. GeoNet may return a first or last MiniSEED record slightly
-outside the requested interval to avoid re-encoding records. Trim explicitly
-with ObsPy if exact day boundaries are required.
+## Checks and next steps
 
-See the [official GeoNet FDSN documentation](https://www.geonet.org.nz/data/access/FDSN)
-for service details.
+Inspect each printed summary and [batch report](batch-reports.md) before using
+the results; these examples do not automatically stop after every partial
+failure. For this selection, expect six channels when the service supplies
+all requested data. Confirm the final rate and coverage in the SAC headers.
+GeoNet can return MiniSEED records extending slightly beyond the request;
+headers determine actual coverage. Trim explicitly if exact day boundaries
+are required.
+
+The explicit pre-filter is SeisPy's default `(0.004, 0.006, 4.0, 5.0)` Hz.
+It is applied at 25 Hz before the final reduction to 5 Hz. Do not edit the
+100 Hz source response to describe the derived sampling rates.
+
+For an inspectable raw SAC conversion stage, see
+[MiniSEED to SAC](convert-miniseed.md). For event products, reuse `01_mseed` in
+[Teleseismic events from MiniSEED](teleseismic-processing.md), supplying the
+matching inventory and station CSV. Service details are in the
+[GeoNet FDSN documentation](https://www.geonet.org.nz/data/access/FDSN).

@@ -380,3 +380,73 @@ def test_output_names_use_event_second_and_short_segment_suffix(tmp_path, fragme
         p.parent == tmp_path / "out" / "20240102000000"
         for p in (tmp_path / "out").rglob("*.sac")
     )
+
+
+@pytest.mark.parametrize("npts,accepted", [(5399, False), (5400, True), (5401, True)])
+def test_cut_filter_uses_actual_segment_duration(tmp_path, npts, accepted):
+    from seispy.waveform import TraceFilter
+
+    root = tmp_path / "source"
+    path = source_trace(root, offset=0, rate=1, npts=npts)
+    original = path.read_bytes()
+    result = cut_event_station(
+        event(0, 10800),
+        STATION,
+        tmp_path / "out",
+        archive_index=WaveformArchiveIndex.build(root),
+        trace_filter=TraceFilter(min_duration_seconds=90 * 60),
+    )
+    assert result.outputs == int(accepted)
+    assert result.traces_filtered == int(not accepted)
+    assert result.skipped == int(not accepted)
+    assert result.failed == 0 and result.no_data == 0
+    assert path.read_bytes() == original
+    if accepted:
+        assert read(next((tmp_path / "out").rglob("*.sac")))[0].stats.npts == npts
+    else:
+        assert not (tmp_path / "out").exists()
+
+
+def test_cut_filter_does_not_add_durations_across_gaps(tmp_path):
+    from seispy.waveform import TraceFilter
+
+    root = tmp_path / "source"
+    source_trace(root, name="first", offset=0, npts=3000, rate=1)
+    source_trace(root, name="second", offset=4000, npts=3000, rate=1)
+    result = cut_event_station(
+        event(0, 10800),
+        STATION,
+        tmp_path / "out",
+        archive_index=WaveformArchiveIndex.build(root),
+        trace_filter=TraceFilter(min_duration_seconds=5400),
+    )
+    assert result.traces_filtered == 2 and result.skipped == 1
+    assert result.failed == 0 and result.outputs == 0
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_public_cut_filter_reports_skips_across_workers(tmp_path, workers):
+    from seispy.waveform import TraceFilter
+
+    root = tmp_path / "source"
+    path = source_trace(root, offset=0, rate=1, npts=5000)
+    second = read(path)[0]
+    second.stats.station = "OTHER"
+    second.write(str(root / "other.sac"), format="SAC")
+    catalog = tmp_path / "events.csv"
+    pd.DataFrame(
+        [dict(time=str(BASE), latitude=0, longitude=0, depth=20, mag=6)]
+    ).to_csv(catalog, index=False)
+    result = cut_event_waveforms(
+        root,
+        catalog,
+        output_dir=tmp_path / "out",
+        max_workers=workers,
+        trace_filter=TraceFilter(min_duration_seconds=5400),
+        save_report=False,
+        save_log=False,
+    )
+    assert result.total == 2 and result.skipped == 2 and result.traces_filtered == 2
+    assert result.succeeded == result.failed == result.outputs_written == 0
+    assert not result.has_issues
+    assert not list((tmp_path / "out").rglob("*.sac"))

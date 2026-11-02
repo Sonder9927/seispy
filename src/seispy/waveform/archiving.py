@@ -857,7 +857,8 @@ def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
                         reshaped = True
                         continue
                     trace = kept[0]
-                destination = WaveformIdentity.from_trace(trace).sac_path(output_root)
+                identity = WaveformIdentity.from_trace(trace)
+                destination = identity.sac_path(output_root)
                 if destination in claimed:
                     errors.append(
                         (

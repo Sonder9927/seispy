@@ -175,3 +175,65 @@ def test_paths_mark_the_start_day_when_it_differs_from_the_archive_day(tmp_path)
     )
     assert mseed.name == "NZ.WEL.10.BHZ.2026.002.001T235957.mseed"
     assert matches_mseed_path(mseed, tmp_path, [SimpleNamespace(stats=stats)])
+
+
+def test_full_day_sac_and_mseed_share_filename_stem():
+    import numpy as np
+    from obspy import Trace, UTCDateTime
+    from seispy.archive import channel_mseed_path
+
+    trace = Trace(np.zeros(86400, dtype=np.float32))
+    trace.stats.update(
+        dict(
+            network="XX",
+            station="AAA",
+            location="",
+            channel="BHZ",
+            starttime=UTCDateTime("2024-01-01"),
+            sampling_rate=1,
+        )
+    )
+    identity = WaveformIdentity.from_trace(trace)
+    sac = identity.sac_path("archive")
+    mseed = channel_mseed_path(
+        "archive",
+        "XX",
+        "AAA",
+        "",
+        "BHZ",
+        trace.stats.starttime,
+        trace.stats.endtime + trace.stats.delta,
+    )
+    assert sac.stem == mseed.stem == "XX.AAA.--.BHZ.2024.001"
+    trace.stats.starttime += 0.125
+    assert (
+        WaveformIdentity.from_trace(trace)
+        .sac_path("archive")
+        .name.endswith(".000000.125.sac")
+    )
+
+
+def test_sac_paths_require_current_naming():
+    import numpy as np
+    from obspy import Trace, UTCDateTime
+
+    trace = Trace(np.zeros(86400, dtype=np.float32))
+    trace.stats.update(
+        dict(
+            network="XX",
+            station="AAA",
+            location="",
+            channel="BHZ",
+            starttime=UTCDateTime("2024-01-01"),
+            sampling_rate=1,
+        )
+    )
+    identity = WaveformIdentity.from_trace(trace)
+    canonical = identity.sac_path("archive")
+    assert identity.matches_sac_path(canonical, "archive")
+    for name in (
+        "XX.AAA.--.BHZ.2024.001.000000.sac",
+        "XX.AAA.--.BHZ.2024.001.merged.sac",
+        "XX.AAA..BHZ.2024.001.sac",
+    ):
+        assert not identity.matches_sac_path(canonical.with_name(name), "archive")

@@ -385,3 +385,112 @@ def test_clock_rejects_duplicate_canonical_paths_even_with_overwrite(tmp_path):
     assert result.succeeded == 1 and result.failed == 1
     assert "same corrected SAC path" in result.issue_samples[0].error
     assert len(list((tmp_path / "out").rglob("*.sac"))) == 1
+
+
+@pytest.mark.parametrize("max_workers", [1, 2])
+def test_event_corrections_isolate_overlapping_events_and_preserve_paths(
+    tmp_path, max_workers
+):
+    inv = make_inventory(offset=0.123456789, rate=0)
+    source = tmp_path / "events"
+    expected = {}
+    for name, scale in (("event_a", 1), ("event_b", 2)):
+        expected[name] = put_axes(source / name, inv, signals() * scale)
+    (source / "logs").mkdir()
+    (source / "logs" / "ignored.sac").write_bytes(b"not a waveform")
+    clock = tmp_path / "clock"
+    result = waveform.correct_clock_drift(
+        source,
+        inv,
+        output_dir=clock,
+        layout="event",
+        max_workers=max_workers,
+        save_report=False,
+        save_log=False,
+    )
+    assert result.succeeded == 6 and not result.has_issues
+    assert {p.relative_to(clock) for p in clock.rglob("*.sac")} == {
+        p.relative_to(source) for p in source.rglob("*.sac") if p.parent.name != "logs"
+    }
+    oriented = tmp_path / "oriented"
+    result = waveform.correct_orientation(
+        clock,
+        inv,
+        output_dir=oriented,
+        layout="event",
+        max_workers=max_workers,
+        save_report=False,
+        save_log=False,
+    )
+    assert result.total == 2 and result.files_written == 6 and not result.has_issues
+    for name in expected:
+        for i, code in enumerate(("BHZ", "BHN", "BHE")):
+            target = oriented / name / f"1A.R41.LC.{code}.{name}.sac"
+            tr = obspy.read(str(target))[0]
+            np.testing.assert_allclose(tr.data, expected[name][i], atol=6e-7)
+            assert abs(tr.stats.starttime - (START - 0.123456789)) < 1e-6
+            assert tr.stats.sac.kuser0 == "SPCLK" and tr.stats.sac.kuser1 == "SPORI"
+
+
+def test_event_orientation_merges_cross_midnight_segments_within_event(tmp_path):
+    inv = make_inventory()
+    physical = signals()
+    root = tmp_path / "events" / "cross_midnight"
+    for channel in inv[0][0]:
+        az, dip = np.deg2rad([channel.azimuth, channel.dip])
+        axis = [-np.sin(dip), np.cos(az) * np.cos(dip), np.sin(az) * np.cos(dip)]
+        data = np.asarray(axis) @ physical
+        put(root, channel.code, data[:100], start=START + 43198, suffix="a")
+        put(root, channel.code, data[100:], start=START + 43200, suffix="b")
+    result = waveform.correct_orientation(
+        tmp_path / "events",
+        inv,
+        layout="event",
+        **options(tmp_path),
+    )
+    assert result.total == 1 and result.files_written == 3 and not result.has_issues
+    for i, code in enumerate(("BHZ", "BHN", "BHE")):
+        target = (
+            tmp_path / "out/cross_midnight" / f"1A.R41.LC.{code}.cross_midnight.sac"
+        )
+        np.testing.assert_allclose(
+            obspy.read(str(target))[0].data, physical[i], atol=3e-7
+        )
+
+
+@pytest.mark.parametrize(
+    "function", [waveform.correct_clock_drift, waveform.correct_orientation]
+)
+def test_corrections_validate_layout_and_event_root(tmp_path, function):
+    put(tmp_path / "src", "BHZ", signals()[0])
+    with pytest.raises(ValueError, match="layout must"):
+        function(
+            tmp_path / "src", make_inventory(), layout="unknown", **options(tmp_path)
+        )
+    with pytest.raises(ValueError, match="event subdirectories"):
+        function(
+            tmp_path / "src", make_inventory(), layout="event", **options(tmp_path)
+        )
+
+
+def test_event_orientation_names_gapped_segments(tmp_path):
+    inv = make_inventory()
+    root = tmp_path / "events" / "gapped"
+    put_axes(root, inv)
+    for channel in inv[0][0]:
+        original = obspy.read(str(root / f"arbitrary-{channel.code}.sac"))[0]
+        put(root, channel.code, original.data, start=START + 10, suffix="later")
+    result = waveform.correct_orientation(
+        tmp_path / "events",
+        inv,
+        layout="event",
+        **options(tmp_path),
+    )
+    assert not result.has_issues and result.files_written == 6
+    for channel in ("BHZ", "BHN", "BHE"):
+        paths = sorted((tmp_path / "out/gapped").glob(f"*.{channel}.*.sac"))
+        assert [p.name for p in paths] == [
+            f"1A.R41.LC.{channel}.gapped.s01.sac",
+            f"1A.R41.LC.{channel}.gapped.s02.sac",
+        ]
+        assert obspy.read(str(paths[1]))[0].stats.starttime == START + 10

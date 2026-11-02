@@ -897,7 +897,7 @@ def test_existing_shorter_archive_is_not_silently_kept(
         / "NZ"
         / "AAA"
         / "2026"
-        / f"NZ.AAA.10.HHZ.2026.002.001T235957.{output_format}"
+        / f"NZ.AAA.10.HHZ.2026.002.001T235957{'.1' if output_format == 'sac' else ''}.{output_format}"
     )
     assert read(archived)[0].stats.npts == 1000
     assert summary.failed == 1
@@ -960,9 +960,9 @@ def test_merge_waveforms_by_day_separates_midnight_chunks(tmp_path):
     output = tmp_path / "merged"
     waveform.merge_waveforms_by_day(source, output, pattern="*.sac")
 
-    assert sorted(path.name for path in output.rglob("*.merged.sac")) == [
-        "NZ.HLRZ.10.EHE.2014.127.merged.sac",
-        "NZ.HLRZ.10.EHE.2014.128.merged.sac",
+    assert sorted(path.name for path in output.rglob("*.sac")) == [
+        "NZ.HLRZ.10.EHE.2014.127.003000.sac",
+        "NZ.HLRZ.10.EHE.2014.128.127T235959.7.sac",
     ]
     assert not (output / "merge-errors.txt").exists()
 

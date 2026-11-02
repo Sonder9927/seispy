@@ -77,6 +77,7 @@ class WaveformIdentity:
     channel: str
     starttime: Any
     archive_day: date | None = None
+    endtime_exclusive: Any = None
 
     @classmethod
     def from_trace(cls, trace: Any) -> "WaveformIdentity":
@@ -89,6 +90,9 @@ class WaveformIdentity:
             str(stats.channel),
             stats.starttime,
             coverage_day(stats),
+            (stats.starttime + stats.npts / stats.sampling_rate)
+            if getattr(stats, "npts", 0) and getattr(stats, "sampling_rate", 0)
+            else None,
         )
 
     @property
@@ -114,32 +118,28 @@ class WaveformIdentity:
             self.julday,
         )
 
-    def sac_filename(self, *, merged: bool = False) -> str:
-        if merged:
-            final = "merged"
-        else:
-            final = start_day_token(self.starttime, self.day) + self.starttime.strftime(
-                "%H%M%S"
-            )
-        return (
-            f"{self.network}.{self.station}.{self.location}.{self.channel}."
-            f"{self.year}.{self.julday:03d}.{final}.sac"
+    def sac_filename(self) -> str:
+        prefix = (
+            f"{self.network}.{self.station}.{self.location or '--'}.{self.channel}."
+            f"{self.year}.{self.julday:03d}"
         )
+        if self.endtime_exclusive is not None and _is_full_utc_day(
+            self.starttime, self.endtime_exclusive
+        ):
+            return f"{prefix}.sac"
+        return f"{prefix}.{_time_token(self.starttime, self.day)}.sac"
 
-    def sac_path(self, root: str | Path, *, merged: bool = False) -> Path:
+    def sac_path(self, root: str | Path) -> Path:
         return (
             Path(root)
             / self.network
             / self.station
             / str(self.year)
-            / self.sac_filename(merged=merged)
+            / self.sac_filename()
         )
 
     def matches_sac_path(self, path: str | Path, root: str | Path) -> bool:
-        candidate = Path(path)
-        return candidate == self.sac_path(root) or candidate == self.sac_path(
-            root, merged=True
-        )
+        return Path(path) == self.sac_path(root)
 
 
 def stream_day_identity(stream: Iterable[Any]) -> tuple[str, str, int, int]:

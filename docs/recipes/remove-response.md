@@ -342,3 +342,12 @@ memory on representative files. Processing formulas, output validation and the
 60-second progress-log interval are unchanged. An unexpectedly broken process
 pool stops the run without automatically retrying files with uncertain output
 state.
+
+## Previously decimated input
+
+A waveform sampling rate that differs from StationXML emits a warning rather
+than stopping response removal. This is expected when a 100 Hz archive was
+previously decimated to 25 Hz. Keep the original instrument response; it is
+evaluated on the current waveform frequency grid. NSLC and response-epoch
+coverage must still match. An unexpected rate mismatch should be investigated.
+See [Teleseismic processing](teleseismic-processing.md) for both workflows.

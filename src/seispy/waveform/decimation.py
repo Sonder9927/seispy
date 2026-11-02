@@ -4,7 +4,7 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from importlib.resources import files
 from pathlib import Path
 from typing import Callable, Sequence
@@ -92,8 +92,9 @@ def decimate_waveforms(
     save_report: bool | None = True,
     save_log: bool = True,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    output_format: str | None = None,
 ) -> DecimationSummary:
-    """Decimate matching SAC files in balanced process batches.
+    """Decimate SAC or MiniSEED files in balanced process batches.
 
     Both adapters accept the same ordered sequence of SAC-compatible integer
     factors. The SciPy adapter applies bundled SAC Community symmetric FIR
@@ -104,6 +105,9 @@ def decimate_waveforms(
     are never modified or removed.
 
     Args:
+        output_format: None preserves each input format; otherwise "sac" or
+            "mseed". MiniSEED uses FLOAT32 encoding for filtered samples.
+            SAC output requires one trace per input file.
         src_dir: Root directory searched recursively for waveform files.
         factors: One factor or an ordered sequence of factors from 2 through 7.
             The output rate is the input rate divided by their product.
@@ -154,10 +158,32 @@ def decimate_waveforms(
         raise ValueError("batch_size must be at least 1")
     values = _normalize_factors(factors)
     worker = _decimation_backend(backend)
+    if output_format is not None:
+        output_format = output_format.lower()
+        if output_format not in {"sac", "mseed"}:
+            raise ValueError("output_format must be sac, mseed, or None")
+        if backend == "sac" and output_format != "sac":
+            raise ValueError("the SAC backend only supports SAC input and output")
+        if backend == "scipy":
+            worker = partial(worker, output_format=output_format)
     output_path = _resolve_output_dir(src_path, output_dir)
     worker_sample_limit = min(max_error_samples, 1)
 
     targets = _input_files(src_path, pattern)
+    if output_format is not None:
+        destinations = [
+            target.relative_to(src_path).with_suffix("." + output_format)
+            for target in targets
+        ]
+        if len(set(destinations)) != len(destinations):
+            raise ValueError(
+                "output_format maps multiple inputs to the same output path"
+            )
+    if backend == "sac":
+        for target in targets:
+            headers = obspy.read(target, headonly=True)
+            if any(getattr(trace.stats, "_format", None) != "SAC" for trace in headers):
+                raise ValueError("the SAC backend only supports SAC input")
     with BatchRun(
         "decimate",
         output_path,
@@ -353,6 +379,8 @@ def _scipy_decimate_batch(
     src_root,
     output_dir,
     max_error_samples,
+    *,
+    output_format=None,
 ):
     succeeded = failed = 0
     samples = []
@@ -361,9 +389,19 @@ def _scipy_decimate_batch(
         temporary = temporary_output_path(destination)
         try:
             stream = obspy.read(target)
+            input_format = getattr(stream[0].stats, "_format", "SAC").upper()
+            format_name = (output_format or input_format).upper()
+            if format_name not in {"SAC", "MSEED"}:
+                raise ValueError("only SAC and MiniSEED inputs are supported")
+            if format_name == "SAC" and len(stream) != 1:
+                raise ValueError("SAC output requires a single trace per input file")
+            if output_format is not None:
+                destination = destination.with_suffix("." + output_format)
+                temporary = temporary_output_path(destination)
             for trace in stream:
                 _sac_compatible_decimate_trace(trace, factors)
-            stream.write(str(temporary), format="SAC")
+            options = {"encoding": "FLOAT32"} if format_name == "MSEED" else {}
+            stream.write(str(temporary), format=format_name, **options)
             commit_output(temporary, destination, overwrite=True)
             succeeded += 1
         except Exception as exc:

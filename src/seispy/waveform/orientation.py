@@ -37,6 +37,7 @@ def correct_orientation(
     apply_tilt: bool = False,
     output_prefix: str | None = None,
     pattern: str = "*.sac",
+    layout: str = "archive",
     max_workers: int = 4,
     files_per_pool: int | None = 1024,
     overwrite: bool = False,
@@ -48,8 +49,13 @@ def correct_orientation(
 
     Directions come from standard StationXML Azimuth/Dip, not channel suffixes
     or filenames. Defaults select only BHZ/BHN/BHE; BHH is ignored. Input files
-    can be anywhere beneath source_dir. Groups are network/station/location and
-    coverage day; counters count these groups, not individual output files.
+    can be anywhere beneath source_dir in archive mode. Counters count
+    station/location/day or event groups, not individual output files.
+
+    layout="archive" groups by coverage day and writes canonical archive paths.
+    layout="event" groups by direct event subdirectory instead of day, keeping
+    overlapping events separate and cross-midnight events together. Outputs
+    use header-derived NSLC and the unchanged event name, with segment suffixes.
 
     apply_tilt=False solves the horizontal two-axis basis and preserves an
     upward vertical axis (negates a downward axis). Dips are otherwise ignored.
@@ -88,7 +94,7 @@ def correct_orientation(
         )
     if not isinstance(apply_tilt, bool):
         raise ValueError("apply_tilt must be a bool")
-    _, output, files, inv = inputs(
+    source, output, files, inv = inputs(
         source_dir,
         output_dir,
         inventory,
@@ -96,6 +102,7 @@ def correct_orientation(
         max_workers,
         files_per_pool,
         max_error_samples,
+        layout,
     )
     groups, issues, ignored = defaultdict(list), [], 0
     for path in files:
@@ -108,12 +115,17 @@ def correct_orientation(
                 tr.stats.network,
                 tr.stats.station,
                 tr.stats.location,
-                str(coverage_day(tr.stats)),
+                path.relative_to(source).parts[0]
+                if layout == "event"
+                else str(coverage_day(tr.stats)),
             )
             groups[key].append(path)
         except Exception as exc:
             issues.append(CorrectionIssue("", path, f"{type(exc).__name__}: {exc}"))
-    tasks = [dict(paths=tuple(paths)) for _, paths in sorted(groups.items())]
+    tasks = [
+        dict(paths=tuple(paths), event=key[-1] if layout == "event" else None)
+        for key, paths in sorted(groups.items())
+    ]
     return run(
         tasks,
         _orientation_batch,
@@ -277,8 +289,30 @@ def _orientation_batch(tasks, output, inv, components, apply_tilt, prefix, overw
                 prefix,
                 input_samples - sum(len(tr) for tr in traces),
             )
-            written = write_group(traces, output, overwrite)
+            destinations = (
+                _event_destinations(traces, output, task["event"])
+                if task["event"] is not None
+                else None
+            )
+            written = write_group(traces, output, overwrite, destinations=destinations)
             results.append(dict(status="succeeded", files_written=written))
         except Exception as exc:
             results.append(failure(task["paths"], exc))
     return results
+
+
+def _event_destinations(traces, output, event):
+    """Name rotated event segments without inferring identity from filenames."""
+    counts = {}
+    for tr in traces:
+        counts[tr.id] = counts.get(tr.id, 0) + 1
+    indices = {}
+    destinations = []
+    for tr in traces:
+        stats = tr.stats
+        stem = f"{stats.network}.{stats.station}.{stats.location or '--'}.{stats.channel}.{event}"
+        if counts[tr.id] > 1:
+            indices[tr.id] = indices.get(tr.id, 0) + 1
+            stem += f".s{indices[tr.id]:02d}"
+        destinations.append(output / event / f"{stem}.sac")
+    return destinations

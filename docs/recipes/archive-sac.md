@@ -66,7 +66,7 @@ data/sac/
 └── NZ/
     └── WEL/
         └── 2025/
-            └── NZ.WEL.10.BHZ.2025.001.000000.sac
+            └── NZ.WEL.10.BHZ.2025.001.sac
 ```
 
 ## Next step
@@ -75,3 +75,7 @@ Use [Merge continuous SAC files by day](merge-sac.md) when multiple segments
 belong to the same channel and UTC day.
 
 [See the interface reference →](../api/waveform.md#archive-waveform-files)
+
+Complete UTC days omit the clock token, matching MiniSEED archive naming.
+Partial days include the first-sample time, with fractional seconds when needed.
+Blank location codes appear as `--` in filenames while remaining blank in headers.

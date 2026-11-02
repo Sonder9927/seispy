@@ -11,7 +11,9 @@ description: Combine compatible SAC segments into one channel-day waveform.
 
 **Input:** a canonical SAC archive containing one or more segments per
 network, station, location, channel, and UTC day.<br>
-**Output:** one `.merged.sac` file for each compatible channel-day group.
+**Output:** one SAC file for each compatible channel-day group. Complete UTC
+days use `NET.STA.LOC.CHA.YYYY.JJJ.sac`; partial days append the precise
+first-sample time.
 
 ## Example
 

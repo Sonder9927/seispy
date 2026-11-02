@@ -204,3 +204,18 @@ directory containing both executables and run
 `pytest tests/test_event_binary_equivalence.py`.
 
 [ObsPy cutting API →](../api/event.md#cut-events-with-obspy)
+
+## Filter short event segments
+
+Pass `trace_filter=waveform.TraceFilter(min_duration_seconds=90 * 60)` to
+`event.cut_event_waveforms` to exclude segments shorter than 90 minutes before
+writing them. Import `waveform` from `seispy`. Filtering runs after lossless
+merging and window trimming, so it measures actual cut data rather than the
+requested window or the combined duration of disjoint segments. Duration uses
+`npts / sampling_rate`, consistent with other `TraceFilter` interfaces.
+
+The default `trace_filter=None` preserves the existing output selection.
+`summary.traces_filtered` counts rejected segments and `summary.skipped` counts
+fully filtered event/station tasks. Intentional filtering does not count as a
+failure or create an empty event directory; remaining partial or gapped output
+still appears in coverage diagnostics.

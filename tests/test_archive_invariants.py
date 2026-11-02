@@ -68,13 +68,13 @@ def _identities(draw):
     )
 
 
-@given(identity=_identities(), merged=st.booleans())
-def test_sac_archive_path_round_trips_header_identity(identity, merged):
+@given(identity=_identities())
+def test_sac_archive_path_round_trips_header_identity(identity):
     root = Path("archive")
-    path = identity.sac_path(root, merged=merged)
-    suffix = "merged" if merged else identity.starttime.strftime("%H%M%S")
+    path = identity.sac_path(root)
+    suffix = identity.starttime.strftime("%H%M%S")
     expected_name = (
-        f"{identity.network}.{identity.station}.{identity.location}."
+        f"{identity.network}.{identity.station}.{identity.location or '--'}."
         f"{identity.channel}.{identity.year}."
         f"{identity.julday:03d}.{suffix}.sac"
     )

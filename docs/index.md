@@ -33,8 +33,18 @@ to a working example; change the paths and selectors to match your data.
 
 ## Complete workflows
 
-- [GeoNet: download and process one day](recipes/geonet-one-day-workflow.md)
-- [OBS: archive, remove response, shift clocks, and rotate axes](recipes/obs-processing.md)
+Choose the input you have and the product you need:
+
+| Input | Product | Complete example |
+| --- | --- | --- |
+| Public GeoNet data | Continuous 5 Hz displacement | [GeoNet continuous data](recipes/geonet-one-day-workflow.md) |
+| Prepared 50 Hz OBS SAC | Source archive and corrected daily 5 Hz Z/N/E | [OBS continuous data](recipes/obs-processing.md) |
+| Continuous 100 Hz MiniSEED archive | Three-hour events, calibrated and decimated to 1 Hz | [Teleseismic events from MiniSEED](recipes/teleseismic-processing.md) |
+| 50 Hz OBS source archive | Three-hour events with response, clock and axis corrections at 1 Hz | [OBS teleseismic events](recipes/obs-teleseismic.md) |
+
+The OBS continuous workflow creates a reusable source archive. Branch from
+that archive for event processing; no need to repeat archiving or complete the
+daily calibration stages first.
 
 ## Reference
 

@@ -47,7 +47,7 @@ def test_conversion_writes_sac_and_preserves_source(tmp_path):
     assert result.traces_written == 1
     assert source.read_bytes() == b"mseed"
     destination = (
-        tmp_path / "output" / "NZ" / "AAA" / "2026" / "NZ.AAA..BHZ.2026.008.010203.sac"
+        tmp_path / "output" / "NZ" / "AAA" / "2026" / "NZ.AAA.--.BHZ.2026.008.010203.sac"
     )
     assert destination.read_bytes() == b"sac"
 

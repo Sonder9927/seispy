@@ -105,9 +105,7 @@ def _group_targets(src: Path, pattern: str):
     groups = defaultdict(list)
     errors = []
     for path in sorted(
-        candidate
-        for candidate in src.rglob(pattern)
-        if candidate.is_file() and not candidate.name.lower().endswith(".merged.sac")
+        candidate for candidate in src.rglob(pattern) if candidate.is_file()
     ):
         try:
             stream = obspy.read(path, headonly=True)
@@ -137,7 +135,7 @@ def _merge_targets(
         merge_short_gaps(st)
         if len(st) != 1:
             raise ValueError("SAC segments did not merge into one continuous trace")
-        destination = identities[0].sac_path(output_dir, merged=True)
+        destination = WaveformIdentity.from_trace(st[0]).sac_path(output_dir)
         if destination.exists() and not overwrite:
             raise FileExistsError(destination)
         temporary = temporary_output_path(destination)
