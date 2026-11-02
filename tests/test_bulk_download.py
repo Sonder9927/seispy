@@ -21,105 +21,116 @@ def _inventory():
     return Inventory([Network(code="NZ", stations=[station])], source="test")
 
 
-def test_mass_download_builds_daily_flat_storage_and_restrictions(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "mass_download_builds_daily_flat_storage_and_restrictions",
+        "mass_download_defaults_to_global_domain",
+    ],
+)
+def test_download_domains(tmp_path, scenario):
     downloader = Mock()
+    if scenario == "mass_download_builds_daily_flat_storage_and_restrictions":
 
-    def download(domain, restrictions, **kwargs):
-        filename = kwargs["mseed_storage"](
-            "NZ",
-            "WEL",
-            "10",
-            "BHZ",
-            UTCDateTime("2025-01-01"),
-            UTCDateTime("2025-01-02"),
+        def download(domain, restrictions, **kwargs):
+            filename = kwargs["mseed_storage"](
+                "NZ",
+                "WEL",
+                "10",
+                "BHZ",
+                UTCDateTime("2025-01-01"),
+                UTCDateTime("2025-01-02"),
+            )
+            path = Path(filename)
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"mseed")
+            stationxml = Path(
+                kwargs["stationxml_storage"].format(network="NZ", station="WEL")
+            )
+            stationxml.write_text("xml")
+
+        downloader.download.side_effect = download
+        domain = object()
+        with patch.object(bulk, "MassDownloader", return_value=downloader) as factory:
+            result = bulk.mass_download_waveforms(
+                tmp_path / "mseed",
+                "2025-01-01",
+                "2025-01-03",
+                domain=domain,
+                providers="GEONET",
+                network="NZ",
+                station="WEL",
+                location="10",
+                channel="BHZ",
+                threads_per_client=2,
+            )
+
+        factory.assert_called_once_with(providers=["GEONET"])
+        args, kwargs = downloader.download.call_args
+        restrictions = args[1]
+        assert args[0] is domain
+        assert restrictions.network == "NZ"
+        assert restrictions.station == "WEL"
+        assert restrictions.chunklength == 86_400
+        assert kwargs["threads_per_client"] == 2
+        assert result.mseed_files == (
+            result.output_dir / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.2025.001.mseed",
         )
-        path = Path(filename)
-        path.parent.mkdir(parents=True)
-        path.write_bytes(b"mseed")
-        stationxml = Path(
-            kwargs["stationxml_storage"].format(network="NZ", station="WEL")
-        )
-        stationxml.write_text("xml")
+        assert len(result.stationxml_files) == 1
+        assert result.stationxml_dir == tmp_path / "metadata"
+        assert result.status == "completed"
+        assert result.report_path.is_file()
+        assert result.log_path.is_file()
+    elif scenario == "mass_download_defaults_to_global_domain":
+        with (
+            patch.object(bulk, "MassDownloader", return_value=downloader),
+            patch.object(bulk, "GlobalDomain", return_value="global") as global_domain,
+        ):
+            bulk.mass_download_waveforms(
+                tmp_path, "2025-01-01", "2025-01-02", network="NZ"
+            )
 
-    downloader.download.side_effect = download
-    domain = object()
-    with patch.object(bulk, "MassDownloader", return_value=downloader) as factory:
-        result = bulk.mass_download_waveforms(
-            tmp_path / "mseed",
-            "2025-01-01",
-            "2025-01-03",
-            domain=domain,
-            providers="GEONET",
-            network="NZ",
-            station="WEL",
-            location="10",
-            channel="BHZ",
-            threads_per_client=2,
-        )
-
-    factory.assert_called_once_with(providers=["GEONET"])
-    args, kwargs = downloader.download.call_args
-    restrictions = args[1]
-    assert args[0] is domain
-    assert restrictions.network == "NZ"
-    assert restrictions.station == "WEL"
-    assert restrictions.chunklength == 86_400
-    assert kwargs["threads_per_client"] == 2
-    assert result.mseed_files == (
-        result.output_dir / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.2025.001.mseed",
-    )
-    assert len(result.stationxml_files) == 1
-    assert result.stationxml_dir == tmp_path / "metadata"
-    assert result.status == "completed"
-    assert result.report_path.is_file()
-    assert result.log_path.is_file()
+        global_domain.assert_called_once_with()
+        assert downloader.download.call_args.args[0] == "global"
 
 
-def test_mass_download_defaults_to_global_domain(tmp_path):
-    downloader = Mock()
-    with (
-        patch.object(bulk, "MassDownloader", return_value=downloader),
-        patch.object(bulk, "GlobalDomain", return_value="global") as global_domain,
-    ):
-        bulk.mass_download_waveforms(tmp_path, "2025-01-01", "2025-01-02", network="NZ")
-
-    global_domain.assert_called_once_with()
-    assert downloader.download.call_args.args[0] == "global"
-
-
-def test_mass_download_uses_supplied_inventory_as_station_limit(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "mass_download_uses_supplied_inventory_as_station_limit",
+        "mass_download_reads_stationxml_inventory",
+    ],
+)
+def test_station_limits(tmp_path, scenario):
     downloader = Mock()
     inventory = _inventory()
-    with patch.object(bulk, "MassDownloader", return_value=downloader):
-        bulk.mass_download_waveforms(
-            tmp_path,
-            "2025-01-01",
-            "2025-01-02",
-            inventory=inventory,
-        )
+    if scenario == "mass_download_uses_supplied_inventory_as_station_limit":
+        with patch.object(bulk, "MassDownloader", return_value=downloader):
+            bulk.mass_download_waveforms(
+                tmp_path,
+                "2025-01-01",
+                "2025-01-02",
+                inventory=inventory,
+            )
 
-    restrictions = downloader.download.call_args.args[1]
-    assert restrictions.limit_stations_to_inventory == {("NZ", "WEL")}
+        restrictions = downloader.download.call_args.args[1]
+        assert restrictions.limit_stations_to_inventory == {("NZ", "WEL")}
+    elif scenario == "mass_download_reads_stationxml_inventory":
+        stationxml = tmp_path / "input.xml"
+        with (
+            patch.object(bulk, "MassDownloader", return_value=downloader),
+            patch.object(bulk, "read_inventory", return_value=inventory) as read,
+        ):
+            bulk.mass_download_waveforms(
+                tmp_path / "output",
+                "2025-01-01",
+                "2025-01-02",
+                inventory=stationxml,
+            )
 
-
-def test_mass_download_reads_stationxml_inventory(tmp_path):
-    downloader = Mock()
-    inventory = _inventory()
-    stationxml = tmp_path / "input.xml"
-    with (
-        patch.object(bulk, "MassDownloader", return_value=downloader),
-        patch.object(bulk, "read_inventory", return_value=inventory) as read,
-    ):
-        bulk.mass_download_waveforms(
-            tmp_path / "output",
-            "2025-01-01",
-            "2025-01-02",
-            inventory=stationxml,
-        )
-
-    read.assert_called_once_with(str(stationxml), format="STATIONXML")
-    restrictions = downloader.download.call_args.args[1]
-    assert restrictions.limit_stations_to_inventory == {("NZ", "WEL")}
+        read.assert_called_once_with(str(stationxml), format="STATIONXML")
+        restrictions = downloader.download.call_args.args[1]
+        assert restrictions.limit_stations_to_inventory == {("NZ", "WEL")}
 
 
 def test_mass_download_validates_options_before_creating_downloader(tmp_path):

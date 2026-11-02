@@ -140,105 +140,112 @@ def test_archive_to_cut_matches_sac_path(tmp_path, segments, with_station_metada
     assert summaries[0].overlapping_channels == int(segments == "overlap")
 
 
-def test_multitrace_file_indexes_every_segment_and_reuses_file_cache(tmp_path):
-    source = tmp_path / "source"
-    source.mkdir()
-    Stream(
-        [trace(-2, 4), trace(4, 2), trace(channel="BHN"), trace(station="OTHER")]
-    ).write(source / "multi.mseed", format="MSEED")
-    index = WaveformArchiveIndex.build(source, pattern="*.mseed")
-    assert not index.issues
-    assert index.station_keys == (("NZ", "OTHER"), ("NZ", "WEL"))
-    assert len(index.records_for_station("NZ", "WEL")) == 3
-    records = index.overlapping("NZ", "WEL", BASE - 1, BASE + 5)
-    # The first segment spans midnight and must not appear twice.
-    assert len(records) == 3
-    reader = WaveformReader()
-    with patch("seispy.event.archive_index.obspy.read", wraps=read) as load:
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "multitrace_file_indexes_every_segment_and_reuses_file_cache",
+        "multitrace_conflicting_overlap_preserves_both_sources",
+        "public_multitrace_cut_with_multiple_station_workers",
+        "multitrace_index_filters_stations_and_reader_detects_changed_headers",
+    ],
+)
+def test_multitrace_pipeline(tmp_path, scenario):
+    if scenario == "multitrace_file_indexes_every_segment_and_reuses_file_cache":
+        source = tmp_path / "source"
+        source.mkdir()
+        Stream(
+            [trace(-2, 4), trace(4, 2), trace(channel="BHN"), trace(station="OTHER")]
+        ).write(source / "multi.mseed", format="MSEED")
+        index = WaveformArchiveIndex.build(source, pattern="*.mseed")
+        assert not index.issues
+        assert index.station_keys == (("NZ", "OTHER"), ("NZ", "WEL"))
+        assert len(index.records_for_station("NZ", "WEL")) == 3
+        records = index.overlapping("NZ", "WEL", BASE - 1, BASE + 5)
+        # The first segment spans midnight and must not appear twice.
+        assert len(records) == 3
+        reader = WaveformReader()
+        with patch("seispy.event.archive_index.obspy.read", wraps=read) as load:
+            result = cut_event_station(
+                event(),
+                {"network": "NZ", "station": "WEL"},
+                tmp_path / "out",
+                archive_index=index,
+                waveform_reader=reader,
+            )
+            record = records[0]
+            first = reader.read(record)
+            first[0].data[:] = -999
+            assert np.all(reader.read(record)[0].data != -999)
+        assert load.call_count == 1
+        assert result.read_failed == 0
+        assert result.outputs == 3
+        assert result.channels == 2
+        assert result.gapped_channels == 1
+        actual = sorted(
+            (read(p)[0] for p in (tmp_path / "out").rglob("*.sac")),
+            key=lambda tr: (tr.id, tr.stats.starttime),
+        )
+        assert all(tr.stats.station == "WEL" for tr in actual)
+        z = [tr for tr in actual if tr.stats.channel == "BHZ"]
+        np.testing.assert_array_equal(z[0].data, [2, 3])
+        np.testing.assert_array_equal(z[1].data, [0, 1])
+        assert result.coverage_samples[0].coverage_fraction == pytest.approx(4 / 6)
+    elif scenario == "multitrace_conflicting_overlap_preserves_both_sources":
+        Stream([trace(0, 5), trace(2, 5, bias=100)]).write(
+            tmp_path / "overlap.mseed", format="MSEED"
+        )
+        index = WaveformArchiveIndex.build(tmp_path, pattern="*.mseed")
         result = cut_event_station(
             event(),
             {"network": "NZ", "station": "WEL"},
             tmp_path / "out",
             archive_index=index,
-            waveform_reader=reader,
         )
-        record = records[0]
-        first = reader.read(record)
-        first[0].data[:] = -999
-        assert np.all(reader.read(record)[0].data != -999)
-    assert load.call_count == 1
-    assert result.read_failed == 0
-    assert result.outputs == 3
-    assert result.channels == 2
-    assert result.gapped_channels == 1
-    actual = sorted(
-        (read(p)[0] for p in (tmp_path / "out").rglob("*.sac")),
-        key=lambda tr: (tr.id, tr.stats.starttime),
-    )
-    assert all(tr.stats.station == "WEL" for tr in actual)
-    z = [tr for tr in actual if tr.stats.channel == "BHZ"]
-    np.testing.assert_array_equal(z[0].data, [2, 3])
-    np.testing.assert_array_equal(z[1].data, [0, 1])
-    assert result.coverage_samples[0].coverage_fraction == pytest.approx(4 / 6)
-
-
-def test_multitrace_conflicting_overlap_preserves_both_sources(tmp_path):
-    Stream([trace(0, 5), trace(2, 5, bias=100)]).write(
-        tmp_path / "overlap.mseed", format="MSEED"
-    )
-    index = WaveformArchiveIndex.build(tmp_path, pattern="*.mseed")
-    result = cut_event_station(
-        event(),
-        {"network": "NZ", "station": "WEL"},
-        tmp_path / "out",
-        archive_index=index,
-    )
-    assert result.outputs == 2
-    assert result.overlapping_channels == 1
-    arrays = [
-        read(p)[0].data.tolist() for p in sorted((tmp_path / "out").rglob("*.sac"))
-    ]
-    assert arrays == [[0, 1, 2, 3, 4], [100, 101, 102, 103]]
-
-
-def test_public_multitrace_cut_with_multiple_station_workers(tmp_path):
-    source = tmp_path / "source"
-    source.mkdir()
-    Stream([trace(0, 2), trace(4, 2), trace(station="OTHER")]).write(
-        source / "multi.mseed", format="MSEED"
-    )
-    catalog = tmp_path / "events.csv"
-    catalog.write_text(
-        "time,latitude,longitude,depth,mag\n"
-        "2025-01-02T00:00:00.000000Z,1,2,3,4\n"
-        "2025-01-02T00:00:01.250000Z,1,2,3,4\n"
-    )
-    summary = cut_event_waveforms(
-        source,
-        catalog,
-        pattern="*.mseed",
-        output_dir=tmp_path / "out",
-        time_window=5,
-        max_workers=2,
-        save_log=False,
-        save_report=False,
-    )
-    assert summary.total == summary.succeeded == 4
-    assert summary.failed == summary.input_read_failed == 0
-    assert summary.outputs_written == 6
-    assert summary.gapped_channels == 2
-
-
-def test_multitrace_index_filters_stations_and_reader_detects_changed_headers(tmp_path):
-    path = tmp_path / "multi.mseed"
-    original = Stream([trace(), trace(station="OTHER")])
-    original.write(path, format="MSEED")
-    index = WaveformArchiveIndex.build(
-        tmp_path, pattern="*.mseed", stations={("NZ", "WEL")}
-    )
-    assert index.station_keys == (("NZ", "WEL"),)
-    record = index.records_for_station("NZ", "WEL")[0]
-    original[0].stats.sampling_rate = 2
-    original.write(path, format="MSEED")
-    with pytest.raises(ValueError, match="headers changed"):
-        WaveformReader().read(record)
+        assert result.outputs == 2
+        assert result.overlapping_channels == 1
+        arrays = [
+            read(p)[0].data.tolist() for p in sorted((tmp_path / "out").rglob("*.sac"))
+        ]
+        assert arrays == [[0, 1, 2, 3, 4], [100, 101, 102, 103]]
+    elif scenario == "public_multitrace_cut_with_multiple_station_workers":
+        source = tmp_path / "source"
+        source.mkdir()
+        Stream([trace(0, 2), trace(4, 2), trace(station="OTHER")]).write(
+            source / "multi.mseed", format="MSEED"
+        )
+        catalog = tmp_path / "events.csv"
+        catalog.write_text(
+            "time,latitude,longitude,depth,mag\n"
+            "2025-01-02T00:00:00.000000Z,1,2,3,4\n"
+            "2025-01-02T00:00:01.250000Z,1,2,3,4\n"
+        )
+        summary = cut_event_waveforms(
+            source,
+            catalog,
+            pattern="*.mseed",
+            output_dir=tmp_path / "out",
+            time_window=5,
+            max_workers=2,
+            save_log=False,
+            save_report=False,
+        )
+        assert summary.total == summary.succeeded == 4
+        assert summary.failed == summary.input_read_failed == 0
+        assert summary.outputs_written == 6
+        assert summary.gapped_channels == 2
+    elif (
+        scenario
+        == "multitrace_index_filters_stations_and_reader_detects_changed_headers"
+    ):
+        path = tmp_path / "multi.mseed"
+        original = Stream([trace(), trace(station="OTHER")])
+        original.write(path, format="MSEED")
+        index = WaveformArchiveIndex.build(
+            tmp_path, pattern="*.mseed", stations={("NZ", "WEL")}
+        )
+        assert index.station_keys == (("NZ", "WEL"),)
+        record = index.records_for_station("NZ", "WEL")[0]
+        original[0].stats.sampling_rate = 2
+        original.write(path, format="MSEED")
+        with pytest.raises(ValueError, match="headers changed"):
+            WaveformReader().read(record)

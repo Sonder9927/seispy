@@ -17,18 +17,10 @@ xr = pytest.importorskip("xarray")
 from seispy.mcmc.config import load_config  # noqa: E402
 from seispy.mcmc.dispersion import (  # noqa: E402
     DispersionCurve,
-    DispersionGrid,
     build_dispersion_grid,
     read_dispersion_data,
 )
 from seispy.mcmc.gridding import TargetGrid  # noqa: E402
-from seispy.mcmc.inputs import (  # noqa: E402
-    coordinate_key,
-    coordinate_pair_key,
-    netcdf_variable_frame,
-    pick_name,
-    read_table,
-)
 from seispy.mcmc.spatial import (  # noqa: E402
     ScalarFieldSpec,
     build_target_fields,
@@ -52,146 +44,59 @@ def _target(region=(0.0, 1.0, 0.0, 1.0), spacing=0.5):
 # =========================
 
 
-def test_pick_name_returns_first_candidate_available():
-    # Candidate order wins: the caller states its alias preference.
-    assert pick_name(["foo", "lon", "x"], ("x", "lon")) == "x"
-    assert pick_name(["foo", "lon"], ("x", "lon")) == "lon"
-    assert pick_name(["foo"], ("x", "lon")) is None
-
-
-def test_coordinate_keys_round_to_the_shared_precision():
-    assert coordinate_key(1.0000004) == 1.0
-    assert coordinate_pair_key(1.0000004, 2.0000004) == (1.0, 2.0)
-
-
-def test_read_table_accepts_csv(tmp_path):
-    csv = tmp_path / "table.csv"
-    pd.DataFrame({"a": [1, 2]}).to_csv(csv, index=False)
-    pd.testing.assert_frame_equal(read_table(csv), pd.read_csv(csv))
-
-    with pytest.raises(ValueError, match="Expected CSV or Parquet"):
-        read_table(tmp_path / "table.txt")
-
-
-def test_read_table_accepts_parquet(tmp_path, requires_pyarrow):
-    parquet = tmp_path / "table.parquet"
-    pd.DataFrame({"a": [1, 2]}).to_parquet(parquet, index=False)
-    pd.testing.assert_frame_equal(read_table(parquet), pd.DataFrame({"a": [1, 2]}))
-
-
-def test_netcdf_variable_frame_exposes_coordinates(tmp_path):
-    path = tmp_path / "grid.nc"
-    xr.Dataset(
-        {"shear_velocity": (("lat", "lon"), [[3.0, 3.1]])},
-        coords={"lon": [10.0, 11.0], "lat": [50.0]},
-    ).to_netcdf(path)
-
-    frame = netcdf_variable_frame(path, ("vs", "vsv", "shear_velocity"), name="model")
-    assert set(frame.columns) == {"lon", "lat", "shear_velocity"}
-    np.testing.assert_allclose(frame["shear_velocity"], [3.0, 3.1])
-
-    with pytest.raises(ValueError, match="cannot determine NetCDF value variable"):
-        netcdf_variable_frame(path, ("unknown",), name="model")
-
-
 # =========================
 # SPATIAL SCALAR FIELDS
 # =========================
 
 
+@pytest.mark.parametrize("format", ["csv", "parquet", "nc", "xyz"])
+def test_scalar_sources(tmp_path, format):
+    path = tmp_path / f"moho.{format}"
+    values = np.array([40.0, 42.0])
+    frame = pd.DataFrame(dict(longitude=[0.0, 1.0], latitude=[0.0, 0.0], depth=-values))
+    if format == "csv":
+        frame.to_csv(path, index=False)
+    elif format == "parquet":
+        frame.to_parquet(path, index=False)
+    elif format == "nc":
+        xr.Dataset(
+            {"depth": (("latitude", "longitude"), [-values])},
+            coords={"longitude": [0.0, 1.0], "latitude": [0.0]},
+        ).to_netcdf(path)
+    else:
+        np.savetxt(path, frame.to_numpy())
+    result = read_spatial_scalar(
+        path,
+        ScalarFieldSpec(
+            "moho",
+            convention="positive_depth",
+            value_columns=("depth",),
+            allow_zero=False,
+        ),
+    )
+    np.testing.assert_allclose(result[:, 2], values)
+    for data, zero, error in [
+        ([1.0, -1.0], True, "mixed positive and negative"),
+        ([1.0, 0.0], False, "zero values"),
+    ]:
+        with pytest.raises(ValueError, match=error):
+            normalize_scalar_values(
+                np.array(data),
+                convention="positive_depth",
+                name="field",
+                allow_zero=zero,
+            )
+
+
 @pytest.mark.parametrize(
-    "convention,values,expected",
+    "region,spacing",
     [
-        ("raw", [-1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]),
-        ("positive_depth", [1.0, 2.0], [1.0, 2.0]),
-        ("positive_thickness", [-1.0, -2.0], [1.0, 2.0]),
-        ("positive_thickness", [0.0, 0.0], [0.0, 0.0]),
+        ((0.0, 2.0, 0.0, 2.0), 1.0),
+        ((0.5, 1.5, 0.5, 1.5), 0.5),
+        ((-0.5, 2.0, 0.0, 2.0), 0.5),
     ],
 )
-def test_normalize_scalar_values(convention, values, expected):
-    result = normalize_scalar_values(
-        np.asarray(values, dtype=float),
-        convention=convention,
-        name="field",
-        allow_zero=True,
-    )
-    np.testing.assert_allclose(result, expected)
-
-
-def test_normalize_scalar_values_rejects_mixed_signs_and_forbidden_zero():
-    with pytest.raises(ValueError, match="mixed positive and negative"):
-        normalize_scalar_values(
-            np.array([1.0, -1.0]),
-            convention="positive_depth",
-            name="field",
-            allow_zero=True,
-        )
-    with pytest.raises(ValueError, match="zero values"):
-        normalize_scalar_values(
-            np.array([1.0, 0.0]),
-            convention="positive_depth",
-            name="field",
-            allow_zero=False,
-        )
-
-
-def test_read_spatial_scalar_accepts_csv_and_netcdf(tmp_path):
-    topography = tmp_path / "topography.csv"
-    pd.DataFrame(
-        {
-            "longitude": [0.0, 1.0],
-            "latitude": [0.0, 1.0],
-            "elevation": [100.0, 200.0],
-        }
-    ).to_csv(topography, index=False)
-
-    sediment = tmp_path / "sediment.nc"
-    xr.Dataset(
-        {"thickness": (("latitude", "longitude"), [[5.0, 6.0], [7.0, 8.0]])},
-        coords={"longitude": [0.0, 1.0], "latitude": [0.0, 1.0]},
-    ).to_netcdf(sediment)
-
-    moho = tmp_path / "moho.xyz"
-    np.savetxt(moho, np.array([[0.0, 0.0, -40.0], [1.0, 1.0, -42.0]]))
-
-    topo = read_spatial_scalar(
-        topography, ScalarFieldSpec(name="topography", value_columns=("elevation",))
-    )
-    sed = read_spatial_scalar(
-        sediment,
-        ScalarFieldSpec(
-            name="sediment",
-            convention="positive_thickness",
-            value_columns=("thickness",),
-        ),
-    )
-    moho_values = read_spatial_scalar(
-        moho,
-        ScalarFieldSpec(
-            name="moho",
-            convention="positive_depth",
-            value_columns=(),
-            allow_zero=False,
-        ),
-    )
-
-    np.testing.assert_allclose(topo[:, 2], [100.0, 200.0])
-    np.testing.assert_allclose(sed[:, 2], [5.0, 6.0, 7.0, 8.0])
-    np.testing.assert_allclose(moho_values[:, 2], [40.0, 42.0])
-
-
-def test_read_spatial_scalar_accepts_parquet(tmp_path, requires_pyarrow):
-    path = tmp_path / "topography.parquet"
-    pd.DataFrame({"x": [0.0, 1.0], "y": [0.0, 1.0], "topo": [1.0, 2.0]}).to_parquet(
-        path, index=False
-    )
-    result = read_spatial_scalar(
-        path, ScalarFieldSpec("topography", value_columns=("topo",))
-    )
-    np.testing.assert_allclose(result[:, 2], [1.0, 2.0])
-
-
-def test_interpolate_regular_grid_is_exact_for_a_bilinear_field(monkeypatch):
+def test_regular_interpolation(monkeypatch, region, spacing):
     monkeypatch.setitem(sys.modules, "pygmt", None)
     source = np.array(
         [
@@ -200,30 +105,16 @@ def test_interpolate_regular_grid_is_exact_for_a_bilinear_field(monkeypatch):
             for x in [0.0, 1.0, 2.0]
         ]
     )
-    result = interpolate_regular_grid(source[::-1], _target((0.5, 1.5, 0.5, 1.5), 0.5))
-    x, y = np.meshgrid([0.5, 1.0, 1.5], [0.5, 1.0, 1.5])
-    np.testing.assert_allclose(result.values, 2 + x + 3 * y + x * y)
-    np.testing.assert_array_equal(result.x, x[0])
-    np.testing.assert_array_equal(result.y, y[:, 0])
-
-
-def test_interpolate_regular_grid_copies_an_exact_target_without_gmt(monkeypatch):
-    monkeypatch.setitem(sys.modules, "pygmt", None)
-    source = np.array(
-        [[x, y, x + 10.0 * y] for y in [0.0, 0.5, 1.0] for x in [0.0, 0.5, 1.0]]
-    )
-    result = interpolate_regular_grid(source, _target(spacing=0.5))
-    np.testing.assert_allclose(result.coords["x"], [0.0, 0.5, 1.0])
-    np.testing.assert_allclose(result.coords["y"], [0.0, 0.5, 1.0])
-    np.testing.assert_allclose(
-        result.values, [[0.0, 0.5, 1.0], [5.0, 5.5, 6.0], [10.0, 10.5, 11.0]]
-    )
-
-
-def test_interpolate_regular_grid_rejects_targets_outside_the_source():
-    source = np.array([[x, y, x + y] for y in [0.0, 1.0, 2.0] for x in [0.0, 1.0, 2.0]])
-    with pytest.raises(ValueError, match="does not cover"):
-        interpolate_regular_grid(source, _target((-0.5, 2.0, 0.0, 2.0), 0.5))
+    target = _target(region, spacing)
+    if region[0] < 0:
+        with pytest.raises(ValueError, match="does not cover"):
+            interpolate_regular_grid(source, target)
+    else:
+        result = interpolate_regular_grid(source[::-1], target)
+        x, y = np.meshgrid(target.x, target.y)
+        np.testing.assert_allclose(result.values, 2 + x + 3 * y + x * y)
+        np.testing.assert_array_equal(result.x, target.x)
+        np.testing.assert_array_equal(result.y, target.y)
 
 
 @pytest.mark.parametrize("descending", [False, True])
@@ -287,98 +178,53 @@ def test_build_target_fields_on_the_target_grid(
 # =========================
 
 
-def test_read_dispersion_data_accepts_netcdf_aliases(tmp_path):
-    phase = tmp_path / "phase.nc"
-    xr.Dataset(
-        {
-            "phase_velocity": (("y", "x", "period"), [[[3.1, 3.3]]]),
-            "error": (("y", "x", "period"), [[[20.0, 25.0]]]),
-        },
-        coords={"x": [0.0], "y": [0.0], "period": [10.0, 20.0]},
-    ).to_netcdf(phase)
-
-    frame = read_dispersion_data(phase)
-    assert list(frame.columns) == ["lon", "lat", "period", "phv", "std"]
-    np.testing.assert_allclose(frame["phv"], [3.1, 3.3])
-    np.testing.assert_allclose(frame["std"], [20.0, 25.0])
-
-
-def test_read_dispersion_data_accepts_parquet_aliases(tmp_path, requires_pyarrow):
-    phase = tmp_path / "phase.parquet"
-    pd.DataFrame(
-        {
-            "x": [0.0, 0.0],
-            "y": [0.0, 0.0],
-            "T": [10.0, 20.0],
-            "vel": [3.1, 3.3],
-            "uncertainty": [20.0, 25.0],
-        }
-    ).to_parquet(phase, index=False)
-
-    frame = read_dispersion_data(phase)
-    np.testing.assert_allclose(frame["phv"], [3.1, 3.3])
-    np.testing.assert_allclose(frame["std"], [20.0, 25.0])
-
-
-def test_read_dispersion_data_rejects_missing_columns(tmp_path):
-    phase = tmp_path / "phase.csv"
-    pd.DataFrame({"lon": [0.0], "lat": [0.0], "period": [10.0]}).to_csv(
-        phase, index=False
-    )
-    with pytest.raises(ValueError, match="phase velocity"):
-        read_dispersion_data(phase)
-
-
-def test_dispersion_curve_valid_rows_filters_and_fills_sigma():
-    curve = DispersionCurve(
-        periods=np.array([10.0, np.nan, 30.0, 40.0]),
-        velocities=np.array([3.0, 3.1, np.nan, 3.4]),
-        sigmas=np.array([np.nan, 0.03, 0.03, -1.0]),
-    )
-    assert curve.valid_rows(0.05) == [(10.0, 3.0, 0.05), (40.0, 3.4, 0.05)]
-    with pytest.raises(ValueError, match="default_sigma"):
-        curve.valid_rows(0.0)
-
-
-def test_dispersion_grid_curve_at_uses_row_major_order():
+@pytest.mark.parametrize("format", ["csv", "parquet", "nc", "missing"])
+def test_dispersion_sources(tmp_path, write_mcmc_config, format):
+    path = tmp_path / ("phase.csv" if format == "missing" else f"phase.{format}")
     periods = np.array([10.0, 20.0])
-    velocities = np.arange(2 * 2 * 2, dtype=float).reshape(2, 2, 2)
-    sigmas = np.full((2, 2, 2), 0.1)
-    grid = DispersionGrid(periods=periods, velocities=velocities, sigmas=sigmas)
-
-    np.testing.assert_allclose(grid.curve_at(0).velocities, [0.0, 4.0])
-    np.testing.assert_allclose(grid.curve_at(3).velocities, [3.0, 7.0])
-    with pytest.raises(IndexError):
-        grid.curve_at(4)
-
-
-def test_build_dispersion_grid_aligns_a_regular_source(tmp_path, write_mcmc_config):
-    lon = np.arange(0.0, 1.01, 0.25)
-    lat = np.arange(0.0, 1.01, 0.25)
-    rows = [
-        (period, lo, la, 3.0 + 0.1 * lo, 10.0)
-        for period in (10.0, 20.0)
-        for la in lat
-        for lo in lon
-    ]
-    phase = tmp_path / "phase.csv"
-    pd.DataFrame(rows, columns=["period", "lon", "lat", "phv", "std"]).to_csv(
-        phase, index=False
+    axis = np.arange(0.0, 1.01, 0.25)
+    rows = [(x, y, t, 3.0 + 0.1 * x, 10.0) for t in periods for y in axis for x in axis]
+    frame = pd.DataFrame(rows, columns=["x", "y", "T", "vel", "uncertainty"])
+    if format == "missing":
+        frame.drop(columns="vel").to_csv(path, index=False)
+        with pytest.raises(ValueError, match="phase velocity"):
+            read_dispersion_data(path)
+        return
+    if format == "nc":
+        cube = frame.vel.to_numpy().reshape(2, 5, 5).transpose(1, 2, 0)
+        xr.Dataset(
+            {
+                "phase_velocity": (("y", "x", "period"), cube),
+                "error": (("y", "x", "period"), np.full(cube.shape, 10.0)),
+            },
+            coords={"x": axis, "y": axis, "period": periods},
+        ).to_netcdf(path)
+    elif format == "parquet":
+        frame.to_parquet(path, index=False)
+    else:
+        frame.to_csv(path, index=False)
+    data = read_dispersion_data(path)
+    assert list(data.columns) == ["lon", "lat", "period", "phv", "std"]
+    np.testing.assert_allclose(data.phv, 3.0 + 0.1 * data.lon)
+    np.testing.assert_allclose(data["std"], 10.0)
+    cfg = load_config(
+        write_mcmc_config(grid_spacing=0.5, paths={"phase_dispersion_file": str(path)})
     )
-
-    config_path = write_mcmc_config(
-        grid_spacing=0.5, paths={"phase_dispersion_file": str(phase)}
+    grid = build_dispersion_grid(
+        cfg, TargetGrid.from_region(cfg.region, cfg.grid_spacing)
     )
-    cfg = load_config(config_path)
-    target = TargetGrid.from_region(cfg.region, cfg.grid_spacing)
-
-    grid = build_dispersion_grid(cfg, target)
-
-    np.testing.assert_allclose(grid.periods, [10.0, 20.0])
+    np.testing.assert_allclose(grid.periods, periods)
     assert grid.velocities.shape == (2, 3, 3)
     assert np.isfinite(grid.velocities).all()
     assert grid.velocities.min() >= 3.0 and grid.velocities.max() <= 3.1
     np.testing.assert_allclose(grid.sigmas, 10.0 * cfg.input_units.phase_std_to_km_s)
+    # Exercise invalid rows and uncertainty fallback on the same public curve.
+    curve = DispersionCurve(
+        np.array([10.0, np.nan, 30.0, 40.0]),
+        np.array([3.0, 3.1, np.nan, 3.4]),
+        np.array([np.nan, 0.03, 0.03, -1.0]),
+    )
+    assert curve.valid_rows(0.05) == [(10.0, 3.0, 0.05), (40.0, 3.4, 0.05)]
 
 
 # =========================
@@ -386,114 +232,113 @@ def test_build_dispersion_grid_aligns_a_regular_source(tmp_path, write_mcmc_conf
 # =========================
 
 
-def test_vs_profile_rejects_invalid_data():
-    with pytest.raises(ValueError, match="strictly increasing"):
-        VsProfile(0.0, 0.0, np.array([0.0, 0.0]), np.array([3.0, 3.2]))
-    with pytest.raises(ValueError, match="positive downward"):
-        VsProfile(0.0, 0.0, np.array([-1.0, 1.0]), np.array([3.0, 3.2]))
-    with pytest.raises(ValueError, match="at least two depth samples"):
-        VsProfile(0.0, 0.0, np.array([0.0]), np.array([3.0]))
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "vs_profile_rejects_invalid_data",
+        "velocity_at_depths_allows_limited_shallow_extrapolation",
+        "vs_library_accepts_csv_aliases_and_scales_velocity",
+        "vs_library_accepts_netcdf_aliases",
+        "vs_library_rejects_duplicate_rows_and_negative_depth",
+        "vs_library_aligns_to_the_inversion_grid",
+    ],
+)
+def test_velocity_sources(tmp_path, scenario):
+    if scenario == "vs_profile_rejects_invalid_data":
+        with pytest.raises(ValueError, match="strictly increasing"):
+            VsProfile(0.0, 0.0, np.array([0.0, 0.0]), np.array([3.0, 3.2]))
+        with pytest.raises(ValueError, match="positive downward"):
+            VsProfile(0.0, 0.0, np.array([-1.0, 1.0]), np.array([3.0, 3.2]))
+        with pytest.raises(ValueError, match="at least two depth samples"):
+            VsProfile(0.0, 0.0, np.array([0.0]), np.array([3.0]))
+    elif scenario == "velocity_at_depths_allows_limited_shallow_extrapolation":
+        profile = VsProfile(
+            lon=0.0,
+            lat=0.0,
+            depth=np.array([3.0, 5.0, 40.0]),
+            vs=np.array([3.0, 3.2, 4.2]),
+        )
 
+        values = velocity_at_depths(profile, np.array([0.0, 3.0, 5.0]))
+        np.testing.assert_allclose(values, [2.7, 3.0, 3.2])
 
-def test_velocity_at_depths_allows_limited_shallow_extrapolation():
-    profile = VsProfile(
-        lon=0.0, lat=0.0, depth=np.array([3.0, 5.0, 40.0]), vs=np.array([3.0, 3.2, 4.2])
-    )
+        with pytest.raises(ValueError, match="shallow Vs extrapolation"):
+            velocity_at_depths(
+                profile, np.array([0.0]), max_shallow_extrapolation_km=2.0
+            )
 
-    values = velocity_at_depths(profile, np.array([0.0, 3.0, 5.0]))
-    np.testing.assert_allclose(values, [2.7, 3.0, 3.2])
+        with pytest.raises(ValueError, match="shallow gap"):
+            velocity_at_depths(
+                profile, np.array([0.0]), allow_shallow_extrapolation=False
+            )
 
-    with pytest.raises(ValueError, match="shallow Vs extrapolation"):
-        velocity_at_depths(profile, np.array([0.0]), max_shallow_extrapolation_km=2.0)
+        with pytest.raises(ValueError, match="exceed reference profile coverage"):
+            velocity_at_depths(profile, np.array([41.0]))
+    elif scenario == "vs_library_accepts_csv_aliases_and_scales_velocity":
+        path = tmp_path / "reference.csv"
+        pd.DataFrame(
+            {
+                "longitude": [0.0, 0.0],
+                "latitude": [0.0, 0.0],
+                "depth": [0.0, 300.0],
+                "vsv": [3000.0, 4700.0],
+            }
+        ).to_csv(path, index=False)
 
-    with pytest.raises(ValueError, match="shallow gap"):
-        velocity_at_depths(profile, np.array([0.0]), allow_shallow_extrapolation=False)
+        library = VsModelLibrary.from_file(
+            path, target=_target(spacing=1.0), vs_scale=0.001
+        )
+        profile = library.profile_at(0.0, 0.0)
+        np.testing.assert_allclose(profile.vs, [3.0, 4.7])
+    elif scenario == "vs_library_accepts_netcdf_aliases":
+        path = tmp_path / "reference.nc"
+        depths = np.array([0.0, 5.0, 40.0, 300.0])
+        xr.Dataset(
+            {"shear_velocity": (("lat", "lon", "depth"), [[[3.0, 3.2, 4.2, 4.7]]])},
+            coords={"lon": [0.0], "lat": [0.0], "depth": depths},
+        ).to_netcdf(path)
 
-    with pytest.raises(ValueError, match="exceed reference profile coverage"):
-        velocity_at_depths(profile, np.array([41.0]))
+        library = VsModelLibrary.from_file(path, target=_target(spacing=1.0))
+        profile = library.profile_at(0.0, 0.0)
+        np.testing.assert_allclose(profile.depth, depths)
+        np.testing.assert_allclose(profile.vs, [3.0, 3.2, 4.2, 4.7])
+    elif scenario == "vs_library_rejects_duplicate_rows_and_negative_depth":
+        path = tmp_path / "reference.csv"
+        pd.DataFrame(
+            {
+                "lon": [0.0, 0.0, 0.0],
+                "lat": [0.0, 0.0, 0.0],
+                "z": [0.0, 0.0, 10.0],
+                "vs": [3.0, 3.1, 4.0],
+            }
+        ).to_csv(path, index=False)
+        target = _target(spacing=1.0)
+        with pytest.raises(ValueError, match="duplicate"):
+            VsModelLibrary.from_file(path, target=target)
 
+        path = tmp_path / "reference_negative.csv"
+        pd.DataFrame(
+            {"lon": [0.0, 0.0], "lat": [0.0, 0.0], "z": [-1.0, 10.0], "vs": [3.0, 4.0]}
+        ).to_csv(path, index=False)
+        with pytest.raises(ValueError, match="positive depth"):
+            VsModelLibrary.from_file(path, target=target)
+    elif scenario == "vs_library_aligns_to_the_inversion_grid":
+        lon = np.arange(0.0, 1.01, 0.25)
+        lat = np.arange(0.0, 1.01, 0.25)
+        rows = [
+            (lo, la, z, 3.0 + 0.1 * lo + 0.02 * z)
+            for la in lat
+            for lo in lon
+            for z in (0.0, 10.0, 20.0)
+        ]
+        path = tmp_path / "reference.csv"
+        pd.DataFrame(rows, columns=["lon", "lat", "z", "vs"]).to_csv(path, index=False)
 
-def test_vs_library_accepts_csv_aliases_and_scales_velocity(tmp_path):
-    path = tmp_path / "reference.csv"
-    pd.DataFrame(
-        {
-            "longitude": [0.0, 0.0],
-            "latitude": [0.0, 0.0],
-            "depth": [0.0, 300.0],
-            "vsv": [3000.0, 4700.0],
-        }
-    ).to_csv(path, index=False)
+        identity = VsModelLibrary.from_file(path, target=_target(spacing=0.25))
+        np.testing.assert_allclose(identity.profile_at(0.0, 0.0).vs, [3.0, 3.2, 3.4])
 
-    library = VsModelLibrary.from_file(
-        path, target=_target(spacing=1.0), vs_scale=0.001
-    )
-    profile = library.profile_at(0.0, 0.0)
-    np.testing.assert_allclose(profile.vs, [3.0, 4.7])
-
-
-def test_vs_library_accepts_netcdf_aliases(tmp_path):
-    path = tmp_path / "reference.nc"
-    depths = np.array([0.0, 5.0, 40.0, 300.0])
-    xr.Dataset(
-        {"shear_velocity": (("lat", "lon", "depth"), [[[3.0, 3.2, 4.2, 4.7]]])},
-        coords={"lon": [0.0], "lat": [0.0], "depth": depths},
-    ).to_netcdf(path)
-
-    library = VsModelLibrary.from_file(path, target=_target(spacing=1.0))
-    profile = library.profile_at(0.0, 0.0)
-    np.testing.assert_allclose(profile.depth, depths)
-    np.testing.assert_allclose(profile.vs, [3.0, 3.2, 4.2, 4.7])
-
-
-def test_vs_library_rejects_duplicate_rows_and_negative_depth(tmp_path):
-    path = tmp_path / "reference.csv"
-    pd.DataFrame(
-        {
-            "lon": [0.0, 0.0, 0.0],
-            "lat": [0.0, 0.0, 0.0],
-            "z": [0.0, 0.0, 10.0],
-            "vs": [3.0, 3.1, 4.0],
-        }
-    ).to_csv(path, index=False)
-    target = _target(spacing=1.0)
-    with pytest.raises(ValueError, match="duplicate"):
-        VsModelLibrary.from_file(path, target=target)
-
-    path = tmp_path / "reference_negative.csv"
-    pd.DataFrame(
-        {"lon": [0.0, 0.0], "lat": [0.0, 0.0], "z": [-1.0, 10.0], "vs": [3.0, 4.0]}
-    ).to_csv(path, index=False)
-    with pytest.raises(ValueError, match="positive depth"):
-        VsModelLibrary.from_file(path, target=target)
-
-
-def test_vs_library_aligns_to_the_inversion_grid(tmp_path):
-    lon = np.arange(0.0, 1.01, 0.25)
-    lat = np.arange(0.0, 1.01, 0.25)
-    rows = [
-        (lo, la, z, 3.0 + 0.1 * lo + 0.02 * z)
-        for la in lat
-        for lo in lon
-        for z in (0.0, 10.0, 20.0)
-    ]
-    path = tmp_path / "reference.csv"
-    pd.DataFrame(rows, columns=["lon", "lat", "z", "vs"]).to_csv(path, index=False)
-
-    identity = VsModelLibrary.from_file(path, target=_target(spacing=0.25))
-    np.testing.assert_allclose(identity.profile_at(0.0, 0.0).vs, [3.0, 3.2, 3.4])
-
-    aligned = VsModelLibrary.from_file(path, target=_target(spacing=0.5))
-    assert len(aligned.profiles) == 9
-    profile = aligned.profile_at(0.5, 0.5)
-    np.testing.assert_allclose(profile.depth, [0.0, 10.0, 20.0])
-    np.testing.assert_allclose(profile.vs, [3.05, 3.25, 3.45])
-
-
-def test_vs_library_profile_at_reports_grid_coordinate(tmp_path):
-    path = tmp_path / "reference.csv"
-    pd.DataFrame(
-        {"lon": [0.0, 0.0], "lat": [0.0, 0.0], "z": [0.0, 10.0], "vs": [3.0, 4.0]}
-    ).to_csv(path, index=False)
-    library = VsModelLibrary.from_file(path, target=_target(spacing=1.0))
-    with pytest.raises(KeyError, match="no profile at inversion-grid coordinate"):
-        library.profile_at(0.5, 0.5)
+        aligned = VsModelLibrary.from_file(path, target=_target(spacing=0.5))
+        assert len(aligned.profiles) == 9
+        profile = aligned.profile_at(0.5, 0.5)
+        np.testing.assert_allclose(profile.depth, [0.0, 10.0, 20.0])
+        np.testing.assert_allclose(profile.vs, [3.05, 3.25, 3.45])

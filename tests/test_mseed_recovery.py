@@ -19,17 +19,62 @@ def _multi_record_mseed(path):
     Stream([trace]).write(path, format="MSEED", reclen=4096, encoding="STEIM1")
 
 
-def test_filter_valid_records_drops_only_the_corrupt_record(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "filter_valid_records_drops_only_the_corrupt_record",
+        "filter_valid_records_rejects_wrong_identity",
+        "filter_valid_records_salvages_prefix_before_trailing_garbage",
+    ],
+)
+def test_record_recovery(tmp_path, scenario):
     source = tmp_path / "raw.mseed"
     destination = tmp_path / "recovered.mseed"
     _multi_record_mseed(source)
-    info = get_record_information(source)
-    record_length = info["record_length"]
-    record_count = info["number_of_records"]
-    verdicts = [True] * record_count
-    verdicts[1] = False
+    if scenario == "filter_valid_records_drops_only_the_corrupt_record":
+        info = get_record_information(source)
+        record_length = info["record_length"]
+        record_count = info["number_of_records"]
+        verdicts = [True] * record_count
+        verdicts[1] = False
 
-    with patch.object(mseed_recovery, "_record_is_valid", side_effect=verdicts):
+        with patch.object(mseed_recovery, "_record_is_valid", side_effect=verdicts):
+            result = mseed_recovery.filter_valid_mseed_records(
+                source,
+                destination,
+                network="NZ",
+                station="ABAZ",
+                location="11",
+                channel="HHE",
+                sample_rate=100.0,
+            )
+
+        assert result.total_records == record_count
+        assert result.valid_records == record_count - 1
+        assert result.discarded_records == 1
+        assert destination.stat().st_size == source.stat().st_size - record_length
+        recovered = read(destination)
+        assert len(recovered) == 2
+        assert recovered.get_gaps()
+    elif scenario == "filter_valid_records_rejects_wrong_identity":
+        with pytest.raises(ValueError, match="all miniSEED records"):
+            mseed_recovery.filter_valid_mseed_records(
+                source,
+                destination,
+                network="NZ",
+                station="WRONG",
+                location="11",
+                channel="HHE",
+                sample_rate=100.0,
+            )
+
+        assert not destination.exists()
+    elif scenario == "filter_valid_records_salvages_prefix_before_trailing_garbage":
+        record_count = get_record_information(source)["number_of_records"]
+        source.write_bytes(
+            source.read_bytes() + b"\nRequest Submitted:\nService version:\n"
+        )
+
         result = mseed_recovery.filter_valid_mseed_records(
             source,
             destination,
@@ -40,54 +85,7 @@ def test_filter_valid_records_drops_only_the_corrupt_record(tmp_path):
             sample_rate=100.0,
         )
 
-    assert result.total_records == record_count
-    assert result.valid_records == record_count - 1
-    assert result.discarded_records == 1
-    assert destination.stat().st_size == source.stat().st_size - record_length
-    recovered = read(destination)
-    assert len(recovered) == 2
-    assert recovered.get_gaps()
-
-
-def test_filter_valid_records_rejects_wrong_identity(tmp_path):
-    source = tmp_path / "raw.mseed"
-    destination = tmp_path / "recovered.mseed"
-    _multi_record_mseed(source)
-
-    with pytest.raises(ValueError, match="all miniSEED records"):
-        mseed_recovery.filter_valid_mseed_records(
-            source,
-            destination,
-            network="NZ",
-            station="WRONG",
-            location="11",
-            channel="HHE",
-            sample_rate=100.0,
-        )
-
-    assert not destination.exists()
-
-
-def test_filter_valid_records_salvages_prefix_before_trailing_garbage(tmp_path):
-    source = tmp_path / "raw.mseed"
-    destination = tmp_path / "recovered.mseed"
-    _multi_record_mseed(source)
-    record_count = get_record_information(source)["number_of_records"]
-    source.write_bytes(
-        source.read_bytes() + b"\nRequest Submitted:\nService version:\n"
-    )
-
-    result = mseed_recovery.filter_valid_mseed_records(
-        source,
-        destination,
-        network="NZ",
-        station="ABAZ",
-        location="11",
-        channel="HHE",
-        sample_rate=100.0,
-    )
-
-    assert result.total_records == record_count
-    assert result.valid_records == record_count
-    assert result.discarded_records == 0
-    assert len(read(destination)) == 1
+        assert result.total_records == record_count
+        assert result.valid_records == record_count
+        assert result.discarded_records == 0
+        assert len(read(destination)) == 1

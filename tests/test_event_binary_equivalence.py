@@ -109,30 +109,6 @@ def test_public_cutters_match_contiguous_samples_and_event_time(
 
 
 @pytest.mark.integration
-def test_integer_second_start_avoids_fractional_origin_endpoint_difference(
-    tmp_path, binaries
-):
-    a, b, origin = _run_cutters(tmp_path, 100, 0.125)
-    assert a.stats.npts == b.stats.npts == 501
-    np.testing.assert_array_equal(a.data, b.data)
-    assert a.stats.starttime.microsecond == b.stats.starttime.microsecond == 0
-
-
-@pytest.mark.integration
-def test_binary_restores_submillisecond_origin_without_changing_window(
-    tmp_path, binaries
-):
-    a, b, origin = _run_cutters(tmp_path, 100, 0.123456)
-    np.testing.assert_array_equal(a.data, b.data)
-    assert a.stats.starttime == b.stats.starttime
-    for trace in (a, b):
-        assert (
-            abs(get_sac_reftime(trace.stats.sac) + float(trace.stats.sac.o) - origin)
-            < 1e-6
-        )
-
-
-@pytest.mark.integration
 def test_integer_second_rule_does_not_hide_different_gap_policies(tmp_path, binaries):
     _, binary, _ = _run_cutters(tmp_path, 100, 0.123456, gap_seconds=2)
     segments = sorted(

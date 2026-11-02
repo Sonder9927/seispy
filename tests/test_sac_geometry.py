@@ -15,23 +15,25 @@ from seispy._sac_geometry import sac_geometry
         ((10, 179, 10, -179), (219.279175, 89.827461, 270.172546, 1.97000885)),
         ((89, 0, 89, 90), (157.955551, 45.004421, 314.995575, 1.42370641)),
         ((0, 0, 0, 90), (10018.790039, 90, 270, 90)),
+        ((30, 110, -30.001, -69.999), (20003.820517, 221.036, 138.964, None)),
     ],
 )
 def test_angles_match_sac_and_distance_stays_close(coordinates, expected):
     result = sac_geometry(*coordinates)
-    # WGS84 distance intentionally differs from SAC's legacy distance formula.
-    assert result["dist"] == pytest.approx(expected[0], rel=1e-5)
-    for key, value in zip(("az", "baz", "gcarc"), expected[1:], strict=True):
-        assert result[key] == pytest.approx(value, abs=3e-5)
+    near_antipodal = expected[3] is None
+    # SAC's legacy distance differs slightly from the WGS84 result.
+    assert result["dist"] == pytest.approx(
+        expected[0],
+        rel=0 if near_antipodal else 1e-5,
+        abs=0.001 if near_antipodal else 0,
+    )
+    for key, value in zip(("az", "baz"), expected[1:3], strict=True):
+        assert result[key] == pytest.approx(value, abs=0.1 if near_antipodal else 3e-5)
+    if near_antipodal:
+        assert result["gcarc"] > 179.99
+    else:
+        assert result["gcarc"] == pytest.approx(expected[3], abs=3e-5)
     assert result["lcalda"] is True
-
-
-def test_near_antipodal_distance_uses_robust_geodesic():
-    result = sac_geometry(30, 110, -30.001, -69.999)
-    assert result["dist"] == pytest.approx(20003.820517, abs=0.001)
-    assert result["az"] == pytest.approx(221.036, abs=0.1)
-    assert result["baz"] == pytest.approx(138.964, abs=0.1)
-    assert result["gcarc"] > 179.99
 
 
 @pytest.mark.parametrize(

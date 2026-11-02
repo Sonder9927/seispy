@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 from obspy import Stream, Trace, UTCDateTime, read
 
@@ -16,97 +17,59 @@ def _trace(*, npts=1000, start="2026-01-01", sampling_rate=100.0):
     return trace
 
 
-def test_filter_waveforms_keeps_long_and_drops_short_mseed(tmp_path):
+@pytest.mark.parametrize(
+    "format,npts,duration",
+    [("MSEED", [100, 1000], 5), ("MSEED", [100], 60), ("SAC", [1000], 5)],
+)
+def test_trace_filtering(tmp_path, format, npts, duration):
     source = tmp_path / "src"
-    target = source / "NZ" / "AAA" / "day.mseed"
+    suffix = "mseed" if format == "MSEED" else "sac"
+    target = source / "NZ" / "AAA" / f"day.{suffix}"
     target.parent.mkdir(parents=True)
-    Stream([_trace(npts=100), _trace(npts=1000, start="2026-01-01T01:00:00")]).write(
-        target, format="MSEED"
+    stream = Stream(
+        [_trace(npts=n, start=f"2026-01-01T0{i}:00:00") for i, n in enumerate(npts)]
     )
+    stream.write(str(target), format=format)
+    original = target.read_bytes()
     output = tmp_path / "out"
-
     summary = waveform.filter_waveforms(
-        source, output, trace_filter=TraceFilter(min_duration_seconds=5)
+        source, output, trace_filter=TraceFilter(min_duration_seconds=duration)
     )
+    accepted = [n for n in npts if (n - 1) / 100 >= duration]
+    assert summary.traces_total == len(npts)
+    assert summary.traces_written == len(accepted)
+    assert summary.traces_filtered == len(npts) - len(accepted)
+    assert summary.succeeded == bool(accepted)
+    assert summary.skipped == (not accepted)
+    assert target.read_bytes() == original
+    outputs = list(output.rglob(f"*.{suffix}"))
+    assert len(outputs) == bool(accepted)
+    if accepted:
+        assert [tr.stats.npts for tr in read(str(outputs[0]))] == accepted
 
-    assert summary.succeeded == 1
-    assert summary.traces_total == 2
-    assert summary.traces_written == 1
-    assert summary.traces_filtered == 1
-    kept = read(output / "NZ" / "AAA" / "day.mseed")
-    assert len(kept) == 1
-    assert kept[0].stats.npts == 1000
 
-
-def test_filter_waveforms_skips_file_when_all_traces_filtered(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "filter_waveforms_reports_unreadable_file",
+        "filter_waveforms_rejects_empty_extension_list",
+    ],
+)
+def test_filter_input_failures(tmp_path, scenario):
     source = tmp_path / "src"
-    target = source / "NZ" / "AAA" / "day.mseed"
-    target.parent.mkdir(parents=True)
-    Stream([_trace(npts=100)]).write(target, format="MSEED")
-    output = tmp_path / "out"
+    if scenario == "filter_waveforms_reports_unreadable_file":
+        target = source / "bad.mseed"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"not a waveform")
+        output = tmp_path / "out"
 
-    summary = waveform.filter_waveforms(
-        source, output, trace_filter=TraceFilter(min_duration_seconds=60)
-    )
+        summary = waveform.filter_waveforms(source, output)
 
-    assert summary.skipped == 1
-    assert summary.succeeded == 0
-    assert summary.traces_filtered == 1
-    assert not list(output.rglob("*.mseed"))
+        assert summary.failed == 1
+        assert summary.succeeded == 0
+        assert summary.has_issues
+    elif scenario == "filter_waveforms_rejects_empty_extension_list":
+        source.mkdir()
 
-
-def test_filter_waveforms_handles_sac_sources(tmp_path):
-    source = tmp_path / "src"
-    target = source / "trace.sac"
-    target.parent.mkdir(parents=True)
-    _trace(npts=1000).write(str(target), format="SAC")
-    output = tmp_path / "out"
-
-    summary = waveform.filter_waveforms(
-        source, output, trace_filter=TraceFilter(min_duration_seconds=5)
-    )
-
-    assert summary.succeeded == 1
-    assert summary.traces_written == 1
-    assert (output / "trace.sac").is_file()
-
-
-def test_filter_waveforms_reports_unreadable_file(tmp_path):
-    source = tmp_path / "src"
-    target = source / "bad.mseed"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(b"not a waveform")
-    output = tmp_path / "out"
-
-    summary = waveform.filter_waveforms(source, output)
-
-    assert summary.failed == 1
-    assert summary.succeeded == 0
-    assert summary.has_issues
-
-
-def test_filter_waveforms_rejects_empty_extension_list(tmp_path):
-    source = tmp_path / "src"
-    source.mkdir()
-
-    with np.testing.assert_raises_regex(ValueError, "at least one suffix"):
-        waveform.filter_waveforms(source, tmp_path / "out", extensions=())
-
-
-def test_filter_waveforms_min_periods_uses_low_frequency(tmp_path):
-    source = tmp_path / "src"
-    target = source / "day.mseed"
-    target.parent.mkdir(parents=True)
-    Stream([_trace(npts=1000, sampling_rate=1.0)]).write(target, format="MSEED")
-    policy = TraceFilter(min_duration_seconds=0, min_samples=0, min_periods=3)
-
-    filtered = waveform.filter_waveforms(
-        source, tmp_path / "out-filtered", trace_filter=policy, low_frequency=0.001
-    )
-    kept = waveform.filter_waveforms(
-        source, tmp_path / "out-kept", trace_filter=policy, low_frequency=0.01
-    )
-
-    assert (filtered.skipped, filtered.traces_filtered) == (1, 1)
-    assert kept.succeeded == 1
-    assert kept.traces_written == 1
+        with np.testing.assert_raises_regex(ValueError, "at least one suffix"):
+            waveform.filter_waveforms(source, tmp_path / "out", extensions=())

@@ -1,5 +1,4 @@
 from importlib import import_module
-import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -11,70 +10,80 @@ from obspy import Stream, Trace, UTCDateTime
 remove_response = import_module("seispy.deconvolution.removal")
 
 
-def test_response_removal_preserves_gap_and_processes_each_segment():
-    first = Trace(np.arange(100, dtype=np.float32))
-    first.stats.network = "NZ"
-    first.stats.station = "ABAZ"
-    first.stats.location = "11"
-    first.stats.channel = "HHE"
-    first.stats.sampling_rate = 100.0
-    first.stats.starttime = UTCDateTime("2023-08-01")
-    second = first.copy()
-    second.stats.starttime = first.stats.endtime + 10.01
-    stream = Stream([first, second])
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "response_removal_preserves_gap_and_processes_each_segment",
+        "obspy_preprocesses_then_decimates_before_removing_response",
+    ],
+)
+def test_obspy_segment_processing(scenario):
+    if scenario == "response_removal_preserves_gap_and_processes_each_segment":
+        first = Trace(np.arange(100, dtype=np.float32))
+        first.stats.network = "NZ"
+        first.stats.station = "ABAZ"
+        first.stats.location = "11"
+        first.stats.channel = "HHE"
+        first.stats.sampling_rate = 100.0
+        first.stats.starttime = UTCDateTime("2023-08-01")
+        second = first.copy()
+        second.stats.starttime = first.stats.endtime + 10.01
+        stream = Stream([first, second])
 
-    with (
-        patch.object(remove_response.obspy, "read", return_value=stream),
-        patch.object(
-            remove_response,
-            "_response_epoch_for_trace",
-            return_value=(object(), object()),
-        ),
-        patch.object(Trace, "remove_response") as deconvolve,
-    ):
-        result = remove_response.remove_response_from_file("trace.mseed", object())
+        with (
+            patch.object(remove_response.obspy, "read", return_value=stream),
+            patch.object(
+                remove_response,
+                "_response_epoch_for_trace",
+                return_value=(object(), object()),
+            ),
+            patch.object(Trace, "remove_response") as deconvolve,
+        ):
+            result = remove_response.remove_response_from_file("trace.mseed", object())
 
-    assert len(result) == 2
-    assert len(result.get_gaps()) == 1
-    assert deconvolve.call_count == 2
-
-
-def test_obspy_preprocesses_then_decimates_before_removing_response():
-    calls = []
-    trace = Mock()
-    trace.stats = SimpleNamespace(sampling_rate=100.0, npts=10_000)
-    trace.data = np.arange(10_000, dtype=np.float32)
-    trace.detrend.side_effect = lambda *args, **kwargs: calls.append("detrend")
-    trace.taper.side_effect = lambda *args, **kwargs: calls.append("taper")
-    trace.remove_response.side_effect = lambda *args, **kwargs: calls.append("response")
-
-    class Stream(list):
-        def get_gaps(self):
-            return []
-
-        def merge(self, **kwargs):
-            return self
-
-    def decimate(item, factors):
-        calls.append("decimate")
-        item.stats.sampling_rate = 1.0
-
-    with (
-        patch.object(remove_response.obspy, "read", return_value=Stream([trace])),
-        patch.object(
-            remove_response,
-            "_response_epoch_for_trace",
-            return_value=(object(), object()),
-        ),
-        patch.object(
-            remove_response, "_sac_compatible_decimate_trace", side_effect=decimate
-        ),
-    ):
-        remove_response.remove_response_from_file(
-            "trace.sac", object(), decimate_factors=[5, 5, 4]
+        assert len(result) == 2
+        assert len(result.get_gaps()) == 1
+        assert deconvolve.call_count == 2
+    elif scenario == "obspy_preprocesses_then_decimates_before_removing_response":
+        calls = []
+        trace = Mock()
+        trace.stats = SimpleNamespace(sampling_rate=100.0, npts=10_000)
+        trace.data = np.arange(10_000, dtype=np.float32)
+        trace.detrend.side_effect = lambda *args, **kwargs: calls.append("detrend")
+        trace.taper.side_effect = lambda *args, **kwargs: calls.append("taper")
+        trace.remove_response.side_effect = lambda *args, **kwargs: calls.append(
+            "response"
         )
 
-    assert calls == ["detrend", "detrend", "taper", "decimate", "response"]
+        class ProcessingStream(list):
+            def get_gaps(self):
+                return []
+
+            def merge(self, **kwargs):
+                return self
+
+        def decimate(item, factors):
+            calls.append("decimate")
+            item.stats.sampling_rate = 1.0
+
+        with (
+            patch.object(
+                remove_response.obspy, "read", return_value=ProcessingStream([trace])
+            ),
+            patch.object(
+                remove_response,
+                "_response_epoch_for_trace",
+                return_value=(object(), object()),
+            ),
+            patch.object(
+                remove_response, "_sac_compatible_decimate_trace", side_effect=decimate
+            ),
+        ):
+            remove_response.remove_response_from_file(
+                "trace.sac", object(), decimate_factors=[5, 5, 4]
+            )
+
+        assert calls == ["detrend", "detrend", "taper", "decimate", "response"]
 
 
 @pytest.mark.parametrize("post", [(), (5,)])

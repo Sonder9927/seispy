@@ -1,5 +1,7 @@
 """Canonical waveform organization and merge contracts."""
 
+import pytest
+
 from pathlib import Path
 
 import numpy as np
@@ -22,40 +24,45 @@ def _sac(path: Path, *, channel="BHZ", starttime="2025-01-01T00:00:00"):
     return trace
 
 
-def test_merge_groups_flat_archive_by_header_channel_and_day(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "merge_groups_flat_archive_by_header_channel_and_day",
+        "merge_rejects_path_that_disagrees_with_header",
+    ],
+)
+def test_archive_layout(tmp_path, scenario):
     root = tmp_path / "archive"
-    first_trace = _sac(tmp_path / "first.sac")
-    first = WaveformIdentity.from_trace(first_trace).sac_path(root)
-    first.parent.mkdir(parents=True)
-    Path(tmp_path / "first.sac").replace(first)
+    if scenario == "merge_groups_flat_archive_by_header_channel_and_day":
+        first_trace = _sac(tmp_path / "first.sac")
+        first = WaveformIdentity.from_trace(first_trace).sac_path(root)
+        first.parent.mkdir(parents=True)
+        Path(tmp_path / "first.sac").replace(first)
 
-    second_trace = _sac(tmp_path / "second.sac", starttime="2025-01-01T00:00:05")
-    second = WaveformIdentity.from_trace(second_trace).sac_path(root)
-    Path(tmp_path / "second.sac").replace(second)
+        second_trace = _sac(tmp_path / "second.sac", starttime="2025-01-01T00:00:05")
+        second = WaveformIdentity.from_trace(second_trace).sac_path(root)
+        Path(tmp_path / "second.sac").replace(second)
 
-    other_trace = _sac(tmp_path / "other.sac", channel="BHN")
-    other = WaveformIdentity.from_trace(other_trace).sac_path(root)
-    Path(tmp_path / "other.sac").replace(other)
+        other_trace = _sac(tmp_path / "other.sac", channel="BHN")
+        other = WaveformIdentity.from_trace(other_trace).sac_path(root)
+        Path(tmp_path / "other.sac").replace(other)
 
-    groups, errors = _group_targets(root, "*.sac")
+        groups, errors = _group_targets(root, "*.sac")
 
-    assert not errors
-    assert sorted(len(files) for files in groups.values()) == [1, 2]
-    bhz = next(files for key, files in groups.items() if key[3] == "BHZ")
-    output = tmp_path / "merged"
-    assert _merge_targets(bhz, output) is None
-    merged = WaveformIdentity.from_trace(first_trace).sac_path(output)
-    assert merged.is_file()
-    assert len(read(merged)) == 1
-    assert all(path.is_file() for path in bhz)
+        assert not errors
+        assert sorted(len(files) for files in groups.values()) == [1, 2]
+        bhz = next(files for key, files in groups.items() if key[3] == "BHZ")
+        output = tmp_path / "merged"
+        assert _merge_targets(bhz, output) is None
+        merged = WaveformIdentity.from_trace(first_trace).sac_path(output)
+        assert merged.is_file()
+        assert len(read(merged)) == 1
+        assert all(path.is_file() for path in bhz)
+    elif scenario == "merge_rejects_path_that_disagrees_with_header":
+        wrong = root / "NZ" / "WRONG" / "2025" / "wrong.sac"
+        _sac(wrong)
 
+        groups, errors = _group_targets(root, "*.sac")
 
-def test_merge_rejects_path_that_disagrees_with_header(tmp_path):
-    root = tmp_path / "archive"
-    wrong = root / "NZ" / "WRONG" / "2025" / "wrong.sac"
-    _sac(wrong)
-
-    groups, errors = _group_targets(root, "*.sac")
-
-    assert not groups
-    assert "does not match the SAC header" in errors[0]
+        assert not groups
+        assert "does not match the SAC header" in errors[0]

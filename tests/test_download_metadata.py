@@ -17,161 +17,68 @@ def test_earthscope_client_receives_restricted_credentials():
     )
 
 
-def test_inventory_download_has_no_logging_and_writes_stationxml(tmp_path):
-    inv = Mock()
-    client = Mock()
-    client.get_stations.return_value = inv
-    with (
-        patch.object(stations, "_client", return_value=client),
-        patch.object(
-            stations, "_filter_channel_epochs_by_query_time", return_value=inv
-        ),
-        patch.object(stations, "_normalize_response_epochs", return_value=inv),
-        patch.object(stations, "_write_station_csv") as write_csv,
-    ):
-        result = stations.download_inventory(
-            tmp_path / "stations.xml", network="NZ", station="AAA"
-        )
-    assert result is inv
-    inv.write.assert_called_once_with(
-        str(tmp_path / "stations.xml"), format="STATIONXML"
-    )
-    write_csv.assert_called_once_with(inv, tmp_path / "stations.csv")
+@pytest.mark.parametrize(
+    "level,conflict,strict",
+    [
+        ("response", False, False),
+        ("response", True, False),
+        ("response", True, True),
+        ("station", False, False),
+        ("channel", False, False),
+    ],
+)
+def test_stationxml_exports(tmp_path, level, conflict, strict):
+    from contextlib import nullcontext
 
-
-def test_inventory_conflict_preserves_raw_stationxml_by_default(tmp_path):
-    raw = Mock()
-    client = Mock()
-    client.get_stations.return_value = raw
-    conflict = stations.ResponseConflictError("conflicting responses")
-    with (
-        patch.object(stations, "_client", return_value=client),
-        patch.object(
-            stations, "_filter_channel_epochs_by_query_time", return_value=raw
-        ),
-        patch.object(stations, "_normalize_response_epochs", side_effect=conflict),
-        patch.object(stations, "_write_station_csv") as write_csv,
-        pytest.warns(stations.ResponseConflictWarning, match="raw StationXML"),
-    ):
-        result = stations.download_inventory(tmp_path / "stations.xml")
-
-    assert result is raw
-    raw.write.assert_called_once_with(
-        str(tmp_path / "stations.xml"), format="STATIONXML"
-    )
-    write_csv.assert_called_once_with(raw, tmp_path / "stations.csv")
-
-
-def test_strict_inventory_conflict_raises_after_raw_stationxml_is_saved(tmp_path):
-    raw = Mock()
-    client = Mock()
-    client.get_stations.return_value = raw
-    conflict = stations.ResponseConflictError("conflicting responses")
-    with (
-        patch.object(stations, "_client", return_value=client),
-        patch.object(
-            stations, "_filter_channel_epochs_by_query_time", return_value=raw
-        ),
-        patch.object(stations, "_normalize_response_epochs", side_effect=conflict),
-        patch.object(stations, "_write_station_csv") as write_csv,
-        pytest.raises(stations.ResponseConflictError, match="conflicting responses"),
-    ):
-        stations.download_inventory(
-            tmp_path / "stations.xml", strict_response_conflicts=True
-        )
-
-    raw.write.assert_called_once_with(
-        str(tmp_path / "stations.xml"), format="STATIONXML"
-    )
-    write_csv.assert_called_once_with(raw, tmp_path / "stations.csv")
-
-
-def test_non_response_inventory_level_still_writes_only_stationxml(tmp_path):
-    inv = Mock()
-    client = Mock()
-    client.get_stations.return_value = inv
-    with (
-        patch.object(stations, "_client", return_value=client),
-        patch.object(stations, "_write_station_csv"),
-    ):
-        stations.download_inventory(tmp_path / "stations.xml", level="station")
-
-    inv.write.assert_called_once_with(
-        str(tmp_path / "stations.xml"), format="STATIONXML"
-    )
-
-
-def test_station_csv_contains_coordinates_and_channel_summary(tmp_path):
-    class Container(list):
-        pass
-
-    channel = SimpleNamespace(code="BHZ", location_code="")
-    station = SimpleNamespace(
-        code="AAA",
-        site=SimpleNamespace(name="Alpha Station"),
-        latitude=-41.1,
-        longitude=174.8,
-        elevation=123.0,
-        start_date=UTCDateTime("2020-01-01"),
-        end_date=None,
-        channels=[channel],
-    )
-    network = Container([station])
-    network.code = "NZ"
-    stations._write_station_csv([network], tmp_path / "station.csv")
-
-    contents = (tmp_path / "station.csv").read_text()
-    assert "network,station,station_name,latitude,longitude,elevation_m" in contents
-    assert "NZ,AAA,Alpha Station,-41.1,174.8,123.0" in contents
-    assert ",1,--,BHZ" in contents
-
-
-def test_channel_level_inventory_is_filtered_to_requested_time(tmp_path):
     active = _channel("2023-01-01", None, _response(1.0))
     expired = _channel("1970-01-01", "1980-01-01", _response(1.0))
-    inventory = Inventory(
-        networks=[
-            Network(
-                code="NZ",
-                stations=[
-                    Station(
-                        code="ACTIVE",
-                        latitude=0,
-                        longitude=0,
-                        elevation=0,
-                        site=Site(name="Active"),
-                        channels=[active, expired],
-                    ),
-                    Station(
-                        code="001A",
-                        latitude=0,
-                        longitude=0,
-                        elevation=0,
-                        site=Site(name="Historical"),
-                        channels=[expired.copy()],
-                    ),
-                ],
-            )
-        ],
-        source="test",
-    )
+    inventory = _inventory_with_channels([active, expired])
+    station = inventory[0][0]
+    station.site.name = "Alpha Station"
+    station.latitude, station.longitude, station.elevation = -41.1, 174.8, 123.0
+    historical = station.copy()
+    historical.code = "001A"
+    historical.channels = [expired.copy()]
+    inventory[0].stations.append(historical)
+    if conflict:
+        station.channels.append(_channel("2023-01-01", None, _response(2.0)))
     client = Mock()
     client.get_stations.return_value = inventory
-
-    with patch.object(stations, "_client", return_value=client):
+    output = tmp_path / "stations.xml"
+    context = (
+        pytest.raises(stations.ResponseConflictError, match="conflicting responses")
+        if strict
+        else pytest.warns(stations.ResponseConflictWarning, match="raw StationXML")
+        if conflict
+        else nullcontext()
+    )
+    with patch.object(stations, "_client", return_value=client), context:
         result = stations.download_inventory(
-            tmp_path / "raw.xml",
-            level="channel",
+            output,
+            level=level,
+            strict_response_conflicts=strict,
             starttime="2010-01-01",
             endtime="2026-01-01",
         )
+        assert result is not None
+    # Both artifacts must already exist even when strict conflict handling raises.
+    from obspy import read_inventory
 
-    assert [station.code for station in result[0]] == ["ACTIVE"]
-    assert len(result[0][0].channels) == 1
-    csv_text = (tmp_path / "raw.csv").read_text()
-    assert "ACTIVE" in csv_text
-    assert "001A" not in csv_text
+    saved = read_inventory(str(output))
+    assert len(saved[0][0].channels) == (
+        3
+        if level == "station" and conflict
+        else 2
+        if conflict or level == "station"
+        else 1
+    )
+    csv_text = output.with_suffix(".csv").read_text()
+    assert "network,station,station_name,latitude,longitude,elevation_m" in csv_text
+    assert "NZ,AAA,Alpha Station,-41.1,174.8,123.0" in csv_text
     assert "channel_count" in csv_text
+    assert ("001A" in csv_text) == (level == "station")
+    assert len(inventory[0].stations) == 2
+    assert len(inventory[0][0].channels) == (3 if conflict else 2)
 
 
 def _response(value):
@@ -214,58 +121,67 @@ def _inventory_with_channels(channels):
     return Inventory([Network(code="NZ", stations=[station])], source="test")
 
 
-def test_inventory_normalization_merges_equivalent_overlapping_epochs():
-    response = _response(1.0)
-    original = _inventory_with_channels(
-        [
-            _channel("2024-01-01", "2024-08-01", response),
-            _channel("2024-06-01", "2025-01-01", response),
-        ]
-    )
-
-    normalized = stations._normalize_response_epochs(original)
-
-    assert len(original[0][0].channels) == 2
-    assert len(normalized[0][0].channels) == 1
-    assert normalized[0][0][0].end_date == UTCDateTime("2025-01-01")
-
-
-def test_inventory_normalization_clips_old_conflicting_epoch():
-    normalized = stations._normalize_response_epochs(
-        _inventory_with_channels(
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "inventory_normalization_merges_equivalent_overlapping_epochs",
+        "inventory_normalization_clips_old_conflicting_epoch",
+        "inventory_normalization_rejects_ambiguous_same_start",
+        "inventory_normalization_collapses_duplicate_network_and_station_nodes",
+    ],
+)
+def test_inventory_epochs(scenario):
+    if scenario == "inventory_normalization_merges_equivalent_overlapping_epochs":
+        response = _response(1.0)
+        original = _inventory_with_channels(
             [
-                _channel("2024-01-01", None, _response(1.0)),
-                _channel("2024-06-01", None, _response(2.0)),
+                _channel("2024-01-01", "2024-08-01", response),
+                _channel("2024-06-01", "2025-01-01", response),
             ]
         )
-    )
 
-    assert normalized[0][0][0].end_date == UTCDateTime("2024-06-01") - 1e-6
-    assert len(normalized[0][0].channels) == 2
+        normalized = stations._normalize_response_epochs(original)
 
+        assert len(original[0][0].channels) == 2
+        assert len(normalized[0][0].channels) == 1
+        assert normalized[0][0][0].end_date == UTCDateTime("2025-01-01")
+    elif scenario == "inventory_normalization_clips_old_conflicting_epoch":
+        normalized = stations._normalize_response_epochs(
+            _inventory_with_channels(
+                [
+                    _channel("2024-01-01", None, _response(1.0)),
+                    _channel("2024-06-01", None, _response(2.0)),
+                ]
+            )
+        )
 
-def test_inventory_normalization_rejects_ambiguous_same_start():
-    source = _inventory_with_channels(
-        [
-            _channel("2024-01-01", None, _response(1.0)),
-            _channel("2024-01-01", None, _response(2.0)),
-        ]
-    )
+        assert normalized[0][0][0].end_date == UTCDateTime("2024-06-01") - 1e-6
+        assert len(normalized[0][0].channels) == 2
+    elif scenario == "inventory_normalization_rejects_ambiguous_same_start":
+        source = _inventory_with_channels(
+            [
+                _channel("2024-01-01", None, _response(1.0)),
+                _channel("2024-01-01", None, _response(2.0)),
+            ]
+        )
 
-    with pytest.raises(stations.ResponseConflictError, match="conflicting responses"):
-        stations._normalize_response_epochs(source)
+        with pytest.raises(
+            stations.ResponseConflictError, match="conflicting responses"
+        ):
+            stations._normalize_response_epochs(source)
+    elif (
+        scenario
+        == "inventory_normalization_collapses_duplicate_network_and_station_nodes"
+    ):
+        response = _response(1.0)
+        first = _inventory_with_channels([_channel("2024-01-01", None, response)])
+        duplicated = first + first.copy()
 
+        normalized = stations._normalize_response_epochs(duplicated)
 
-def test_inventory_normalization_collapses_duplicate_network_and_station_nodes():
-    response = _response(1.0)
-    first = _inventory_with_channels([_channel("2024-01-01", None, response)])
-    duplicated = first + first.copy()
-
-    normalized = stations._normalize_response_epochs(duplicated)
-
-    assert len(normalized.networks) == 1
-    assert len(normalized[0].stations) == 1
-    assert len(normalized[0][0].channels) == 1
+        assert len(normalized.networks) == 1
+        assert len(normalized[0].stations) == 1
+        assert len(normalized[0][0].channels) == 1
 
 
 def test_earthquake_events_are_returned_as_dataframe(tmp_path):

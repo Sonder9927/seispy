@@ -25,19 +25,26 @@ def test_load_events_preserves_subsecond_origin_time(tmp_path):
     assert event["end"] - event["start"] == 10
 
 
-def test_station_csv_requires_network_for_multiple_networks(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "station_csv_requires_network_for_multiple_networks",
+        "station_csv_may_omit_network_for_one_network",
+    ],
+)
+def test_station_network_identity(tmp_path, scenario):
     stations = tmp_path / "stations.csv"
-    pd.DataFrame([{"station": "WEL"}]).to_csv(stations, index=False)
+    if scenario == "station_csv_requires_network_for_multiple_networks":
+        pd.DataFrame([{"station": "WEL"}]).to_csv(stations, index=False)
 
-    with pytest.raises(ValueError, match="multiple networks"):
-        load_stations({("NZ", "WEL"), ("IU", "WEL")}, stations)
+        with pytest.raises(ValueError, match="multiple networks"):
+            load_stations({("NZ", "WEL"), ("IU", "WEL")}, stations)
+    elif scenario == "station_csv_may_omit_network_for_one_network":
+        pd.DataFrame([{"station": "WEL", "latitude": -41.3}]).to_csv(
+            stations, index=False
+        )
 
+        loaded = load_stations({("NZ", "WEL")}, stations)
 
-def test_station_csv_may_omit_network_for_one_network(tmp_path):
-    stations = tmp_path / "stations.csv"
-    pd.DataFrame([{"station": "WEL", "latitude": -41.3}]).to_csv(stations, index=False)
-
-    loaded = load_stations({("NZ", "WEL")}, stations)
-
-    assert loaded[0]["network"] == "NZ"
-    assert loaded[0]["latitude"] == -41.3
+        assert loaded[0]["network"] == "NZ"
+        assert loaded[0]["latitude"] == -41.3

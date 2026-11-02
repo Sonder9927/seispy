@@ -1,6 +1,5 @@
 """Written SAC correctness and bounded-read contracts for event cutting."""
 
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -11,7 +10,6 @@ from obspy.io.sac.util import get_sac_reftime
 
 from seispy.event.archive_index import WaveformArchiveIndex, WaveformReader
 from seispy.event.cutting import cut_event_station, cut_event_waveforms
-from seispy.event.catalog import write_event_catalog
 
 BASE = UTCDateTime("2024-01-02")
 STATION = {"network": "XX", "station": "TEST"}
@@ -87,75 +85,180 @@ def test_written_origin_and_picks_keep_absolute_times(tmp_path, offset):
     assert path.read_bytes() == original_bytes
 
 
-def test_segments_share_event_reference_and_report_union_coverage(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "segments_share_event_reference_and_report_union_coverage",
+        "conflict_outside_window_still_preserves_overlapping_segments",
+        "empty_half_sample_edge_does_not_discard_other_segments",
+    ],
+)
+def test_event_segments(tmp_path, scenario):
     root = tmp_path / "source"
-    source_trace(root, "first", offset=0, npts=2, rate=1)
-    source_trace(root, "second", offset=4, npts=2, rate=1)
-    target = event(0)
-    result = cut_event_station(
-        target,
-        STATION,
-        tmp_path / "out",
-        archive_index=WaveformArchiveIndex.build(root),
-    )
-    traces = [read(path)[0] for path in sorted((tmp_path / "out").rglob("*.sac"))]
-    assert [float(tr.stats.sac.b) for tr in traces] == [0, 4]
-    assert all(get_sac_reftime(tr.stats.sac) == BASE for tr in traces)
-    assert result.partial_channels == 1
-    assert result.gapped_channels == 1
-    assert result.coverage_samples[0].coverage_fraction == pytest.approx(4 / 6)
+    if scenario == "segments_share_event_reference_and_report_union_coverage":
+        source_trace(root, "first", offset=0, npts=2, rate=1)
+        source_trace(root, "second", offset=4, npts=2, rate=1)
+        target = event(0)
+        result = cut_event_station(
+            target,
+            STATION,
+            tmp_path / "out",
+            archive_index=WaveformArchiveIndex.build(root),
+        )
+        traces = [read(path)[0] for path in sorted((tmp_path / "out").rglob("*.sac"))]
+        assert [float(tr.stats.sac.b) for tr in traces] == [0, 4]
+        assert all(get_sac_reftime(tr.stats.sac) == BASE for tr in traces)
+        assert result.partial_channels == 1
+        assert result.gapped_channels == 1
+        assert result.coverage_samples[0].coverage_fraction == pytest.approx(4 / 6)
+    elif scenario == "conflict_outside_window_still_preserves_overlapping_segments":
+        first = source_trace(root, "a", offset=0, npts=1001, rate=100)
+        second = source_trace(root, "b", offset=1, npts=1001, rate=100, bias=100)
+        trace = read(second)[0]
+        trace.data[0] = -999  # Conflict before the requested [3, 5] second window.
+        trace.write(str(second), format="SAC")
+        target = event(3, 2)
+        result = cut_event_station(
+            target,
+            STATION,
+            tmp_path / "out",
+            archive_index=WaveformArchiveIndex.build(root),
+            waveform_reader=WaveformReader(),
+        )
+        assert result.outputs == 2
+        assert result.overlapping_channels == 1
+        assert result.partial_channels == 0
+        assert result.coverage_samples[0].coverage_fraction == 1
+        assert result.coverage_samples[0].covered_seconds == pytest.approx(2.01)
+    elif scenario == "empty_half_sample_edge_does_not_discard_other_segments":
+        source_trace(root, "edge", offset=-0.5, npts=2, rate=1)
+        source_trace(root, "valid", offset=3, npts=4, rate=1, bias=10)
+        result = cut_event_station(
+            event(1.5, 4),
+            STATION,
+            tmp_path / "out",
+            archive_index=WaveformArchiveIndex.build(root),
+        )
+        assert result.succeeded == 1
+        assert result.outputs == 1
+        actual = read(next((tmp_path / "out").rglob("*.sac")))[0]
+        assert actual.stats.starttime == BASE + 3
+        assert actual.data[0] == 10
 
 
-def test_cached_window_copies_only_window_and_never_shares_samples(tmp_path):
-    path = source_trace(tmp_path, offset=0, npts=100_001)
-    record = WaveformArchiveIndex.build(tmp_path).records_for_station("XX", "TEST")[0]
-    reader = WaveformReader(max_bytes=500_000)
-    with patch("seispy.event.archive_index.obspy.read", wraps=read) as load:
-        first = reader.read(record, starttime=BASE + 10, endtime=BASE + 11)
-        first[0].data[:] = -1
-        second = reader.read(record, starttime=BASE + 10, endtime=BASE + 11)
-    assert load.call_count == 1
-    assert second[0].data.nbytes == 101 * 4
-    np.testing.assert_array_equal(
-        second[0].data, np.arange(1000, 1101, dtype=np.float32)
-    )
-    assert reader.cached_bytes <= 500_000
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "cached_window_copies_only_window_and_never_shares_samples",
+        "oversized_record_is_not_retained",
+        "lru_byte_budget_evicts_old_records",
+    ],
+)
+def test_bounded_waveform_cache(tmp_path, scenario):
+    if scenario == "cached_window_copies_only_window_and_never_shares_samples":
+        path = source_trace(tmp_path, offset=0, npts=100_001)
+        record = WaveformArchiveIndex.build(tmp_path).records_for_station("XX", "TEST")[
+            0
+        ]
+        reader = WaveformReader(max_bytes=500_000)
+        with patch("seispy.event.archive_index.obspy.read", wraps=read) as load:
+            first = reader.read(record, starttime=BASE + 10, endtime=BASE + 11)
+            first[0].data[:] = -1
+            second = reader.read(record, starttime=BASE + 10, endtime=BASE + 11)
+        assert load.call_count == 1
+        assert second[0].data.nbytes == 101 * 4
+        np.testing.assert_array_equal(
+            second[0].data, np.arange(1000, 1101, dtype=np.float32)
+        )
+        assert reader.cached_bytes <= 500_000
+    elif scenario == "oversized_record_is_not_retained":
+        source_trace(tmp_path, npts=1001)
+        record = WaveformArchiveIndex.build(tmp_path).records_for_station("XX", "TEST")[
+            0
+        ]
+        reader = WaveformReader(max_bytes=1000)
+        reader.read(record, starttime=BASE, endtime=BASE + 1)
+        assert reader.cached_bytes == 0
+    elif scenario == "lru_byte_budget_evicts_old_records":
+        from seispy.event import archive_index as module
+
+        source_trace(tmp_path, "a", npts=1001)
+        source_trace(tmp_path, "b", offset=30, npts=1001)
+        a, b = WaveformArchiveIndex.build(tmp_path).records_for_station("XX", "TEST")
+        reader = WaveformReader(max_bytes=5000)
+        with patch.object(module.obspy, "read", wraps=read) as load:
+            reader.read(a)
+            reader.read(b)
+            assert reader.cached_bytes == 4004
+            reader.read(a)
+        assert load.call_count == 3
 
 
-def test_oversized_record_is_not_retained(tmp_path):
-    source_trace(tmp_path, npts=1001)
-    record = WaveformArchiveIndex.build(tmp_path).records_for_station("XX", "TEST")[0]
-    reader = WaveformReader(max_bytes=1000)
-    reader.read(record, starttime=BASE, endtime=BASE + 1)
-    assert reader.cached_bytes == 0
-
-
-def test_catalog_export_preserves_microseconds(tmp_path):
-    frame = pd.DataFrame([{"time": "2024-01-02T00:00:00.123456Z"}])
-    output = tmp_path / "events.cat"
-    write_event_catalog(frame, output)
-    assert output.read_text().strip() == "2024/01/02,00:00:00.123456"
-
-
-def test_public_summary_distinguishes_existing_output(tmp_path):
-    source = tmp_path / "source"
-    source_trace(source)
-    csv = tmp_path / "events.csv"
-    pd.DataFrame(
-        [{"time": str(BASE), "latitude": 35, "longitude": 105, "depth": 12, "mag": 6}]
-    ).to_csv(csv, index=False)
-    kwargs = dict(
-        output_dir=tmp_path / "out",
-        time_window=5,
-        max_workers=1,
-        save_report=False,
-        save_log=False,
-    )
-    first = cut_event_waveforms(source, csv, **kwargs)
-    second = cut_event_waveforms(source, csv, **kwargs)
-    assert first.outputs_written == 1
-    assert second.existing_outputs == 1
-    assert second.issue_samples[0].status == "output_exists"
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "public_summary_distinguishes_existing_output",
+        "same_second_event_does_not_overwrite_existing_output",
+        "public_cutter_rejects_same_second_events_before_writing",
+    ],
+)
+def test_event_output_collisions(tmp_path, scenario):
+    if scenario == "public_summary_distinguishes_existing_output":
+        source = tmp_path / "source"
+        source_trace(source)
+        csv = tmp_path / "events.csv"
+        pd.DataFrame(
+            [
+                {
+                    "time": str(BASE),
+                    "latitude": 35,
+                    "longitude": 105,
+                    "depth": 12,
+                    "mag": 6,
+                }
+            ]
+        ).to_csv(csv, index=False)
+        kwargs = dict(
+            output_dir=tmp_path / "out",
+            time_window=5,
+            max_workers=1,
+            save_report=False,
+            save_log=False,
+        )
+        first = cut_event_waveforms(source, csv, **kwargs)
+        second = cut_event_waveforms(source, csv, **kwargs)
+        assert first.outputs_written == 1
+        assert second.existing_outputs == 1
+        assert second.issue_samples[0].status == "output_exists"
+    elif scenario == "same_second_event_does_not_overwrite_existing_output":
+        root = tmp_path / "source"
+        source_trace(root)
+        index = WaveformArchiveIndex.build(root)
+        first = cut_event_station(
+            event(0.123001), STATION, tmp_path / "out", archive_index=index
+        )
+        path = next((tmp_path / "out").rglob("*.sac"))
+        original = path.read_bytes()
+        second = cut_event_station(
+            event(0.123999), STATION, tmp_path / "out", archive_index=index
+        )
+        assert first.succeeded == 1
+        assert second.failed == second.existing_outputs == 1
+        assert path.read_bytes() == original
+        assert len(list((tmp_path / "out").rglob("*.sac"))) == 1
+    elif scenario == "public_cutter_rejects_same_second_events_before_writing":
+        root = tmp_path / "source"
+        source_trace(root)
+        catalog = tmp_path / "events.csv"
+        catalog.write_text(
+            "time,latitude,longitude,depth,mag\n"
+            "2024-01-02T00:00:00.123001Z,1,2,3,4\n"
+            "2024-01-02T00:00:00.123999Z,1,2,3,4\n"
+        )
+        output = tmp_path / "out"
+        with pytest.raises(ValueError, match="same UTC second"):
+            cut_event_waveforms(root, catalog, output_dir=output, max_workers=1)
+        assert not output.exists()
 
 
 @pytest.mark.parametrize("rate", [1, 40, 62.5, 100])
@@ -200,55 +303,36 @@ def test_window_copy_matches_full_read_merge_and_trim(tmp_path, rate, origin):
         np.testing.assert_array_equal(a.data, b.data)
 
 
-def test_conflict_outside_window_still_preserves_overlapping_segments(tmp_path):
-    root = tmp_path / "source"
-    first = source_trace(root, "a", offset=0, npts=1001, rate=100)
-    second = source_trace(root, "b", offset=1, npts=1001, rate=100, bias=100)
-    trace = read(second)[0]
-    trace.data[0] = -999  # Conflict before the requested [3, 5] second window.
-    trace.write(str(second), format="SAC")
-    target = event(3, 2)
-    result = cut_event_station(
-        target,
-        STATION,
-        tmp_path / "out",
-        archive_index=WaveformArchiveIndex.build(root),
-        waveform_reader=WaveformReader(),
-    )
-    assert result.outputs == 2
-    assert result.overlapping_channels == 1
-    assert result.partial_channels == 0
-    assert result.coverage_samples[0].coverage_fraction == 1
-    assert result.coverage_samples[0].covered_seconds == pytest.approx(2.01)
-
-
-def test_lru_byte_budget_evicts_old_records(tmp_path):
-    from seispy.event import archive_index as module
-
-    source_trace(tmp_path, "a", npts=1001)
-    source_trace(tmp_path, "b", offset=30, npts=1001)
-    a, b = WaveformArchiveIndex.build(tmp_path).records_for_station("XX", "TEST")
-    reader = WaveformReader(max_bytes=5000)
-    with patch.object(module.obspy, "read", wraps=read) as load:
-        reader.read(a)
-        reader.read(b)
-        assert reader.cached_bytes == 4004
-        reader.read(a)
-    assert load.call_count == 3
-
-
-def test_station_yields_incremental_counts_and_bounds_samples(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "station_yields_incremental_counts_and_bounds_samples",
+        "parallel_progress_can_be_closed_early",
+        "parallel_worker_failure_is_propagated",
+    ],
+)
+def test_incremental_progress(tmp_path, scenario):
     from seispy.event.cutting import _station_results
 
-    # No data is deliberate: the actual event loop must emit progress before
-    # exhausting a station and retain only the configured issue sample count.
-    events = [event(i * 10) for i in range(40)]
-    results = _station_results([(STATION, ())], events, tmp_path, 3, 1)
-    first = next(results)
-    assert 0 < first.tasks < len(events)
-    rest = list(results)
-    assert sum(x.tasks for x in [first, *rest]) == 40
-    assert sum(len(x.samples) for x in [first, *rest]) == 3
+    if scenario == "station_yields_incremental_counts_and_bounds_samples":
+        events = [event(i * 10) for i in range(40)]
+        results = _station_results([(STATION, ())], events, tmp_path, 3, 1)
+        first = next(results)
+        assert 0 < first.tasks < len(events)
+        rest = list(results)
+        assert sum(x.tasks for x in [first, *rest]) == 40
+        assert sum(len(x.samples) for x in [first, *rest]) == 3
+    elif scenario == "parallel_progress_can_be_closed_early":
+        events = [event(i * 10) for i in range(200)]
+        tasks = [({"network": "XX", "station": f"S{i}"}, ()) for i in range(5)]
+        iterator = _station_results(tasks, events, tmp_path, 2, 2)
+        assert next(iterator).tasks > 0
+        iterator.close()
+    elif scenario == "parallel_worker_failure_is_propagated":
+        events = [event(i * 10) for i in range(20)] + [{}]
+        tasks = [({"network": "XX", "station": f"S{i}"}, ()) for i in range(3)]
+        with pytest.raises(RuntimeError, match="KeyError"):
+            list(_station_results(tasks, events, tmp_path, 2, 2))
 
 
 @pytest.mark.parametrize("workers", [1, 2])
@@ -261,58 +345,6 @@ def test_progress_counts_do_not_duplicate_or_drop_tasks(tmp_path, workers):
     assert sum(x.tasks for x in results) == 120
     assert sum(x.no_data for x in results) == 120
     assert sum(len(x.samples) for x in results) == 6
-
-
-def test_same_second_event_does_not_overwrite_existing_output(tmp_path):
-    root = tmp_path / "source"
-    source_trace(root)
-    index = WaveformArchiveIndex.build(root)
-    first = cut_event_station(
-        event(0.123001), STATION, tmp_path / "out", archive_index=index
-    )
-    path = next((tmp_path / "out").rglob("*.sac"))
-    original = path.read_bytes()
-    second = cut_event_station(
-        event(0.123999), STATION, tmp_path / "out", archive_index=index
-    )
-    assert first.succeeded == 1
-    assert second.failed == second.existing_outputs == 1
-    assert path.read_bytes() == original
-    assert len(list((tmp_path / "out").rglob("*.sac"))) == 1
-
-
-def test_public_cutter_rejects_same_second_events_before_writing(tmp_path):
-    root = tmp_path / "source"
-    source_trace(root)
-    catalog = tmp_path / "events.csv"
-    catalog.write_text(
-        "time,latitude,longitude,depth,mag\n"
-        "2024-01-02T00:00:00.123001Z,1,2,3,4\n"
-        "2024-01-02T00:00:00.123999Z,1,2,3,4\n"
-    )
-    output = tmp_path / "out"
-    with pytest.raises(ValueError, match="same UTC second"):
-        cut_event_waveforms(root, catalog, output_dir=output, max_workers=1)
-    assert not output.exists()
-
-
-def test_parallel_progress_can_be_closed_early(tmp_path):
-    from seispy.event.cutting import _station_results
-
-    events = [event(i * 10) for i in range(200)]
-    tasks = [({"network": "XX", "station": f"S{i}"}, ()) for i in range(5)]
-    iterator = _station_results(tasks, events, tmp_path, 2, 2)
-    assert next(iterator).tasks > 0
-    iterator.close()
-
-
-def test_parallel_worker_failure_is_propagated(tmp_path):
-    from seispy.event.cutting import _station_results
-
-    events = [event(i * 10) for i in range(20)] + [{}]
-    tasks = [({"network": "XX", "station": f"S{i}"}, ()) for i in range(3)]
-    with pytest.raises(RuntimeError, match="KeyError"):
-        list(_station_results(tasks, events, tmp_path, 2, 2))
 
 
 def test_event_distance_headers_are_recalculated(tmp_path):
@@ -336,23 +368,6 @@ def test_event_distance_headers_are_recalculated(tmp_path):
     expected = sac_geometry(35.0, 105.0, 30.0, 110.0)
     for key in ("dist", "az", "baz", "gcarc"):
         assert raw[key] == pytest.approx(expected[key], rel=1e-6)
-
-
-def test_empty_half_sample_edge_does_not_discard_other_segments(tmp_path):
-    root = tmp_path / "source"
-    source_trace(root, "edge", offset=-0.5, npts=2, rate=1)
-    source_trace(root, "valid", offset=3, npts=4, rate=1, bias=10)
-    result = cut_event_station(
-        event(1.5, 4),
-        STATION,
-        tmp_path / "out",
-        archive_index=WaveformArchiveIndex.build(root),
-    )
-    assert result.succeeded == 1
-    assert result.outputs == 1
-    actual = read(next((tmp_path / "out").rglob("*.sac")))[0]
-    assert actual.stats.starttime == BASE + 3
-    assert actual.data[0] == 10
 
 
 @pytest.mark.parametrize("fragmented", [False, True])

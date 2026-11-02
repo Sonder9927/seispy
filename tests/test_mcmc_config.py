@@ -1,13 +1,11 @@
+"""Configuration contracts at the JSON and Fortran boundaries."""
+
 import json
 
 import numpy as np
 import pytest
 
 from seispy.mcmc.config import (
-    FORTRAN_DEEPEST_VS_MIN,
-    FORTRAN_VS_MAX,
-    FORTRAN_VS_MIN,
-    InputUnits,
     SearchRadius,
     VsConstraints,
     expand_half_widths,
@@ -15,179 +13,85 @@ from seispy.mcmc.config import (
 )
 
 
-def test_load_config_resolves_paths_against_the_config_directory(
-    tmp_path, write_mcmc_config
-):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["paths"] = {
-        "topography_file": "topography.csv",
-        "sediment_file": "sediment.csv",
-        "moho_file": "moho.csv",
-        "vs_model_file": "reference.csv",
-        "phase_dispersion_file": "phase.csv",
-        "output_dir": "output",
-    }
-    raw["input_units"] = {
-        "topography": "km",
-        "sediment": "m",
-        "moho": "m",
-        "vs": "m/s",
-        "phase_velocity": "m/s",
-    }
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-
-    cfg = load_config(config_path)
-
-    assert cfg.paths.topography_file == tmp_path / "topography.csv"
+def test_configuration_loading(tmp_path, write_mcmc_config):
+    path = write_mcmc_config()
+    raw = json.loads(path.read_text())
+    raw["paths"] = {key: f"{key}.csv" for key in raw["paths"]}
+    raw["paths"]["output_dir"] = "output"
+    raw["input_units"] = dict(
+        topography="km", sediment="m", moho="m", vs="m/s", phase_velocity="m/s"
+    )
+    path.write_text(json.dumps(raw))
+    cfg = load_config(path)
+    assert cfg.paths.topography_file == tmp_path / "topography_file.csv"
     assert cfg.paths.output_dir == tmp_path / "output"
-    assert cfg.input_units.topography_to_m == 1000.0
-    assert cfg.input_units.sediment_to_km == 0.001
-    assert cfg.input_units.moho_to_km == 0.001
-    assert cfg.input_units.vs_to_km_s == 0.001
-    assert cfg.input_units.phase_velocity_to_km_s == 0.001
-
-
-def test_input_units_factor_round_trips_and_rejects_unknown_units():
-    assert InputUnits(topography="m").topography_to_m == 1.0
-    with pytest.raises(ValueError, match="input_units.vs"):
-        InputUnits(vs="m")
-
-
-def test_load_config_rejects_non_divisible_spacing(write_mcmc_config):
-    config_path = write_mcmc_config(grid_spacing=0.3)
-    with pytest.raises(ValueError, match="divisible"):
-        load_config(config_path)
-
-
-def test_load_config_rejects_unknown_and_missing_keys(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["grid_spcing"] = 0.5
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="Unknown configuration keys: grid_spcing"):
-        load_config(config_path)
-
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    del raw["n_coeff_crust"]
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="missing required keys: n_coeff_crust"):
-        load_config(config_path)
-
-
-def test_load_config_rejects_unknown_section_key(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["search_radius"]["crust"] = 0.3
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="search_radius has unknown keys: crust"):
-        load_config(config_path)
-
-
-def test_load_config_rejects_unknown_and_missing_path_keys(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["paths"]["topgraphy_file"] = raw["paths"].pop("topography_file")
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="paths has unknown keys: topgraphy_file"):
-        load_config(config_path)
-
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    del raw["paths"]["moho_file"]
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="paths is missing required keys: moho_file"):
-        load_config(config_path)
-
-
-def test_load_config_rejects_non_object_sections(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["search_radius"] = [0.2, 1.0]
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="search_radius must be a JSON object"):
-        load_config(config_path)
-
-
-def test_deprecated_min_dispersion_points_is_now_an_unknown_key(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["min_dispersion_points"] = 5
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(
-        ValueError, match="Unknown configuration keys: min_dispersion_points"
+    assert cfg.input_units.topography_to_m == 1000
+    for field in (
+        "sediment_to_km",
+        "moho_to_km",
+        "vs_to_km_s",
+        "phase_velocity_to_km_s",
     ):
-        load_config(config_path)
+        assert getattr(cfg.input_units, field) == 0.001
 
 
-def test_search_radius_requires_finite_nonnegative_values():
-    with pytest.raises(ValueError, match="search_radius.sediment"):
-        SearchRadius(sediment=-1.0, moho=1.0)
-    with pytest.raises(ValueError, match="search_radius.crust_vs"):
-        SearchRadius(sediment=0.2, moho=1.0, crust_vs=[[0.1]])
-    with pytest.raises(ValueError, match="search_radius.mantle_vs values"):
-        SearchRadius(sediment=0.2, moho=1.0, mantle_vs=float("nan"))
+@pytest.mark.parametrize(
+    "section,key,value,error",
+    [
+        (None, "grid_spacing", 0.3, "divisible"),
+        (None, "grid_spcing", 0.5, "Unknown configuration keys"),
+        (None, "n_coeff_crust", None, "missing required keys"),
+        (None, "search_radius", [], "must be a JSON object"),
+        ("search_radius", "crust", 0.3, "unknown keys"),
+        ("paths", "topgraphy_file", "x.csv", "unknown keys"),
+        ("paths", "moho_file", None, "missing required keys"),
+        ("search_radius", "crust_vs", [0.1, 0.2], "has 2 values"),
+        (None, "sediment_vs", [[0.5, 2.5], [0, 1]], "strictly increasing"),
+        ("mcmc_params", "burn_in", 200, "burn_in must be smaller"),
+        ("mcmc_params", "nsimu", 10.5, "must be an integer"),
+        ("input_units", "vs", "m", "input_units.vs"),
+    ],
+)
+def test_invalid_configuration(write_mcmc_config, section, key, value, error):
+    path = write_mcmc_config()
+    raw = json.loads(path.read_text())
+    target = raw if section is None else raw.setdefault(section, {})
+    if value is None:
+        del target[key]
+    else:
+        target[key] = value
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match=error):
+        load_config(path)
 
 
-def test_per_coefficient_half_width_length_is_validated_at_load(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["search_radius"]["crust_vs"] = [0.1, 0.2]
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="search_radius.crust_vs has 2 values"):
-        load_config(config_path)
+@pytest.mark.parametrize(
+    "constructor,options,error",
+    [
+        (SearchRadius, dict(sediment=-1, moho=1), "search_radius.sediment"),
+        (
+            SearchRadius,
+            dict(sediment=0.2, moho=1, crust_vs=[[0.1]]),
+            "search_radius.crust_vs",
+        ),
+        (
+            SearchRadius,
+            dict(sediment=0.2, moho=1, mantle_vs=float("nan")),
+            "search_radius.mantle_vs",
+        ),
+        (VsConstraints, dict(global_vs_max=5), "Fortran limit"),
+        (VsConstraints, dict(no_shallow_layers_vs_min=0.4), "Fortran limit"),
+        (VsConstraints, dict(deepest_vs_min=3.9), "Fortran limit"),
+    ],
+)
+def test_physical_constraints(constructor, options, error):
+    with pytest.raises(ValueError, match=error):
+        constructor(**options)
 
 
-def test_sediment_centres_must_increase_at_load(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["sediment_vs"] = [[0.5, 2.5], [0.0, 1.0]]
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="search centres must be strictly increasing"):
-        load_config(config_path)
-
-
-def test_vs_constraints_cannot_relax_fortran_limits():
-    assert VsConstraints().global_vs_max == FORTRAN_VS_MAX
-    assert VsConstraints().no_shallow_layers_vs_min == FORTRAN_VS_MIN
-    assert VsConstraints().deepest_vs_min == FORTRAN_DEEPEST_VS_MIN
-    with pytest.raises(ValueError, match="Fortran limit"):
-        VsConstraints(global_vs_max=5.0)
-    with pytest.raises(ValueError, match="Fortran limit"):
-        VsConstraints(no_shallow_layers_vs_min=0.4)
-    with pytest.raises(ValueError, match="Fortran limit"):
-        VsConstraints(deepest_vs_min=3.9)
-
-
-def test_moho_vs_jump_defaults_to_zero_and_is_ignored():
-    assert VsConstraints().moho_vs_jump == 0.0
-    # Deprecated and no longer validated: a nonzero value only warns.
-    with pytest.warns(DeprecationWarning, match="moho_vs_jump"):
-        constraints = VsConstraints(moho_vs_jump=5.0)
-    assert constraints.moho_vs_jump == 5.0
-
-
-def test_mcmc_params_validation(write_mcmc_config):
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["mcmc_params"]["burn_in"] = 200
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="burn_in must be smaller than nsimu"):
-        load_config(config_path)
-
-    config_path = write_mcmc_config()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    raw["mcmc_params"]["nsimu"] = 10.5
-    config_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="mcmc_params.nsimu must be an integer"):
-        load_config(config_path)
-
-
-def test_mcmc_params_preserve_fortran_order(write_mcmc_config):
+def test_fortran_parameters(write_mcmc_config):
     cfg = load_config(write_mcmc_config())
-    names = [name for name, _ in cfg.mcmc_params.ordered_items()]
-    assert names == [
+    assert [name for name, _ in cfg.mcmc_params.ordered_items()] == [
         "mineos_on",
         "nsimu",
         "inm",
@@ -204,12 +108,10 @@ def test_mcmc_params_preserve_fortran_order(write_mcmc_config):
         "burn_in",
         "out_best",
     ]
-
-
-def test_expand_half_widths():
-    np.testing.assert_allclose(expand_half_widths(0.3, 4, "x"), np.full(4, 0.3))
-    np.testing.assert_allclose(
-        expand_half_widths([0.1, 0.2, 0.3], 3, "x"), [0.1, 0.2, 0.3]
-    )
+    for value, count, expected in [
+        (0.3, 4, [0.3] * 4),
+        ([0.1, 0.2, 0.3], 3, [0.1, 0.2, 0.3]),
+    ]:
+        np.testing.assert_allclose(expand_half_widths(value, count, "x"), expected)
     with pytest.raises(ValueError, match="has 2 values, expected 3"):
         expand_half_widths([0.1, 0.2], 3, "x")

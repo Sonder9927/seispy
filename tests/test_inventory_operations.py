@@ -1,4 +1,4 @@
-from pathlib import Path
+import pytest
 
 from obspy import UTCDateTime
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
@@ -35,40 +35,51 @@ def _inventory(network_code="AA", station_code="STA", channel_code="BHZ"):
     return Inventory([Network(network_code, stations=[station])], source="test")
 
 
-def test_select_inventory_supports_multiple_networks_without_mutation():
-    inventory = _inventory("AA", "ONE", "BHZ") + _inventory("BB", "TWO", "BHN")
-    selected = select_inventory(inventory, networks=["BB"], channels=["BHN"])
-    assert selected.get_contents()["networks"] == ["BB"]
-    assert selected.get_contents()["channels"] == ["BB.TWO.10.BHN"]
-    assert len(inventory.networks) == 2
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "select_inventory_supports_multiple_networks_without_mutation",
+        "combine_and_shift_do_not_mutate_inputs",
+    ],
+)
+def test_in_memory_operations(scenario):
+    if scenario == "select_inventory_supports_multiple_networks_without_mutation":
+        inventory = _inventory("AA", "ONE", "BHZ") + _inventory("BB", "TWO", "BHN")
+        selected = select_inventory(inventory, networks=["BB"], channels=["BHN"])
+        assert selected.get_contents()["networks"] == ["BB"]
+        assert selected.get_contents()["channels"] == ["BB.TWO.10.BHN"]
+        assert len(inventory.networks) == 2
+    elif scenario == "combine_and_shift_do_not_mutate_inputs":
+        first = _inventory("AA")
+        second = _inventory("BB")
+        combined = combine_inventories([first, second], channel_starttime="2025-01-01")
+        assert len(combined.networks) == 2
+        assert combined[0][0][0].start_date == UTCDateTime("2025-01-01")
+        assert first[0][0][0].start_date == UTCDateTime("2020-01-01")
+        shifted = shift_channel_starttime(first, (2024, 1, 1))
+        assert shifted[0][0][0].start_date == UTCDateTime("2024-01-01")
 
 
-def test_combine_and_shift_do_not_mutate_inputs():
-    first = _inventory("AA")
-    second = _inventory("BB")
-    combined = combine_inventories([first, second], channel_starttime="2025-01-01")
-    assert len(combined.networks) == 2
-    assert combined[0][0][0].start_date == UTCDateTime("2025-01-01")
-    assert first[0][0][0].start_date == UTCDateTime("2020-01-01")
-    shifted = shift_channel_starttime(first, (2024, 1, 1))
-    assert shifted[0][0][0].start_date == UTCDateTime("2024-01-01")
-
-
-def test_write_inventory_is_safe_by_default(tmp_path):
-    destination = tmp_path / "inventory.xml"
-    write_inventory(_inventory(), destination)
-    original = destination.read_bytes()
-    try:
-        write_inventory(_inventory("BB"), destination)
-    except FileExistsError:
-        pass
-    else:
-        raise AssertionError("FileExistsError was not raised")
-    assert destination.read_bytes() == original
-
-
-def test_select_inventory_can_write_output(tmp_path):
-    destination = tmp_path / "selected.xml"
-    result = select_inventory(_inventory(), stations=["STA"], output_file=destination)
-    assert len(result.networks) == 1
-    assert destination.exists()
+@pytest.mark.parametrize(
+    "scenario",
+    ["write_inventory_is_safe_by_default", "select_inventory_can_write_output"],
+)
+def test_inventory_exports(tmp_path, scenario):
+    if scenario == "write_inventory_is_safe_by_default":
+        destination = tmp_path / "inventory.xml"
+        write_inventory(_inventory(), destination)
+        original = destination.read_bytes()
+        try:
+            write_inventory(_inventory("BB"), destination)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("FileExistsError was not raised")
+        assert destination.read_bytes() == original
+    elif scenario == "select_inventory_can_write_output":
+        destination = tmp_path / "selected.xml"
+        result = select_inventory(
+            _inventory(), stations=["STA"], output_file=destination
+        )
+        assert len(result.networks) == 1
+        assert destination.exists()

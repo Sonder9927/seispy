@@ -74,104 +74,204 @@ def _unsorted_sac(root):
     return path
 
 
-def test_mseed_archive_preserves_valid_source_bytes(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    raw = _raw_mseed(source)
-    original = raw.read_bytes()
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "mseed_archive_preserves_valid_source_bytes",
+        "mseed_archive_ignores_empty_next_day_trace_and_preserves_bytes",
+        "mseed_archive_splits_valid_days_and_succeeds",
+        "mseed_archive_keeps_post_roll_trace_in_its_day",
+        "merge_waveforms_by_day_separates_midnight_chunks",
+    ],
+)
+def test_raw_archive_days(tmp_path, scenario):
+    if scenario == "mseed_archive_preserves_valid_source_bytes":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        raw = _raw_mseed(source)
+        original = raw.read_bytes()
 
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
+        summary = waveform.archive_waveforms(source, output, max_workers=1)
 
-    archived = output / "NZ" / "AAA" / "2026" / raw.name.removesuffix(".raw")
-    assert archived.read_bytes() == original
-    assert raw.is_file()
-    assert summary.succeeded == summary.files_written == 1
-    assert summary.failed == 0
+        archived = output / "NZ" / "AAA" / "2026" / raw.name.removesuffix(".raw")
+        assert archived.read_bytes() == original
+        assert raw.is_file()
+        assert summary.succeeded == summary.files_written == 1
+        assert summary.failed == 0
 
-    repeated = waveform.archive_waveforms(source, output, max_workers=1)
-    assert repeated.skipped == 1
-    assert repeated.succeeded == repeated.failed == repeated.files_written == 0
-    assert archived.read_bytes() == original
+        repeated = waveform.archive_waveforms(source, output, max_workers=1)
+        assert repeated.skipped == 1
+        assert repeated.succeeded == repeated.failed == repeated.files_written == 0
+        assert archived.read_bytes() == original
+    elif scenario == "mseed_archive_ignores_empty_next_day_trace_and_preserves_bytes":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        raw = _raw_mseed(source)
+        _append_empty_next_day_record(raw)
+        original = raw.read_bytes()
+
+        summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+        archived = output / "NZ" / "AAA" / "2026" / raw.name.removesuffix(".raw")
+        assert archived.read_bytes() == original
+        assert summary.succeeded == summary.files_written == 1
+        assert summary.failed == 0
+        assert summary.traces_total == 2
+        assert summary.traces_written == 1
+        assert summary.traces_ignored_empty == 1
+    elif scenario == "mseed_archive_splits_valid_days_and_succeeds":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        _multiday_raw_mseed(source)
+
+        summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+        outputs = sorted(output.rglob("*.mseed"))
+        assert len(outputs) == 2
+        assert {read(path)[0].stats.starttime.julday for path in outputs} == {1, 2}
+        assert summary.succeeded == summary.reshaped == 1
+        assert summary.recovered == 0
+        assert summary.failed == 0
+        assert summary.files_written == summary.traces_written == 2
+    elif scenario == "mseed_archive_keeps_post_roll_trace_in_its_day":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        trace = _trace_at("2026-01-02T23:59:00", data=np.arange(10000, dtype=np.int32))
+        path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Stream([trace]).write(path, format="MSEED")
+
+        summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+        outputs = sorted(output.rglob("*.mseed"))
+        assert [path.name for path in outputs] == ["NZ.AAA.10.HHZ.2026.002.mseed"]
+        assert summary.succeeded == 1
+        assert summary.files_written == 1
+    elif scenario == "merge_waveforms_by_day_separates_midnight_chunks":
+        source = tmp_path / "sac"
+        source.mkdir()
+        aligned = _sac_chunk("2014-05-07T00:30:00", 1000)
+        straddling = _sac_chunk("2014-05-07T23:59:59.7", 100_000)
+        for trace in (aligned, straddling):
+            destination = WaveformIdentity.from_trace(trace).sac_path(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            trace.write(str(destination), format="SAC")
+
+        output = tmp_path / "merged"
+        waveform.merge_waveforms_by_day(source, output, pattern="*.sac")
+
+        assert sorted(path.name for path in output.rglob("*.sac")) == [
+            "NZ.HLRZ.10.EHE.2014.127.003000.sac",
+            "NZ.HLRZ.10.EHE.2014.128.127T235959.7.sac",
+        ]
+        assert not (output / "merge-errors.txt").exists()
 
 
-def test_mseed_archive_ignores_empty_next_day_trace_and_preserves_bytes(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    raw = _raw_mseed(source)
-    _append_empty_next_day_record(raw)
-    original = raw.read_bytes()
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "worker_fails_when_mseed_contains_only_an_empty_trace",
+        "invalid_source_is_reported",
+        "worker_salvages_valid_trace_when_source_path_disagrees",
+        "constant_raw_response_is_not_archived",
+        "worker_keeps_usable_traces_when_a_sibling_is_constant",
+    ],
+)
+def test_source_trace_selection(tmp_path, scenario):
+    if scenario == "worker_fails_when_mseed_contains_only_an_empty_trace":
+        source = tmp_path / "raw"
+        raw = _raw_mseed(source)
+        empty_record = _append_empty_next_day_record(raw)
+        raw.write_bytes(empty_record)
 
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
+        result = archiving._archive_one(
+            str(raw), str(source), str(tmp_path / "archive"), "mseed", False, False
+        )
 
-    archived = output / "NZ" / "AAA" / "2026" / raw.name.removesuffix(".raw")
-    assert archived.read_bytes() == original
-    assert summary.succeeded == summary.files_written == 1
-    assert summary.failed == 0
-    assert summary.traces_total == 2
-    assert summary.traces_written == 1
-    assert summary.traces_ignored_empty == 1
+        assert result.failed == 1
+        assert result.succeeded == result.files_written == 0
+        assert result.traces_total == result.traces_ignored_empty == 1
+        assert "contains no samples" in result.issues[0].error
+    elif scenario == "invalid_source_is_reported":
+        source = tmp_path / "raw"
+        raw = source / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed.raw"
+        raw.parent.mkdir(parents=True)
+        raw.write_bytes(b"not miniSEED")
 
+        summary = waveform.archive_waveforms(
+            source,
+            tmp_path / "archive",
+            max_workers=1,
+            discard_corrupt_records=False,
+        )
 
-def test_mseed_archive_splits_valid_days_and_succeeds(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    _multiday_raw_mseed(source)
+        assert summary.failed == 1
+    elif scenario == "worker_salvages_valid_trace_when_source_path_disagrees":
+        raw = _raw_mseed(tmp_path / "raw")
+        mismatched = raw.with_name("NZ.WRONG.10.HHZ.2026.001.mseed.raw")
+        raw.rename(mismatched)
+        result = archiving._archive_one(
+            str(mismatched),
+            str(tmp_path / "raw"),
+            str(tmp_path / "archive"),
+            "mseed",
+            False,
+            False,
+        )
 
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
+        corrected = (
+            tmp_path
+            / "archive"
+            / "NZ"
+            / "AAA"
+            / "2026"
+            / "NZ.AAA.10.HHZ.2026.001.000000.mseed"
+        )
+        assert corrected.is_file()
+        assert result.succeeded == 1
+        assert result.reshaped == 0
+        assert result.recovered == 0
+        assert result.failed == 0
+    elif scenario == "constant_raw_response_is_not_archived":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        raw = _constant_raw_mseed(source)
 
-    outputs = sorted(output.rglob("*.mseed"))
-    assert len(outputs) == 2
-    assert {read(path)[0].stats.starttime.julday for path in outputs} == {1, 2}
-    assert summary.succeeded == summary.reshaped == 1
-    assert summary.recovered == 0
-    assert summary.failed == 0
-    assert summary.files_written == summary.traces_written == 2
+        summary = waveform.archive_waveforms(source, output, max_workers=1)
 
+        assert summary.failed == 0
+        assert summary.skipped == 1
+        assert summary.succeeded == summary.files_written == 0
+        assert summary.traces_filtered == 1
+        assert not list(output.rglob("*.mseed"))
+        assert raw.is_file()
+    elif scenario == "worker_keeps_usable_traces_when_a_sibling_is_constant":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        first = _trace_at(
+            "2026-01-01T01:00:00",
+            data=np.full(100, 7, dtype=np.int32),
+            sampling_rate=10,
+        )
+        second = first.copy()
+        second.data = np.arange(100, dtype=np.int32)
+        second.stats.starttime = UTCDateTime("2026-01-02T02:00:00")
+        path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Stream([first, second]).write(path, format="MSEED")
 
-def test_worker_fails_when_mseed_contains_only_an_empty_trace(tmp_path):
-    source = tmp_path / "raw"
-    raw = _raw_mseed(source)
-    empty_record = _append_empty_next_day_record(raw)
-    raw.write_bytes(empty_record)
+        result = archiving._archive_one(
+            str(path), str(source), str(output), "mseed", False, False
+        )
 
-    result = archiving._archive_one(
-        str(raw), str(source), str(tmp_path / "archive"), "mseed", False, False
-    )
-
-    assert result.failed == 1
-    assert result.succeeded == result.files_written == 0
-    assert result.traces_total == result.traces_ignored_empty == 1
-    assert "contains no samples" in result.issues[0].error
-
-
-def test_worker_succeeds_when_only_one_trace_group_can_be_written(
-    tmp_path, monkeypatch
-):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    raw = _multiday_raw_mseed(source)
-    original_write = archiving._write_mseed_group
-    calls = 0
-
-    def fail_second_group(traces, destination, overwrite):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("simulated destination failure")
-        return original_write(traces, destination, overwrite)
-
-    monkeypatch.setattr(archiving, "_write_mseed_group", fail_second_group)
-
-    result = archiving._archive_one(
-        str(raw), str(source), str(output), "mseed", False, False
-    )
-
-    assert result.succeeded == result.reshaped == 1
-    assert result.recovered == 0
-    assert result.failed == 0
-    assert result.files_written == result.traces_written == 1
-    assert result.traces_failed == 1
-    assert "simulated destination failure" in result.issues[0].error
+        assert result.succeeded == result.reshaped == 1
+        assert result.recovered == 0
+        assert result.failed == 0
+        assert result.files_with_errors == 0
+        assert result.traces_total == 2
+        assert result.traces_written == 1
+        assert result.traces_filtered == 1
+        assert result.traces_failed == 0
 
 
 @pytest.mark.parametrize("output_format", ["mseed", "sac"])
@@ -279,16 +379,43 @@ def test_archive_existing_samples_must_match(tmp_path, output_format):
     assert archive().traces_existing == 1
 
 
-def test_sac_validation_compares_samples_at_storage_precision(tmp_path):
-    trace = _trace_at("2026-01-01", npts=100)
-    trace.data = np.linspace(0.1, 1.1, 100, dtype=np.float64)
-    path = tmp_path / "rounded.sac"
-    trace.write(str(path), format="SAC")
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "sac_validation_compares_samples_at_storage_precision",
+        "archive_organizes_existing_sac_from_headers",
+    ],
+)
+def test_sac_archive_validation(tmp_path, scenario):
+    if scenario == "sac_validation_compares_samples_at_storage_precision":
+        trace = _trace_at("2026-01-01", npts=100)
+        trace.data = np.linspace(0.1, 1.1, 100, dtype=np.float64)
+        path = tmp_path / "rounded.sac"
+        trace.write(str(path), format="SAC")
 
-    archiving._validate_sac_output(path, trace)
-    trace.data[50] += 0.01
-    with pytest.raises(ValueError, match="samples differ"):
         archiving._validate_sac_output(path, trace)
+        trace.data[50] += 0.01
+        with pytest.raises(ValueError, match="samples differ"):
+            archiving._validate_sac_output(path, trace)
+    elif scenario == "archive_organizes_existing_sac_from_headers":
+        source = tmp_path / "unsorted"
+        original = _unsorted_sac(source)
+        output = tmp_path / "archive"
+
+        summary = waveform.archive_waveforms(
+            source,
+            output,
+            output_format="sac",
+            pattern="*.sac",
+            max_workers=1,
+        )
+
+        archived = output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.000000.sac"
+        assert archived.is_file()
+        assert read(archived, format="SAC")[0].id == "NZ.AAA.10.HHZ"
+        assert original.is_file()
+        assert summary.succeeded == summary.files_written == 1
+        assert summary.failed == 0
 
 
 @pytest.mark.parametrize("sample_limit", [0, 1])
@@ -324,206 +451,138 @@ def test_archive_report_counts_all_events_when_samples_are_capped(
     assert log.count("reason=inventory_mismatch") == 2
 
 
-def test_partial_archive_logs_errors_and_warnings_separately(tmp_path, monkeypatch):
-    from unittest.mock import Mock
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "partial_archive_logs_errors_and_warnings_separately",
+        "worker_failure_is_an_error_event",
+    ],
+)
+def test_archive_reporting(tmp_path, monkeypatch, scenario):
+    if scenario == "partial_archive_logs_errors_and_warnings_separately":
+        from unittest.mock import Mock
 
-    source = tmp_path / "raw"
-    raw = _multiday_raw_mseed(source)
-    original = archiving._merge_group
+        source = tmp_path / "raw"
+        raw = _multiday_raw_mseed(source)
+        original = archiving._merge_group
 
-    def fail_second(group):
-        if group[0].stats.starttime.julday == 2:
-            raise ValueError("bad group")
-        return original(group)
+        def fail_second(group):
+            if group[0].stats.starttime.julday == 2:
+                raise ValueError("bad group")
+            return original(group)
 
-    monkeypatch.setattr(archiving, "_merge_group", fail_second)
-    monkeypatch.setattr(archiving, "_WORKER_INVENTORY", Inventory([], source="test"))
-    result = archiving._archive_one(
-        str(raw), str(source), str(tmp_path / "archive"), "sac", False, False
-    )
+        monkeypatch.setattr(archiving, "_merge_group", fail_second)
+        monkeypatch.setattr(
+            archiving, "_WORKER_INVENTORY", Inventory([], source="test")
+        )
+        result = archiving._archive_one(
+            str(raw), str(source), str(tmp_path / "archive"), "sac", False, False
+        )
 
-    assert result.succeeded == 1
-    assert result.failed == 0
-    assert result.files_with_errors == result.files_with_warnings == 1
-    assert [issue.reason_code for issue in result.issues] == [
-        "group_processing_failed",
-        "inventory_mismatch",
-        "inventory_mismatch",
-    ]
-    run = Mock()
-    archiving._log_issue(run, result)
-    assert run.error.call_count == 1
-    assert run.warning.call_count == 2
-
-
-def test_worker_failure_is_an_error_event():
-    result = archiving._failed_result(Path("source"), RuntimeError("worker stopped"))
-    assert result.failed == result.files_with_errors == 1
-    assert result.files_with_warnings == 0
-    assert result.issues[0].reason_code == "worker_failed"
-
-
-def test_archive_requires_separate_source_and_output_trees(tmp_path):
-    source = tmp_path / "raw"
-    _raw_mseed(source)
-
-    with np.testing.assert_raises_regex(ValueError, "separate directory trees"):
-        waveform.archive_waveforms(source, source / "archive", max_workers=1)
-
-
-def test_archive_organizes_existing_sac_from_headers(tmp_path):
-    source = tmp_path / "unsorted"
-    original = _unsorted_sac(source)
-    output = tmp_path / "archive"
-
-    summary = waveform.archive_waveforms(
-        source,
-        output,
-        output_format="sac",
-        pattern="*.sac",
-        max_workers=1,
-    )
-
-    archived = output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.000000.sac"
-    assert archived.is_file()
-    assert read(archived, format="SAC")[0].id == "NZ.AAA.10.HHZ"
-    assert original.is_file()
-    assert summary.succeeded == summary.files_written == 1
-    assert summary.failed == 0
+        assert result.succeeded == 1
+        assert result.failed == 0
+        assert result.files_with_errors == result.files_with_warnings == 1
+        assert [issue.reason_code for issue in result.issues] == [
+            "group_processing_failed",
+            "inventory_mismatch",
+            "inventory_mismatch",
+        ]
+        run = Mock()
+        archiving._log_issue(run, result)
+        assert run.error.call_count == 1
+        assert run.warning.call_count == 2
+    elif scenario == "worker_failure_is_an_error_event":
+        result = archiving._failed_result(
+            Path("source"), RuntimeError("worker stopped")
+        )
+        assert result.failed == result.files_with_errors == 1
+        assert result.files_with_warnings == 0
+        assert result.issues[0].reason_code == "worker_failed"
 
 
-def test_sac_source_cannot_be_archived_as_mseed(tmp_path):
-    source = tmp_path / "unsorted"
-    original = _unsorted_sac(source)
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "archive_requires_separate_source_and_output_trees",
+        "sac_source_cannot_be_archived_as_mseed",
+    ],
+)
+def test_archive_input_safety(tmp_path, scenario):
+    if scenario == "archive_requires_separate_source_and_output_trees":
+        source = tmp_path / "raw"
+        _raw_mseed(source)
 
-    summary = waveform.archive_waveforms(
-        source,
-        tmp_path / "archive",
-        pattern="*.sac",
-        max_workers=1,
-    )
+        with np.testing.assert_raises_regex(ValueError, "separate directory trees"):
+            waveform.archive_waveforms(source, source / "archive", max_workers=1)
+    elif scenario == "sac_source_cannot_be_archived_as_mseed":
+        source = tmp_path / "unsorted"
+        original = _unsorted_sac(source)
 
-    assert summary.failed == 1
-    assert "output_format='sac'" in summary.issue_samples[0].error
-    assert original.is_file()
+        summary = waveform.archive_waveforms(
+            source,
+            tmp_path / "archive",
+            pattern="*.sac",
+            max_workers=1,
+        )
 
-
-def test_invalid_source_is_reported(tmp_path):
-    source = tmp_path / "raw"
-    raw = source / "NZ" / "AAA" / "2026" / "NZ.AAA.2026.001.mseed.raw"
-    raw.parent.mkdir(parents=True)
-    raw.write_bytes(b"not miniSEED")
-
-    summary = waveform.archive_waveforms(
-        source,
-        tmp_path / "archive",
-        max_workers=1,
-        discard_corrupt_records=False,
-    )
-
-    assert summary.failed == 1
+        assert summary.failed == 1
+        assert "output_format='sac'" in summary.issue_samples[0].error
+        assert original.is_file()
 
 
-def test_worker_salvages_valid_trace_when_source_path_disagrees(tmp_path):
-    raw = _raw_mseed(tmp_path / "raw")
-    mismatched = raw.with_name("NZ.WRONG.10.HHZ.2026.001.mseed.raw")
-    raw.rename(mismatched)
-    result = archiving._archive_one(
-        str(mismatched),
-        str(tmp_path / "raw"),
-        str(tmp_path / "archive"),
-        "mseed",
-        False,
-        False,
-    )
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "inventory_mismatch_archives_with_a_warning",
+        "inventory_partial_epoch_warns_without_discarding_trace",
+    ],
+)
+def test_inventory_epoch_warnings(tmp_path, monkeypatch, scenario):
+    if scenario == "inventory_mismatch_archives_with_a_warning":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        _raw_mseed(source)
 
-    corrected = (
-        tmp_path
-        / "archive"
-        / "NZ"
-        / "AAA"
-        / "2026"
-        / "NZ.AAA.10.HHZ.2026.001.000000.mseed"
-    )
-    assert corrected.is_file()
-    assert result.succeeded == 1
-    assert result.reshaped == 0
-    assert result.recovered == 0
-    assert result.failed == 0
+        summary = waveform.archive_waveforms(
+            source, output, inventory=Inventory(), max_workers=1
+        )
 
+        assert summary.succeeded == 1
+        assert summary.files_with_errors == 0
+        assert summary.files_with_warnings == 1
+        assert summary.has_issues
+        assert "no inventory epoch matches" in summary.issue_samples[0].error
+        assert list(output.rglob("*.mseed"))
+    elif scenario == "inventory_partial_epoch_warns_without_discarding_trace":
+        from obspy.core.inventory import Channel, Network, Station
 
-def test_constant_raw_response_is_not_archived(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    raw = _constant_raw_mseed(source)
-
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
-
-    assert summary.failed == 0
-    assert summary.skipped == 1
-    assert summary.succeeded == summary.files_written == 0
-    assert summary.traces_filtered == 1
-    assert not list(output.rglob("*.mseed"))
-    assert raw.is_file()
-
-
-def test_worker_keeps_usable_traces_when_a_sibling_is_constant(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    first = _trace_at(
-        "2026-01-01T01:00:00", data=np.full(100, 7, dtype=np.int32), sampling_rate=10
-    )
-    second = first.copy()
-    second.data = np.arange(100, dtype=np.int32)
-    second.stats.starttime = UTCDateTime("2026-01-02T02:00:00")
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Stream([first, second]).write(path, format="MSEED")
-
-    result = archiving._archive_one(
-        str(path), str(source), str(output), "mseed", False, False
-    )
-
-    assert result.succeeded == result.reshaped == 1
-    assert result.recovered == 0
-    assert result.failed == 0
-    assert result.files_with_errors == 0
-    assert result.traces_total == 2
-    assert result.traces_written == 1
-    assert result.traces_filtered == 1
-    assert result.traces_failed == 0
-
-
-def test_classify_traces_rejects_non_finite_samples():
-    trace = _trace_at(
-        "2026-01-01",
-        data=np.array([1.0, np.nan, 2.0], dtype=np.float64),
-        sampling_rate=10,
-    )
-
-    valid, empty, unusable = archiving._classify_traces(Stream([trace]))
-
-    assert valid == []
-    assert empty == []
-    assert len(unusable) == 1
-    assert "NaN or infinite" in unusable[0][1]
-
-
-def test_inventory_mismatch_archives_with_a_warning(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    _raw_mseed(source)
-
-    summary = waveform.archive_waveforms(
-        source, output, inventory=Inventory(), max_workers=1
-    )
-
-    assert summary.succeeded == 1
-    assert summary.files_with_errors == 0
-    assert summary.files_with_warnings == 1
-    assert summary.has_issues
-    assert "no inventory epoch matches" in summary.issue_samples[0].error
-    assert list(output.rglob("*.mseed"))
+        trace = _trace_at(
+            "2026-01-01", data=np.arange(100, dtype=np.int32), sampling_rate=10
+        )
+        channel = Channel(
+            code=trace.stats.channel,
+            location_code=trace.stats.location,
+            latitude=0,
+            longitude=0,
+            elevation=0,
+            depth=0,
+            sample_rate=10,
+            start_date=trace.stats.starttime + 2,
+        )
+        station = Station(
+            code=trace.stats.station,
+            latitude=0,
+            longitude=0,
+            elevation=0,
+            channels=[channel],
+        )
+        inventory = Inventory(
+            [Network(code=trace.stats.network, stations=[station])], "test"
+        )
+        monkeypatch.setattr(archiving, "_WORKER_INVENTORY", inventory)
+        warnings = archiving._inventory_warnings([trace])
+        assert len(warnings) == 1
+        assert "complete trace" in warnings[0]
 
 
 @pytest.mark.parametrize("output_format", ["mseed", "sac"])
@@ -625,22 +684,17 @@ def _contained_trace_pairs(draw):
     return outer, inner
 
 
+@pytest.mark.parametrize(
+    "mismatch", [None, "samples", "rate", "grid", "coverage", "channel"]
+)
 @given(pair=_contained_trace_pairs())
-def test_merge_group_tracks_identical_overlap(pair):
-    outer, inner = pair
-    expected = outer.data.copy()
-
-    segments, membership = archiving._merge_group([outer, inner])
-
-    assert len(segments) == 1
-    assert membership == [0, 0]
-    np.testing.assert_array_equal(segments[0].data, expected)
-
-
-@pytest.mark.parametrize("mismatch", ["samples", "rate", "grid", "coverage", "channel"])
-@given(pair=_contained_trace_pairs())
-def test_covering_segment_rejects_incompatible_trace(mismatch, pair):
+def test_overlap_preservation(mismatch, pair):
     segment, trace = pair
+    if mismatch is None:
+        segments, membership = archiving._merge_group([segment, trace])
+        assert len(segments) == 1 and membership == [0, 0]
+        np.testing.assert_array_equal(segments[0].data, segment.data)
+        return
     if mismatch == "samples":
         trace.data[0] += 1
     elif mismatch == "rate":
@@ -679,16 +733,6 @@ def test_archive_trace_filter_skips_filtered_traces(tmp_path):
     assert summary.traces_filtered == 1
     assert summary.traces_failed == 0
     assert summary.succeeded == 1
-
-
-def test_classify_traces_treats_single_sample_trace_as_empty():
-    trace = _trace_at("2026-01-01", data=np.array([5], dtype=np.int32))
-
-    valid, empty, unusable = archiving._classify_traces(Stream([trace]))
-
-    assert valid == []
-    assert len(empty) == 1
-    assert unusable == []
 
 
 def _midnight_straddling_raw(root):
@@ -785,83 +829,106 @@ def _trace_at(
     )
 
 
-def test_mseed_archive_uses_short_segment_tokens(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Stream(
-        [
-            _trace_at("2026-01-02T01:00:00.100000"),
-            _trace_at("2026-01-02T02:00:00.200000"),
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "mseed_archive_uses_short_segment_tokens",
+        "mseed_archive_disambiguates_same_second_segments",
+        "mseed_archive_accepts_an_already_archived_source",
+        "mseed_archive_migrates_a_misnamed_archived_file",
+        "conflicting_same_start_traces_are_reported",
+    ],
+)
+def test_archive_segment_names(tmp_path, scenario):
+    if scenario == "mseed_archive_uses_short_segment_tokens":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Stream(
+            [
+                _trace_at("2026-01-02T01:00:00.100000"),
+                _trace_at("2026-01-02T02:00:00.200000"),
+            ]
+        ).write(path, format="MSEED")
+
+        summary = waveform.archive_waveforms(source, output, max_workers=1)
+
+        outputs = sorted(path.name for path in output.rglob("*.mseed"))
+        assert outputs == [
+            "NZ.AAA.10.HHZ.2026.002.010000.mseed",
+            "NZ.AAA.10.HHZ.2026.002.020000.mseed",
         ]
-    ).write(path, format="MSEED")
+        assert summary.files_written == 2
+        assert summary.reshaped == 1
+    elif scenario == "mseed_archive_disambiguates_same_second_segments":
+        source = tmp_path / "raw"
+        output = tmp_path / "archive"
+        path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Stream(
+            [
+                _trace_at("2026-01-02T01:00:00.100000"),
+                _trace_at("2026-01-02T01:00:00.900000"),
+            ]
+        ).write(path, format="MSEED")
 
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
+        waveform.archive_waveforms(source, output, max_workers=1)
 
-    outputs = sorted(path.name for path in output.rglob("*.mseed"))
-    assert outputs == [
-        "NZ.AAA.10.HHZ.2026.002.010000.mseed",
-        "NZ.AAA.10.HHZ.2026.002.020000.mseed",
-    ]
-    assert summary.files_written == 2
-    assert summary.reshaped == 1
-
-
-def test_mseed_archive_disambiguates_same_second_segments(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Stream(
-        [
-            _trace_at("2026-01-02T01:00:00.100000"),
-            _trace_at("2026-01-02T01:00:00.900000"),
+        assert sorted(path.name for path in output.rglob("*.mseed")) == [
+            "NZ.AAA.10.HHZ.2026.002.010000.9.mseed",
+            "NZ.AAA.10.HHZ.2026.002.010000.mseed",
         ]
-    ).write(path, format="MSEED")
+    elif scenario == "mseed_archive_accepts_an_already_archived_source":
+        source = tmp_path / "old"
+        raw = _raw_mseed(source)
+        archived = raw.with_name(raw.name.removesuffix(".raw"))
+        raw.rename(archived)
+        output = tmp_path / "new"
 
-    waveform.archive_waveforms(source, output, max_workers=1)
+        summary = waveform.archive_waveforms(
+            source, output, pattern="*.mseed", max_workers=1
+        )
 
-    assert sorted(path.name for path in output.rglob("*.mseed")) == [
-        "NZ.AAA.10.HHZ.2026.002.010000.9.mseed",
-        "NZ.AAA.10.HHZ.2026.002.010000.mseed",
-    ]
+        migrated = output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed"
+        assert migrated.read_bytes() == archived.read_bytes()
+        assert summary.succeeded == 1
+        assert summary.failed == 0
+    elif scenario == "mseed_archive_migrates_a_misnamed_archived_file":
+        source = tmp_path / "old"
+        path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed"
+        path.parent.mkdir(parents=True)
+        Stream([_trace_at("2026-01-01T23:59:57.100000")]).write(path, format="MSEED")
+        output = tmp_path / "new"
 
+        summary = waveform.archive_waveforms(
+            source, output, pattern="*.mseed", max_workers=1
+        )
 
-def test_mseed_archive_accepts_an_already_archived_source(tmp_path):
-    source = tmp_path / "old"
-    raw = _raw_mseed(source)
-    archived = raw.with_name(raw.name.removesuffix(".raw"))
-    raw.rename(archived)
-    output = tmp_path / "new"
+        outputs = sorted(p.name for p in output.rglob("*.mseed"))
+        assert outputs == ["NZ.AAA.10.HHZ.2026.002.001T235957.mseed"]
+        assert summary.succeeded == 1
+        assert summary.reshaped == 0
+        assert summary.files_with_errors == 0
+        assert source.joinpath("NZ/AAA/2026/NZ.AAA.10.HHZ.2026.001.mseed").is_file()
+    elif scenario == "conflicting_same_start_traces_are_reported":
+        source = tmp_path / "raw"
+        path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
+        path.parent.mkdir(parents=True)
+        Stream(
+            [
+                _trace_at("2026-01-01T00:00:00", seed=0),
+                _trace_at("2026-01-01T00:00:00", seed=5),
+            ]
+        ).write(path, format="MSEED")
 
-    summary = waveform.archive_waveforms(
-        source, output, pattern="*.mseed", max_workers=1
-    )
+        summary = waveform.archive_waveforms(
+            source, tmp_path / "archive", max_workers=1
+        )
 
-    migrated = output / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed"
-    assert migrated.read_bytes() == archived.read_bytes()
-    assert summary.succeeded == 1
-    assert summary.failed == 0
-
-
-def test_mseed_archive_migrates_a_misnamed_archived_file(tmp_path):
-    source = tmp_path / "old"
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed"
-    path.parent.mkdir(parents=True)
-    Stream([_trace_at("2026-01-01T23:59:57.100000")]).write(path, format="MSEED")
-    output = tmp_path / "new"
-
-    summary = waveform.archive_waveforms(
-        source, output, pattern="*.mseed", max_workers=1
-    )
-
-    outputs = sorted(p.name for p in output.rglob("*.mseed"))
-    assert outputs == ["NZ.AAA.10.HHZ.2026.002.001T235957.mseed"]
-    assert summary.succeeded == 1
-    assert summary.reshaped == 0
-    assert summary.files_with_errors == 0
-    assert source.joinpath("NZ/AAA/2026/NZ.AAA.10.HHZ.2026.001.mseed").is_file()
+        assert summary.has_issues
+        assert summary.files_with_errors == 1
+        assert summary.issue_samples
 
 
 @pytest.mark.parametrize(
@@ -906,40 +973,6 @@ def test_existing_shorter_archive_is_not_silently_kept(
         assert "overwrite=True" in summary.issue_samples[0].error
 
 
-def test_conflicting_same_start_traces_are_reported(tmp_path):
-    source = tmp_path / "raw"
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.001.mseed.raw"
-    path.parent.mkdir(parents=True)
-    Stream(
-        [
-            _trace_at("2026-01-01T00:00:00", seed=0),
-            _trace_at("2026-01-01T00:00:00", seed=5),
-        ]
-    ).write(path, format="MSEED")
-
-    summary = waveform.archive_waveforms(source, tmp_path / "archive", max_workers=1)
-
-    assert summary.has_issues
-    assert summary.files_with_errors == 1
-    assert summary.issue_samples
-
-
-def test_mseed_archive_keeps_post_roll_trace_in_its_day(tmp_path):
-    source = tmp_path / "raw"
-    output = tmp_path / "archive"
-    trace = _trace_at("2026-01-02T23:59:00", data=np.arange(10000, dtype=np.int32))
-    path = source / "NZ" / "AAA" / "2026" / "NZ.AAA.10.HHZ.2026.002.mseed.raw"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Stream([trace]).write(path, format="MSEED")
-
-    summary = waveform.archive_waveforms(source, output, max_workers=1)
-
-    outputs = sorted(output.rglob("*.mseed"))
-    assert [path.name for path in outputs] == ["NZ.AAA.10.HHZ.2026.002.mseed"]
-    assert summary.succeeded == 1
-    assert summary.files_written == 1
-
-
 def _sac_chunk(starttime, npts):
     trace = _trace_at(
         starttime, data=np.arange(npts, dtype=np.float32), station="HLRZ", channel="EHE"
@@ -947,83 +980,52 @@ def _sac_chunk(starttime, npts):
     return trace
 
 
-def test_merge_waveforms_by_day_separates_midnight_chunks(tmp_path):
-    source = tmp_path / "sac"
-    source.mkdir()
-    aligned = _sac_chunk("2014-05-07T00:30:00", 1000)
-    straddling = _sac_chunk("2014-05-07T23:59:59.7", 100_000)
-    for trace in (aligned, straddling):
-        destination = WaveformIdentity.from_trace(trace).sac_path(source)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        trace.write(str(destination), format="SAC")
-
-    output = tmp_path / "merged"
-    waveform.merge_waveforms_by_day(source, output, pattern="*.sac")
-
-    assert sorted(path.name for path in output.rglob("*.sac")) == [
-        "NZ.HLRZ.10.EHE.2014.127.003000.sac",
-        "NZ.HLRZ.10.EHE.2014.128.127T235959.7.sac",
-    ]
-    assert not (output / "merge-errors.txt").exists()
-
-
-def test_inventory_partial_epoch_warns_without_discarding_trace(monkeypatch):
-    from obspy.core.inventory import Channel, Network, Station
-
-    trace = _trace_at(
-        "2026-01-01", data=np.arange(100, dtype=np.int32), sampling_rate=10
-    )
-    channel = Channel(
-        code=trace.stats.channel,
-        location_code=trace.stats.location,
-        latitude=0,
-        longitude=0,
-        elevation=0,
-        depth=0,
-        sample_rate=10,
-        start_date=trace.stats.starttime + 2,
-    )
-    station = Station(
-        code=trace.stats.station,
-        latitude=0,
-        longitude=0,
-        elevation=0,
-        channels=[channel],
-    )
-    inventory = Inventory(
-        [Network(code=trace.stats.network, stations=[station])], "test"
-    )
-    monkeypatch.setattr(archiving, "_WORKER_INVENTORY", inventory)
-    warnings = archiving._inventory_warnings([trace])
-    assert len(warnings) == 1
-    assert "complete trace" in warnings[0]
-
-
-def test_sac_archive_copies_unchanged_file_without_rewriting(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "sac_archive_copies_unchanged_file_without_rewriting",
+        "mseed_copy_is_verified_before_commit",
+    ],
+)
+def test_copy_verification(tmp_path, monkeypatch, scenario):
     source = tmp_path / "source"
-    source.mkdir()
-    trace = _trace_at("2026-01-01", data=np.arange(1000, dtype=np.float32))
-    trace.stats.sac = dict(a=1.25, t0=2.5, user0=3.5, kuser0="CUSTOM")
-    original = source / "arbitrary.sac"
-    trace.write(str(original), format="SAC", byteorder=">")
-    contents = original.read_bytes()
-    monkeypatch.setattr(
-        Trace,
-        "write",
-        lambda *args, **kwargs: pytest.fail("unchanged SAC was rewritten"),
-    )
-    result = archiving._archive_one(
-        str(original),
-        str(source),
-        str(tmp_path / "out"),
-        "sac",
-        False,
-        True,
-        TraceFilter(min_duration_seconds=1),
-    )
-    assert result.succeeded == 1 and not result.issues
-    target = next((tmp_path / "out").rglob("*.sac"))
-    assert target.read_bytes() == contents == original.read_bytes()
+    if scenario == "sac_archive_copies_unchanged_file_without_rewriting":
+        source.mkdir()
+        trace = _trace_at("2026-01-01", data=np.arange(1000, dtype=np.float32))
+        trace.stats.sac = dict(a=1.25, t0=2.5, user0=3.5, kuser0="CUSTOM")
+        original = source / "arbitrary.sac"
+        trace.write(str(original), format="SAC", byteorder=">")
+        contents = original.read_bytes()
+        monkeypatch.setattr(
+            Trace,
+            "write",
+            lambda *args, **kwargs: pytest.fail("unchanged SAC was rewritten"),
+        )
+        result = archiving._archive_one(
+            str(original),
+            str(source),
+            str(tmp_path / "out"),
+            "sac",
+            False,
+            True,
+            TraceFilter(min_duration_seconds=1),
+        )
+        assert result.succeeded == 1 and not result.issues
+        target = next((tmp_path / "out").rglob("*.sac"))
+        assert target.read_bytes() == contents == original.read_bytes()
+    elif scenario == "mseed_copy_is_verified_before_commit":
+        original = _raw_mseed(source)
+
+        def corrupt_copy(source, destination):
+            Path(destination).write_bytes(b"corrupt")
+
+        monkeypatch.setattr(archiving.shutil, "copyfile", corrupt_copy)
+        result = archiving._archive_one(
+            str(original), str(source), str(tmp_path / "out"), "mseed", False, True
+        )
+        assert result.failed == 1 and result.files_written == 0
+        assert "differs from its source" in result.issues[0].error
+        assert not list((tmp_path / "out").rglob("*.mseed"))
 
 
 @pytest.mark.parametrize("renamed", [False, True])
@@ -1059,19 +1061,3 @@ def test_fast_sac_writer_matches_obspy_headers_and_samples(tmp_path, dtype):
     trace.write(str(normal), format="SAC")
     archiving._write_sac(trace, fast)
     assert fast.read_bytes() == normal.read_bytes()
-
-
-def test_mseed_copy_is_verified_before_commit(tmp_path, monkeypatch):
-    source = tmp_path / "source"
-    original = _raw_mseed(source)
-
-    def corrupt_copy(source, destination):
-        Path(destination).write_bytes(b"corrupt")
-
-    monkeypatch.setattr(archiving.shutil, "copyfile", corrupt_copy)
-    result = archiving._archive_one(
-        str(original), str(source), str(tmp_path / "out"), "mseed", False, True
-    )
-    assert result.failed == 1 and result.files_written == 0
-    assert "differs from its source" in result.issues[0].error
-    assert not list((tmp_path / "out").rglob("*.mseed"))

@@ -38,8 +38,34 @@ def _run_entry_script_module(tmp_path, monkeypatch, source):
     exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), scope)
 
 
-def test_module_level_call_is_rejected(tmp_path, monkeypatch):
-    with pytest.raises(RuntimeError) as error:
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "module_level_call_is_rejected",
+        "guard_accepts_module_level_setup_and_call",
+        "guard_accepts_an_inline_call",
+        "fork_start_method_accepts_module_level_call",
+    ],
+)
+def test_entry_script_policy(tmp_path, monkeypatch, scenario):
+    if scenario == "module_level_call_is_rejected":
+        with pytest.raises(RuntimeError) as error:
+            _run_entry_script_module(
+                tmp_path,
+                monkeypatch,
+                """
+                import pathlib
+
+                BASE = pathlib.Path("/data")
+                check("deconvolve_waveforms", start_method="spawn")
+                """,
+            )
+
+        message = str(error.value)
+        assert "mission.py:4" in message
+        assert 'if __name__ == "__main__":' in message
+        assert "deconvolve_waveforms" in message
+    elif scenario == "guard_accepts_module_level_setup_and_call":
         _run_entry_script_module(
             tmp_path,
             monkeypatch,
@@ -47,62 +73,35 @@ def test_module_level_call_is_rejected(tmp_path, monkeypatch):
             import pathlib
 
             BASE = pathlib.Path("/data")
-            check("deconvolve_waveforms", start_method="spawn")
+
+            def main():
+                check("deconvolve_waveforms", start_method="spawn")
+
+            if __name__ == "__main__":
+                main()
             """,
         )
+    elif scenario == "guard_accepts_an_inline_call":
+        _run_entry_script_module(
+            tmp_path,
+            monkeypatch,
+            """
+            import pathlib
 
-    message = str(error.value)
-    assert "mission.py:4" in message
-    assert 'if __name__ == "__main__":' in message
-    assert "deconvolve_waveforms" in message
+            BASE = pathlib.Path("/data")
 
-
-def test_guard_accepts_module_level_setup_and_call(tmp_path, monkeypatch):
-    _run_entry_script_module(
-        tmp_path,
-        monkeypatch,
-        """
-        import pathlib
-
-        BASE = pathlib.Path("/data")
-
-        def main():
-            check("deconvolve_waveforms", start_method="spawn")
-
-        if __name__ == "__main__":
-            main()
-        """,
-    )
-
-
-def test_guard_accepts_an_inline_call(tmp_path, monkeypatch):
-    _run_entry_script_module(
-        tmp_path,
-        monkeypatch,
-        """
-        import pathlib
-
-        BASE = pathlib.Path("/data")
-
-        if __name__ == "__main__":
-            check("deconvolve_waveforms", start_method="spawn")
-        """,
-    )
-
-
-def test_fork_start_method_accepts_module_level_call(tmp_path, monkeypatch):
-    _run_entry_script_module(
-        tmp_path,
-        monkeypatch,
-        """
-        check("deconvolve_waveforms", start_method="fork")
-        """,
-    )
-
-
-def test_calls_outside_the_entry_module_are_accepted():
-    # A test runner, notebook or library call has no module-level __main__ frame.
-    require_reimport_safe_entry_point("deconvolve_waveforms", start_method="spawn")
+            if __name__ == "__main__":
+                check("deconvolve_waveforms", start_method="spawn")
+            """,
+        )
+    elif scenario == "fork_start_method_accepts_module_level_call":
+        _run_entry_script_module(
+            tmp_path,
+            monkeypatch,
+            """
+            check("deconvolve_waveforms", start_method="fork")
+            """,
+        )
 
 
 def test_bootstrapping_worker_is_rejected(monkeypatch):
@@ -114,47 +113,52 @@ def test_bootstrapping_worker_is_rejected(monkeypatch):
         require_reimport_safe_entry_point("deconvolve_waveforms", start_method="spawn")
 
 
-def test_main_guard_detection():
-    module = ast.parse(
-        textwrap.dedent(
-            """
-            if __name__ == "__main__":
-                pass
-            if "__main__" == __name__:
-                pass
-            if __name__ != "__main__":
-                pass
-            if __name__ == "main":
-                pass
-            """
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "main_guard_detection",
+        "guarded_lines_cover_the_whole_block",
+        "unparsable_entry_script_is_ignored",
+    ],
+)
+def test_guard_syntax(scenario):
+    if scenario == "main_guard_detection":
+        module = ast.parse(
+            textwrap.dedent(
+                """
+                if __name__ == "__main__":
+                    pass
+                if "__main__" == __name__:
+                    pass
+                if __name__ != "__main__":
+                    pass
+                if __name__ == "main":
+                    pass
+                """
+            )
         )
-    )
 
-    assert [_is_main_guard(statement) for statement in module.body] == [
-        True,
-        True,
-        False,
-        False,
-    ]
+        assert [_is_main_guard(statement) for statement in module.body] == [
+            True,
+            True,
+            False,
+            False,
+        ]
+    elif scenario == "guarded_lines_cover_the_whole_block":
+        assert _guarded_lines(
+            textwrap.dedent(
+                """
+                import os
 
-
-def test_guarded_lines_cover_the_whole_block():
-    assert _guarded_lines(
-        textwrap.dedent(
-            """
-            import os
-
-            if __name__ == "__main__":
-                value = os.getcwd()
-                print(value)
-            """
-        ),
-        "entry.py",
-    ) == frozenset({4, 5, 6})
-
-
-def test_unparsable_entry_script_is_ignored():
-    assert _guarded_lines("this is not python", "entry.py") == frozenset()
+                if __name__ == "__main__":
+                    value = os.getcwd()
+                    print(value)
+                """
+            ),
+            "entry.py",
+        ) == frozenset({4, 5, 6})
+    elif scenario == "unparsable_entry_script_is_ignored":
+        assert _guarded_lines("this is not python", "entry.py") == frozenset()
 
 
 def _run_entry_script(directory, source):
@@ -171,34 +175,105 @@ def _run_entry_script(directory, source):
     )
 
 
-def test_unguarded_script_reports_the_guard_instead_of_hanging(tmp_path):
-    waveforms = tmp_path / "waveforms"
-    waveforms.mkdir()
-    output = tmp_path / "deconvolved"
-    completed = _run_entry_script(
-        tmp_path,
-        f'''
-        """Entry script without a __main__ guard, on a spawn platform."""
-        import multiprocessing
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "unguarded_script_reports_the_guard_instead_of_hanging",
+        "unguarded_script_runs_with_fork",
+        "guarded_script_processes_files_with_spawn",
+    ],
+)
+def test_spawn_and_fork_scripts(tmp_path, scenario):
+    if scenario == "unguarded_script_reports_the_guard_instead_of_hanging":
+        waveforms = tmp_path / "waveforms"
+        waveforms.mkdir()
+        output = tmp_path / "deconvolved"
+        completed = _run_entry_script(
+            tmp_path,
+            f'''
+            """Entry script without a __main__ guard, on a spawn platform."""
+            import multiprocessing
 
-        multiprocessing.set_start_method("spawn", force=True)
-        from seispy import deconvolution
+            multiprocessing.set_start_method("spawn", force=True)
+            from seispy import deconvolution
 
-        summary = deconvolution.deconvolve_waveforms(
-            {str(waveforms)!r},
-            {str(tmp_path / "stations.xml")!r},
-            output_dir={str(output)!r},
-            max_workers=1,
+            summary = deconvolution.deconvolve_waveforms(
+                {str(waveforms)!r},
+                {str(tmp_path / "stations.xml")!r},
+                output_dir={str(output)!r},
+                max_workers=1,
+            )
+            print(summary.succeeded)
+            ''',
         )
-        print(summary.succeeded)
-        ''',
-    )
 
-    assert completed.returncode != 0
-    assert "deconvolve_waveforms" in completed.stderr
-    assert "mission.py:7" in completed.stderr
-    assert 'if __name__ == "__main__":' in completed.stderr
-    assert not output.exists()
+        assert completed.returncode != 0
+        assert "deconvolve_waveforms" in completed.stderr
+        assert "mission.py:7" in completed.stderr
+        assert 'if __name__ == "__main__":' in completed.stderr
+        assert not output.exists()
+    elif scenario == "unguarded_script_runs_with_fork":
+        """The Linux default re-runs nothing, so no guard is required."""
+        waveforms = tmp_path / "waveforms"
+        _write_source_mseed(waveforms)
+        output = tmp_path / "filtered"
+        completed = _run_entry_script(
+            tmp_path,
+            f'''
+            """Entry script without a __main__ guard, on a fork platform."""
+            import multiprocessing
+
+            multiprocessing.set_start_method("fork")
+            from seispy import waveform
+
+            summary = waveform.filter_waveforms(
+                {str(waveforms)!r},
+                {str(output)!r},
+                trace_filter=waveform.TraceFilter(min_duration_seconds=5),
+                max_workers=1,
+                files_per_pool=1,
+                save_report=False,
+                save_log=False,
+            )
+            print(summary.succeeded)
+            ''',
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip().endswith("1")
+        assert len(list(output.rglob("*.mseed"))) == 1
+    elif scenario == "guarded_script_processes_files_with_spawn":
+        waveforms = tmp_path / "waveforms"
+        _write_source_mseed(waveforms)
+        output = tmp_path / "filtered"
+        completed = _run_entry_script(
+            tmp_path,
+            f"""
+            import multiprocessing
+
+            multiprocessing.set_start_method("spawn", force=True)
+            from seispy import waveform
+
+            def main():
+                summary = waveform.filter_waveforms(
+                    {str(waveforms)!r},
+                    {str(output)!r},
+                    trace_filter=waveform.TraceFilter(min_duration_seconds=5),
+                    max_workers=1,
+                    files_per_pool=1,
+                    save_report=False,
+                    save_log=False,
+                )
+                print(summary.succeeded)
+
+            if __name__ == "__main__":
+                main()
+            """,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip().endswith("1")
+        assert len(list(output.rglob("*.mseed"))) == 1
 
 
 def _write_source_mseed(waveforms):
@@ -212,69 +287,3 @@ def _write_source_mseed(waveforms):
     trace.stats.sampling_rate = 100.0
     trace.stats.starttime = UTCDateTime("2026-01-01")
     Stream([trace]).write(str(station_dir / "day.mseed"), format="MSEED")
-
-
-def test_unguarded_script_runs_with_fork(tmp_path):
-    """The Linux default re-runs nothing, so no guard is required."""
-    waveforms = tmp_path / "waveforms"
-    _write_source_mseed(waveforms)
-    output = tmp_path / "filtered"
-    completed = _run_entry_script(
-        tmp_path,
-        f'''
-        """Entry script without a __main__ guard, on a fork platform."""
-        import multiprocessing
-
-        multiprocessing.set_start_method("fork")
-        from seispy import waveform
-
-        summary = waveform.filter_waveforms(
-            {str(waveforms)!r},
-            {str(output)!r},
-            trace_filter=waveform.TraceFilter(min_duration_seconds=5),
-            max_workers=1,
-            files_per_pool=1,
-            save_report=False,
-            save_log=False,
-        )
-        print(summary.succeeded)
-        ''',
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip().endswith("1")
-    assert len(list(output.rglob("*.mseed"))) == 1
-
-
-def test_guarded_script_processes_files_with_spawn(tmp_path):
-    waveforms = tmp_path / "waveforms"
-    _write_source_mseed(waveforms)
-    output = tmp_path / "filtered"
-    completed = _run_entry_script(
-        tmp_path,
-        f"""
-        import multiprocessing
-
-        multiprocessing.set_start_method("spawn", force=True)
-        from seispy import waveform
-
-        def main():
-            summary = waveform.filter_waveforms(
-                {str(waveforms)!r},
-                {str(output)!r},
-                trace_filter=waveform.TraceFilter(min_duration_seconds=5),
-                max_workers=1,
-                files_per_pool=1,
-                save_report=False,
-                save_log=False,
-            )
-            print(summary.succeeded)
-
-        if __name__ == "__main__":
-            main()
-        """,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip().endswith("1")
-    assert len(list(output.rglob("*.mseed"))) == 1

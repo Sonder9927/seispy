@@ -14,20 +14,26 @@ def test_binary_catalog_floors_window_and_preserves_original_catalog(tmp_path):
     assert source.read_text() == text
 
 
-def test_binary_catalog_rejects_integer_second_directory_collision(tmp_path):
-    source = tmp_path / "events.cat"
-    source.write_text("2024/01/01,00:00:00.1\n2024/01/01,00:00:00.2\n")
-    with pytest.raises(ValueError, match="multiple events"):
-        _integer_second_catalog(source, tmp_path / "temporary.cat")
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "binary_catalog_rejects_integer_second_directory_collision",
+        "binary_cutter_rejects_output_inside_network_directory",
+    ],
+)
+def test_external_output_safety(tmp_path, scenario):
+    if scenario == "binary_catalog_rejects_integer_second_directory_collision":
+        source = tmp_path / "events.cat"
+        source.write_text("2024/01/01,00:00:00.1\n2024/01/01,00:00:00.2\n")
+        with pytest.raises(ValueError, match="multiple events"):
+            _integer_second_catalog(source, tmp_path / "temporary.cat")
+    elif scenario == "binary_cutter_rejects_output_inside_network_directory":
+        network_dir = tmp_path / "NZ"
+        network_dir.mkdir()
 
-
-def test_binary_cutter_rejects_output_inside_network_directory(tmp_path):
-    network_dir = tmp_path / "NZ"
-    network_dir.mkdir()
-
-    with pytest.raises(ValueError, match="separate directory trees"):
-        cut_events_binary(
-            network_dir,
-            network_dir / "events",
-            tmp_path / "events.cat",
-        )
+        with pytest.raises(ValueError, match="separate directory trees"):
+            cut_events_binary(
+                network_dir,
+                network_dir / "events",
+                tmp_path / "events.cat",
+            )

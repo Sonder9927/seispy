@@ -85,23 +85,13 @@ def test_sac_archive_path_round_trips_header_identity(identity):
     )
     assert path.name == expected_name
     assert identity.matches_sac_path(path, root)
-
-
-@given(
-    identity=_identities(),
-    field=st.sampled_from(("network", "station", "location", "channel", "starttime")),
-)
-def test_sac_archive_path_rejects_any_changed_identity_field(identity, field):
-    root = Path("archive")
-    path = identity.sac_path(root)
-    value = (
-        identity.starttime + 86_400
-        if field == "starttime"
-        else f"{getattr(identity, field)}X"
-    )
-    changed = replace(identity, **{field: value})
-
-    assert not changed.matches_sac_path(path, root)
+    for field in ("network", "station", "location", "channel", "starttime"):
+        value = (
+            identity.starttime + 86400
+            if field == "starttime"
+            else f"{getattr(identity, field)}X"
+        )
+        assert not replace(identity, **{field: value}).matches_sac_path(path, root)
 
 
 @given(
@@ -139,37 +129,14 @@ def test_miniseed_identity_accepts_same_station_day_in_any_channel(identity, cha
         f"{identity.julday:03d}.mseed"
     )
     assert matches_mseed_path(mseed_path(root, stream), root, stream)
-
-
-@given(identity=_identities(), change_station=st.booleans())
-def test_miniseed_identity_rejects_mixed_station_or_day(identity, change_station):
-    other = WaveformIdentity(
-        identity.network,
-        f"{identity.station}X" if change_station else identity.station,
-        identity.location,
-        identity.channel,
-        identity.starttime if change_station else identity.starttime + 86_400,
-    )
-
-    with pytest.raises(ValueError, match="multiple stations or start days"):
-        stream_day_identity([_trace(identity), _trace(other)])
-
-
-def test_miniseed_identity_ignores_empty_boundary_trace():
-    primary = WaveformIdentity("NZ", "WEL", "10", "HHZ", UTCDateTime("2025-01-01"))
-    boundary = replace(primary, starttime=primary.starttime + 86_400)
-
-    assert stream_day_identity([_trace(primary), _empty_trace(boundary)]) == (
-        "NZ",
-        "WEL",
-        2025,
-        1,
-    )
-
-
-def test_miniseed_identity_rejects_stream_with_only_empty_traces():
-    identity = WaveformIdentity("NZ", "WEL", "10", "HHZ", UTCDateTime("2025-01-01"))
-
+    for changed in (
+        replace(identity, station=identity.station + "X"),
+        replace(identity, starttime=identity.starttime + 86400),
+    ):
+        with pytest.raises(ValueError, match="multiple stations or start days"):
+            stream_day_identity([_trace(identity), _trace(changed)])
+    boundary = replace(identity, starttime=identity.starttime + 86400)
+    assert stream_day_identity([*stream, _empty_trace(boundary)]) == expected
     with pytest.raises(ValueError, match="contains no samples"):
         stream_day_identity([_empty_trace(identity)])
 

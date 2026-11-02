@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from obspy import UTCDateTime
 from obspy.core.inventory import Channel, Inventory, Network, Site, Station
@@ -47,95 +45,112 @@ def _inventory(*channels):
     return Inventory([Network(code="NZ", stations=[station])], source="test")
 
 
-def test_analyze_inventory_reports_counts_components_and_readiness():
-    inventory = _inventory(_channel("HHZ"), _channel("HHN"), _channel("HHE"))
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "analyze_inventory_reports_counts_components_and_readiness",
+        "missing_response_only_blocks_response_removal",
+        "sensitivity_without_response_stages_blocks_response_removal",
+    ],
+)
+def test_response_readiness(scenario):
+    if scenario == "analyze_inventory_reports_counts_components_and_readiness":
+        inventory = _inventory(_channel("HHZ"), _channel("HHN"), _channel("HHE"))
 
-    report = analyze_inventory(inventory)
+        report = analyze_inventory(inventory)
 
-    assert report.summary == {
-        "networks": 1,
-        "stations": 1,
-        "station_epochs": 1,
-        "unique_nslc": 3,
-        "channel_epochs": 3,
-    }
-    assert report.download_suitability.status == "ready"
-    assert report.response_suitability.status == "conditional"
-    assert report.response_suitability.requires_waveform_check
-    assert report.component_sets.iloc[0].components == "ENZ"
+        assert report.summary == {
+            "networks": 1,
+            "stations": 1,
+            "station_epochs": 1,
+            "unique_nslc": 3,
+            "channel_epochs": 3,
+        }
+        assert report.download_suitability.status == "ready"
+        assert report.response_suitability.status == "conditional"
+        assert report.response_suitability.requires_waveform_check
+        assert report.component_sets.iloc[0].components == "ENZ"
+    elif scenario == "missing_response_only_blocks_response_removal":
+        report = analyze_inventory(_inventory(_channel(response=False)))
 
+        assert report.download_suitability.status == "ready"
+        assert report.response_suitability.status == "unsafe"
+        assert report.response_suitability.issues[0].code == "MISSING_RESPONSE"
+        with pytest.raises(ValueError, match="MISSING_RESPONSE"):
+            report.response_suitability.require_safe("response removal")
+    elif scenario == "sensitivity_without_response_stages_blocks_response_removal":
+        inventory = _inventory(_channel())
+        inventory[0][0][0].response.response_stages = []
 
-def test_missing_response_only_blocks_response_removal():
-    report = analyze_inventory(_inventory(_channel(response=False)))
+        report = analyze_inventory(inventory)
 
-    assert report.download_suitability.status == "ready"
-    assert report.response_suitability.status == "unsafe"
-    assert report.response_suitability.issues[0].code == "MISSING_RESPONSE"
-    with pytest.raises(ValueError, match="MISSING_RESPONSE"):
-        report.response_suitability.require_safe("response removal")
-
-
-def test_sensitivity_without_response_stages_blocks_response_removal():
-    inventory = _inventory(_channel())
-    inventory[0][0][0].response.response_stages = []
-
-    report = analyze_inventory(inventory)
-
-    assert any(
-        issue.code == "MISSING_RESPONSE_STAGES"
-        for issue in report.response_suitability.issues
-    )
-    with pytest.raises(ValueError, match="MISSING_RESPONSE_STAGES"):
-        report.response_suitability.require_safe("response removal")
+        assert any(
+            issue.code == "MISSING_RESPONSE_STAGES"
+            for issue in report.response_suitability.issues
+        )
+        with pytest.raises(ValueError, match="MISSING_RESPONSE_STAGES"):
+            report.response_suitability.require_safe("response removal")
 
 
-def test_location_sequence_is_not_misreported_as_simultaneous():
-    report = analyze_inventory(
-        _inventory(
-            _channel(location="10", start="2020-01-01", end="2021-01-01"),
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "location_sequence_is_not_misreported_as_simultaneous",
+        "overlapping_nslc_epochs_are_unsafe_for_both_consumers",
+    ],
+)
+def test_epoch_safety(scenario):
+    if scenario == "location_sequence_is_not_misreported_as_simultaneous":
+        report = analyze_inventory(
+            _inventory(
+                _channel(location="10", start="2020-01-01", end="2021-01-01"),
+                _channel(location="20", start="2021-01-01", end=None),
+            )
+        )
+
+        assert len(report.location_changes) == 1
+        assert report.location_overlaps.empty
+        assert report.download_suitability.status == "ready"
+    elif scenario == "overlapping_nslc_epochs_are_unsafe_for_both_consumers":
+        report = analyze_inventory(
+            _inventory(
+                _channel(start="2020-01-01", end="2022-01-01"),
+                _channel(start="2021-01-01", end=None),
+            )
+        )
+
+        assert report.download_suitability.status == "unsafe"
+        assert report.response_suitability.status == "unsafe"
+        assert any(
+            issue.code == "OVERLAPPING_CHANNEL_EPOCHS"
+            for issue in report.download_suitability.issues
+        )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "analysis_accepts_stationxml_path_and_half_open_window",
+        "invalid_source_and_window_have_clear_errors",
+    ],
+)
+def test_inventory_sources(tmp_path, scenario):
+    if scenario == "analysis_accepts_stationxml_path_and_half_open_window":
+        inventory = _inventory(
+            _channel(start="2020-01-01", end="2021-01-01"),
             _channel(location="20", start="2021-01-01", end=None),
         )
-    )
+        path = tmp_path / "stations.xml"
+        inventory.write(path, format="STATIONXML")
 
-    assert len(report.location_changes) == 1
-    assert report.location_overlaps.empty
-    assert report.download_suitability.status == "ready"
+        report = analyze_inventory(path, starttime="2021-01-01", endtime="2022-01-01")
 
-
-def test_overlapping_nslc_epochs_are_unsafe_for_both_consumers():
-    report = analyze_inventory(
-        _inventory(
-            _channel(start="2020-01-01", end="2022-01-01"),
-            _channel(start="2021-01-01", end=None),
-        )
-    )
-
-    assert report.download_suitability.status == "unsafe"
-    assert report.response_suitability.status == "unsafe"
-    assert any(
-        issue.code == "OVERLAPPING_CHANNEL_EPOCHS"
-        for issue in report.download_suitability.issues
-    )
-
-
-def test_analysis_accepts_stationxml_path_and_half_open_window(tmp_path: Path):
-    inventory = _inventory(
-        _channel(start="2020-01-01", end="2021-01-01"),
-        _channel(location="20", start="2021-01-01", end=None),
-    )
-    path = tmp_path / "stations.xml"
-    inventory.write(path, format="STATIONXML")
-
-    report = analyze_inventory(path, starttime="2021-01-01", endtime="2022-01-01")
-
-    assert len(report.channel_epochs) == 1
-    assert report.channel_epochs.iloc[0].location == "20"
-
-
-def test_invalid_source_and_window_have_clear_errors(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        analyze_inventory(tmp_path / "missing.xml")
-    with pytest.raises(ValueError, match="earlier"):
-        analyze_inventory(
-            _inventory(_channel()), starttime="2022-01-01", endtime="2022-01-01"
-        )
+        assert len(report.channel_epochs) == 1
+        assert report.channel_epochs.iloc[0].location == "20"
+    elif scenario == "invalid_source_and_window_have_clear_errors":
+        with pytest.raises(FileNotFoundError):
+            analyze_inventory(tmp_path / "missing.xml")
+        with pytest.raises(ValueError, match="earlier"):
+            analyze_inventory(
+                _inventory(_channel()), starttime="2022-01-01", endtime="2022-01-01"
+            )

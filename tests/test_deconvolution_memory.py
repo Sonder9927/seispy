@@ -100,86 +100,33 @@ def test_real_process_generations_preserve_all_inputs(
         assert pids[2] == pids[3]
 
 
-def test_workers_load_the_inventory_from_a_file(tmp_path, monkeypatch):
-    target = tmp_path / "0"
-    inventory = Inventory([Network("NZ", stations=[Station("AAA", 0.0, 0.0, 0.0)])])
-    responses_path = removal._write_worker_inventory(
-        inventory, tmp_path / "inventory.pkl"
-    )
-    submitted = {}
-    real_pool = ProcessPoolExecutor
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "workers_load_the_inventory_from_a_file",
+        "previous_file_stream_is_released_before_next_read",
+        "broken_pool_stops_without_retry",
+    ],
+)
+def test_worker_lifecycle(tmp_path, monkeypatch, scenario):
+    if scenario == "workers_load_the_inventory_from_a_file":
+        target = tmp_path / "0"
+        inventory = Inventory([Network("NZ", stations=[Station("AAA", 0.0, 0.0, 0.0)])])
+        responses_path = removal._write_worker_inventory(
+            inventory, tmp_path / "inventory.pkl"
+        )
+        submitted = {}
+        real_pool = ProcessPoolExecutor
 
-    def pool(**kwargs):
-        submitted.update(kwargs)
-        return real_pool(**kwargs)
+        def pool(**kwargs):
+            submitted.update(kwargs)
+            return real_pool(**kwargs)
 
-    monkeypatch.setattr(removal, "ProcessPoolExecutor", pool)
-    monkeypatch.setattr(removal, "call_with_warnings", _record_loaded_inventory)
-    result = removal._run_deconvolution_batches(
-        [target],
-        responses_path,
-        "obspy",
-        None,
-        tmp_path,
-        tmp_path,
-        1,
-        removal.DEFAULT_PRE_FILTER,
-        (),
-        removal.DEFAULT_TRACE_FILTER,
-        1,
-        1,
-        2,
-        1,
-        Mock(),
-    )
-
-    assert result.total == result.succeeded == 1
-    # The initializer argument stays a small path; the worker still gets the
-    # inventory, loaded from the file the parent wrote once.
-    assert submitted["initargs"] == (str(responses_path), "obspy", None)
-    assert target.read_text() == "Inventory:1"
-
-
-def test_previous_file_stream_is_released_before_next_read(tmp_path, monkeypatch):
-    references = []
-
-    def read(target):
-        assert all(ref() is None for ref in references)
-        stream = Stream([Trace(np.zeros(100, dtype=np.float32))])
-        references.extend([weakref.ref(stream), weakref.ref(stream[0].data)])
-        return stream
-
-    monkeypatch.setattr(removal.obspy, "read", read)
-    result = removal._process_obspy_targets(
-        [tmp_path / "a.sac", tmp_path / "b.sac"],
-        None,
-        tmp_path,
-        tmp_path / "out",
-        1,
-        removal.DEFAULT_PRE_FILTER,
-        (),
-    )
-    assert result.skipped == 2
-    assert all(ref() is None for ref in references)
-
-
-def test_broken_pool_stops_without_retry(tmp_path, monkeypatch):
-    from concurrent.futures import Future
-    from concurrent.futures.process import BrokenProcessPool
-    from unittest.mock import MagicMock
-
-    executor = MagicMock()
-    executor.__enter__.return_value = executor
-    future = Future()
-    future.set_exception(BrokenProcessPool("worker exited"))
-    executor.submit.return_value = future
-    factory = Mock(return_value=executor)
-    monkeypatch.setattr(removal, "ProcessPoolExecutor", factory)
-    run = Mock()
-    with pytest.raises(BrokenProcessPool):
-        removal._run_deconvolution_batches(
-            [tmp_path / "a"],
-            None,
+        monkeypatch.setattr(removal, "ProcessPoolExecutor", pool)
+        monkeypatch.setattr(removal, "call_with_warnings", _record_loaded_inventory)
+        result = removal._run_deconvolution_batches(
+            [target],
+            responses_path,
             "obspy",
             None,
             tmp_path,
@@ -190,10 +137,68 @@ def test_broken_pool_stops_without_retry(tmp_path, monkeypatch):
             removal.DEFAULT_TRACE_FILTER,
             1,
             1,
+            2,
             1,
-            1,
-            run,
-            files_per_pool=1,
+            Mock(),
         )
-    assert factory.call_count == executor.submit.call_count == 1
-    assert run.checkpoint.call_args.kwargs["completed"] == 0
+
+        assert result.total == result.succeeded == 1
+        # The initializer argument stays a small path; the worker still gets the
+        # inventory, loaded from the file the parent wrote once.
+        assert submitted["initargs"] == (str(responses_path), "obspy", None)
+        assert target.read_text() == "Inventory:1"
+    elif scenario == "previous_file_stream_is_released_before_next_read":
+        references = []
+
+        def read(target):
+            assert all(ref() is None for ref in references)
+            stream = Stream([Trace(np.zeros(100, dtype=np.float32))])
+            references.extend([weakref.ref(stream), weakref.ref(stream[0].data)])
+            return stream
+
+        monkeypatch.setattr(removal.obspy, "read", read)
+        result = removal._process_obspy_targets(
+            [tmp_path / "a.sac", tmp_path / "b.sac"],
+            None,
+            tmp_path,
+            tmp_path / "out",
+            1,
+            removal.DEFAULT_PRE_FILTER,
+            (),
+        )
+        assert result.skipped == 2
+        assert all(ref() is None for ref in references)
+    elif scenario == "broken_pool_stops_without_retry":
+        from concurrent.futures import Future
+        from concurrent.futures.process import BrokenProcessPool
+        from unittest.mock import MagicMock
+
+        executor = MagicMock()
+        executor.__enter__.return_value = executor
+        future = Future()
+        future.set_exception(BrokenProcessPool("worker exited"))
+        executor.submit.return_value = future
+        factory = Mock(return_value=executor)
+        monkeypatch.setattr(removal, "ProcessPoolExecutor", factory)
+        run = Mock()
+        with pytest.raises(BrokenProcessPool):
+            removal._run_deconvolution_batches(
+                [tmp_path / "a"],
+                None,
+                "obspy",
+                None,
+                tmp_path,
+                tmp_path,
+                1,
+                removal.DEFAULT_PRE_FILTER,
+                (),
+                removal.DEFAULT_TRACE_FILTER,
+                1,
+                1,
+                1,
+                1,
+                run,
+                files_per_pool=1,
+            )
+        assert factory.call_count == executor.submit.call_count == 1
+        assert run.checkpoint.call_args.kwargs["completed"] == 0

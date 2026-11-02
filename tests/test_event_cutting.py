@@ -1,5 +1,7 @@
 """Event waveform-cutting contracts."""
 
+import pytest
+
 from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,40 +25,42 @@ def _event():
     }
 
 
-def test_no_data_is_counted_with_one_sample(tmp_path):
-    result = module.cut_event_station(
-        _event(),
-        {"network": "NZ", "station": "AAA"},
-        tmp_path / "output",
-        archive_index=SimpleNamespace(overlapping=lambda *args: ()),
-    )
-    assert result.failed == 1
-    assert result.no_data == 1
-    assert result.samples[0].status == "no_data"
-
-
-def test_read_failures_are_compact(tmp_path):
-    inputs = [tmp_path / f"{index}.sac" for index in range(3)]
-    index = SimpleNamespace(
-        overlapping=lambda *args: tuple(
-            WaveformRecord(
-                path,
-                WaveformIdentity("NZ", "AAA", "", "BHZ", _event()["start"]),
-                _event()["start"],
-                _event()["end"],
-                1.0,
-            )
-            for path in inputs
-        )
-    )
-    with patch.object(module.obspy, "read", side_effect=RuntimeError("bad SAC")):
+@pytest.mark.parametrize(
+    "scenario", ["no_data_is_counted_with_one_sample", "read_failures_are_compact"]
+)
+def test_cutting_failures(tmp_path, scenario):
+    if scenario == "no_data_is_counted_with_one_sample":
         result = module.cut_event_station(
             _event(),
             {"network": "NZ", "station": "AAA"},
             tmp_path / "output",
-            archive_index=index,
-            max_error_samples=1,
+            archive_index=SimpleNamespace(overlapping=lambda *args: ()),
         )
-    assert result.read_failed == 3
-    assert result.failed == 1
-    assert len(result.samples) == 1
+        assert result.failed == 1
+        assert result.no_data == 1
+        assert result.samples[0].status == "no_data"
+    elif scenario == "read_failures_are_compact":
+        inputs = [tmp_path / f"{index}.sac" for index in range(3)]
+        index = SimpleNamespace(
+            overlapping=lambda *args: tuple(
+                WaveformRecord(
+                    path,
+                    WaveformIdentity("NZ", "AAA", "", "BHZ", _event()["start"]),
+                    _event()["start"],
+                    _event()["end"],
+                    1.0,
+                )
+                for path in inputs
+            )
+        )
+        with patch.object(module.obspy, "read", side_effect=RuntimeError("bad SAC")):
+            result = module.cut_event_station(
+                _event(),
+                {"network": "NZ", "station": "AAA"},
+                tmp_path / "output",
+                archive_index=index,
+                max_error_samples=1,
+            )
+        assert result.read_failed == 3
+        assert result.failed == 1
+        assert len(result.samples) == 1

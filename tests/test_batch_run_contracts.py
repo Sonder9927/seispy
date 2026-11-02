@@ -4,7 +4,7 @@ from seispy import deconvolution, download, event, waveform
 from seispy.workflow import BatchSummary
 
 
-def test_public_batch_functions_persist_reports_and_logs_by_default():
+def test_public_batch_contracts():
     functions = (
         download.download_waveforms,
         download.mass_download_waveforms,
@@ -22,8 +22,6 @@ def test_public_batch_functions_persist_reports_and_logs_by_default():
         assert parameters["save_report"].default is True
         assert parameters["save_log"].default is True
 
-
-def test_batch_summaries_share_one_counter_and_issue_contract():
     summary_types = (
         download.BulkDownloadSummary,
         download.WaveformDownloadSummary,

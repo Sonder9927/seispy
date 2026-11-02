@@ -32,7 +32,19 @@ def _chain_inputs(path):
         np.savetxt(stream, [a, a, a, b])
 
 
-def test_collection_preserves_values_is_silent_and_isolates_failures(tmp_path, capsys):
+def test_collection_preserves_values_is_silent_and_isolates_failures(
+    tmp_path, capsys, monkeypatch
+):
+    from seispy.mcmc import collection
+
+    original = collection.collect_posterior
+
+    def with_resolved_lab(*args, **kwargs):
+        profile, summary, samples, covariance, chain = original(*args, **kwargs)
+        summary.update(lab_estimate_km=102.4, lab_estimate_status="resolved")
+        return profile, summary, samples, covariance, chain
+
+    monkeypatch.setattr(collection, "collect_posterior", with_resolved_lab)
     p = tmp_path / "1.50_2.50"
     _write_grid(p, moho="40\n50\n")
     _chain_inputs(p)
@@ -52,6 +64,7 @@ def test_collection_preserves_values_is_silent_and_isolates_failures(tmp_path, c
     row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
     assert list(row[["x", "y", "misfit", "moho"]]) == [1.5, 2.5, 1.25, 45.0]
     assert row.moho_km_mean == 41.0  # 3*40 + 44, divided by 4
+    assert row.lab == row.lab_estimate_km == 102.4
     assert row.retained_states == 4
     assert row.unique_states == 2
     assert set(result.diagnostics.status) == {"ok", "failed"}
@@ -60,41 +73,89 @@ def test_collection_preserves_values_is_silent_and_isolates_failures(tmp_path, c
     assert not (tmp_path / "out" / "vs.csv").exists()
 
 
-def test_collection_exports_lab_positive_downward(tmp_path, monkeypatch):
-    from seispy.mcmc import collection
-
-    grid = tmp_path / "1.50_2.50"
-    _write_grid(grid)
-    _chain_inputs(grid)
-    original = collection.collect_posterior
-
-    def with_resolved_lab(*args, **kwargs):
-        profile, summary, samples, covariance, chain = original(*args, **kwargs)
-        summary.update(lab_estimate_km=102.4, lab_estimate_status="resolved")
-        return profile, summary, samples, covariance, chain
-
-    monkeypatch.setattr(collection, "collect_posterior", with_resolved_lab)
-    result = collection.collect_results(tmp_path, tmp_path / "out")
-    row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
-    assert row.lab == 102.4
-    assert row.lab == row.lab_estimate_km
-
-
-def test_missing_chain_keeps_original_data_but_marks_partial(tmp_path):
-    _write_grid(tmp_path / "0.00_0.00")
-    result = collect_results(tmp_path, tmp_path / "out")
-    assert result.diagnostics.status.tolist() == ["partial"]
-    row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
-    assert np.isnan(row.lab)
-    assert row.posterior_status == "unavailable"
-
-
-def test_collection_rejects_negative_input_depths(tmp_path):
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "missing_chain",
+        "negative_depth",
+        "missing_directory",
+        "empty_directory",
+        "sample_write",
+    ],
+)
+def test_collection_failures(tmp_path, monkeypatch, problem):
+    if problem == "missing_directory":
+        with pytest.raises(FileNotFoundError):
+            collect_results(tmp_path / "absent", tmp_path / "out")
+        return
+    if problem == "empty_directory":
+        result = collect_results(tmp_path, tmp_path / "out")
+        assert result.grid_count == 0
+        assert pd.read_parquet(result.output_paths["profiles"]).empty
+        return
     grid = tmp_path / "0.00_0.00"
     _write_grid(grid)
-    (grid / "mean_prob.lst").write_text("0 3.0\n-50 4.0\n")
-    with pytest.raises(ValueError, match="positive-downward"):
-        read_grid_result(grid)
+    if problem == "negative_depth":
+        (grid / "mean_prob.lst").write_text("0 3.0\n-50 4.0\n")
+        with pytest.raises(ValueError, match="positive-downward"):
+            read_grid_result(grid)
+        return
+    if problem == "sample_write":
+        _chain_inputs(grid)
+        write = pd.DataFrame.to_parquet
+
+        def fail_samples(self, path, **kwargs):
+            if Path(path).name == "samples.parquet":
+                raise OSError("simulated write failure")
+            return write(self, path, **kwargs)
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_samples)
+    result = collect_results(tmp_path, tmp_path / "out")
+    assert result.partial_count == 1
+    assert result.diagnostics.status.tolist() == ["partial"]
+    row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
+    assert row.posterior_status == "unavailable"
+    assert np.isnan(row.lab)
+    assert row.moho == 41.0
+    np.testing.assert_allclose(
+        pd.read_parquet(result.output_paths["profiles"]).vs, [3, 4, 3.8]
+    )
+
+
+@pytest.mark.parametrize("problem", [None, "biased", "short", "forward", "bad_token"])
+def test_chain_records(tmp_path, problem):
+    from seispy.mcmc.posterior import read_chain
+
+    _chain_inputs(tmp_path)
+    layout = ModelLayout.read(tmp_path / "para.inp")
+    expected, burn = read_chain(tmp_path, layout)
+    path = tmp_path / "fort.8010"
+    lines = path.read_text().splitlines()
+    tokens = " ".join(lines[2:]).split()
+    path.write_text(
+        "\n".join(lines[:2])
+        + "\n"
+        + "\n".join(
+            " ".join(tokens[i : i + 5]).replace("e", "D")
+            for i in range(0, len(tokens), 5)
+        )
+    )
+    if problem is None:
+        actual, actual_burn = read_chain(tmp_path, layout)
+        np.testing.assert_array_equal(actual, expected)
+        assert actual_burn == burn
+        return
+    if problem == "biased":
+        config = tmp_path / "input_DRAM_T.dat"
+        config.write_text(config.read_text().replace("1.7d0", "0.0"))
+    elif problem == "short":
+        path.write_text("\n".join(path.read_text().splitlines()[:-1]))
+    elif problem == "forward":
+        path.write_text("1 2 3\n")
+    else:
+        path.write_text(path.read_text() + "\nBAD_TOKEN\n")
+    with pytest.raises(ValueError):
+        read_chain(tmp_path, layout)
 
 
 def test_chain_statistics_keep_rejected_state_multiplicities(tmp_path):
@@ -113,68 +174,6 @@ def test_chain_statistics_keep_rejected_state_multiplicities(tmp_path):
     assert moho_var == pytest.approx(np.var([40, 40, 40, 44], ddof=1))
     assert profile.vsv_mean.iloc[0] == pytest.approx(3.025)
 
-
-@pytest.mark.parametrize("problem", ["biased", "short", "forward"])
-def test_invalid_chains_are_not_certified(tmp_path, problem):
-    _chain_inputs(tmp_path)
-    if problem == "biased":
-        p = tmp_path / "input_DRAM_T.dat"
-        p.write_text(p.read_text().replace("1.7d0", "0.0"))
-    elif problem == "short":
-        p = tmp_path / "fort.8010"
-        p.write_text("\n".join(p.read_text().splitlines()[:-1]))
-    else:
-        (tmp_path / "fort.8010").write_text("1 2 3\n")
-    with pytest.raises(ValueError):
-        collect_posterior(tmp_path, np.arange(100.0), LABSettings())
-
-
-def test_reconstruction_matches_external_fortran_oracle():
-    p = Path(__file__).parent / "data" / "mcmc_fortran"
-    layout = ModelLayout.read(p / "para.inp")
-    parameters = np.loadtxt(p / "bsp00001.dat")[:, 2]
-    expected = np.loadtxt(p / "mod00001.dat")
-    depth, fields, moho = layout.reconstruct(parameters)
-    np.testing.assert_allclose(depth, expected[:, 0], atol=2e-4, rtol=0)
-    np.testing.assert_allclose(fields["vsv"], expected[:, 1], atol=2e-6, rtol=0)
-    assert moho == parameters[0]
-
-
-def _step(z, center, width=8):
-    return 0.15 * (1 + np.tanh((z - center) / width))
-
-
-def test_lab_detects_single_transition_and_uses_positive_depth():
-    z = np.arange(30.0, 301.0)
-    result = identify_lab(z, 4.6 - _step(z, 130), 30.0, LABSettings())
-    assert result["lab_status"] == "detected"
-    assert result["lab_depth_km"] == pytest.approx(130, abs=2)
-    assert result["lab_drop_km_s"] > 0.05
-
-
-@pytest.mark.parametrize(
-    "kind,status",
-    [
-        ("increasing", "not_detected"),
-        ("flat", "not_detected"),
-        ("double", "ambiguous"),
-        ("edge", "boundary_limited"),
-    ],
-)
-def test_lab_does_not_force_a_unique_interface(kind, status):
-    z = np.arange(30.0, 301.0)
-    curves = {
-        "increasing": 4 + 0.001 * z,
-        "flat": np.full(z.shape, 4.5),
-        "double": 4.8 - _step(z, 110) - _step(z, 185),
-        "edge": 4.6 - _step(z, 245),
-    }
-    result = identify_lab(z, curves[kind], 30.0, LABSettings())
-    assert result["lab_status"] == status
-    assert np.isnan(result["lab_depth_km"])
-
-
-def test_ess_distinguishes_correlated_and_independent_chains():
     rng = np.random.default_rng(41)
     independent = rng.normal(size=4000)
     correlated = np.zeros(4000)
@@ -184,35 +183,19 @@ def test_ess_distinguishes_correlated_and_independent_chains():
     assert np.isnan(effective_sample_size(np.ones(100)))
 
 
-def test_empty_and_missing_directories(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        collect_results(tmp_path / "absent", tmp_path / "out")
-    result = collect_results(tmp_path, tmp_path / "out")
-    assert result.grid_count == 0
-    assert pd.read_parquet(result.output_paths["profiles"]).empty
-
-
-def test_failed_posterior_write_does_not_publish_lab(tmp_path, monkeypatch):
-    p = tmp_path / "0.00_0.00"
-    _write_grid(p)
-    _chain_inputs(p)
-    write = pd.DataFrame.to_parquet
-
-    def fail_samples(self, path, **kwargs):
-        if Path(path).name == "samples.parquet":
-            raise OSError("simulated write failure")
-        return write(self, path, **kwargs)
-
-    monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_samples)
-    summary = collect_results(tmp_path, tmp_path / "out")
-    row = pd.read_parquet(summary.output_paths["interfaces"]).iloc[0]
-    assert row.posterior_status == "unavailable"
-    assert np.isnan(row.lab)
-    assert summary.partial_count == 1
-
-
-@pytest.mark.parametrize("mode", ["water", "sediment", "joint", "sh"])
+@pytest.mark.parametrize("mode", ["oracle", "water", "sediment", "joint", "sh"])
 def test_reconstruction_layer_and_component_modes(tmp_path, mode):
+    if mode == "oracle":
+        p = Path(__file__).parent / "data" / "mcmc_fortran"
+        layout = ModelLayout.read(p / "para.inp")
+        parameters = np.loadtxt(p / "bsp00001.dat")[:, 2]
+        expected = np.loadtxt(p / "mod00001.dat")
+        depth, fields, moho = layout.reconstruct(parameters)
+        np.testing.assert_allclose(depth, expected[:, 0], atol=2e-4, rtol=0)
+        np.testing.assert_allclose(fields["vsv"], expected[:, 1], atol=2e-6, rtol=0)
+        assert moho == parameters[0]
+
+        return
     _chain_inputs(tmp_path)
     p = tmp_path / "para.inp"
     text = p.read_text()
@@ -248,52 +231,43 @@ def test_reconstruction_layer_and_component_modes(tmp_path, mode):
         assert "vsh" in fields and "vsv" not in fields
 
 
-def test_wrapped_fortran_chain_is_identical_to_unwrapped(tmp_path):
-    from seispy.mcmc.posterior import read_chain
-
-    _chain_inputs(tmp_path)
-    layout = ModelLayout.read(tmp_path / "para.inp")
-    expected, burn = read_chain(tmp_path, layout)
-    p = tmp_path / "fort.8010"
-    lines = p.read_text().splitlines()
-    tokens = " ".join(lines[2:]).split()
-    p.write_text(
-        "\n".join(lines[:2])
-        + "\n"
-        + "\n".join(
-            " ".join(tokens[i : i + 5]).replace("e", "D")
-            for i in range(0, len(tokens), 5)
-        )
-    )
-    actual, actual_burn = read_chain(tmp_path, layout)
-    np.testing.assert_array_equal(actual, expected)
-    assert actual_burn == burn
-    p.write_text(p.read_text() + "\nBAD_TOKEN\n")
-    with pytest.raises(ValueError):
-        read_chain(tmp_path, layout)
+def _step(z, center, width=8):
+    return 0.15 * (1 + np.tanh((z - center) / width))
 
 
-def test_wide_transition_center_survives_width_crossing_search_limit():
+@pytest.mark.parametrize(
+    "kind,status,center,width_limited",
+    [
+        ("single", "detected", 130, False),
+        ("wide", "detected", 90, True),
+        ("boundary_and_interior", "detected", 125, False),
+        ("increasing", "not_detected", None, False),
+        ("flat", "not_detected", None, False),
+        ("constant_descent", "boundary_limited", None, False),
+        ("double", "ambiguous", None, False),
+        ("edge", "boundary_limited", None, False),
+    ],
+)
+def test_lab_bands(kind, status, center, width_limited):
     z = np.arange(30.0, 301.0)
-    # Half-gradient width reaches above the search floor, but center is resolved.
-    r = identify_lab(z, 4.7 - _step(z, 90.0, width=60), 30.0, LABSettings())
-    assert r["lab_status"] == "detected"
-    assert abs(r["lab_depth_km"] - 90) <= 3
-    assert r["lab_width_limited"]
-
-
-def test_boundary_candidate_does_not_veto_resolved_interior_candidate():
-    z = np.arange(30.0, 301.0)
-    r = identify_lab(z, 4.9 - _step(z, 125.0) - _step(z, 249.0), 30.0, LABSettings())
-    assert r["lab_status"] == "detected"
-    assert abs(r["lab_depth_km"] - 125) <= 3
-
-
-def test_constant_descent_does_not_create_interface():
-    z = np.arange(30.0, 301.0)
-    assert not np.isfinite(
-        identify_lab(z, 4.8 - 0.001 * z, 30.0, LABSettings())["lab_depth_km"]
-    )
+    curves = {
+        "single": 4.6 - _step(z, 130),
+        "wide": 4.7 - _step(z, 90, width=60),
+        "boundary_and_interior": 4.9 - _step(z, 125) - _step(z, 249),
+        "increasing": 4 + 0.001 * z,
+        "flat": np.full(z.shape, 4.5),
+        "constant_descent": 4.8 - 0.001 * z,
+        "double": 4.8 - _step(z, 110) - _step(z, 185),
+        "edge": 4.6 - _step(z, 245),
+    }
+    result = identify_lab(z, curves[kind], 30.0, LABSettings())
+    assert result["lab_status"] == status
+    if center is None:
+        assert np.isnan(result["lab_depth_km"])
+    else:
+        assert result["lab_depth_km"] == pytest.approx(center, abs=3)
+        assert result["lab_drop_km_s"] > 0.05
+        assert result["lab_width_limited"] == width_limited
 
 
 def test_single_lab_requires_support_and_no_separated_modes():

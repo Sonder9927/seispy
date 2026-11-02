@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,74 +45,77 @@ def _event():
     }
 
 
-def test_index_finds_previous_day_file_by_actual_time_overlap(tmp_path):
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "index_finds_previous_day_file_by_actual_time_overlap",
+        "index_returns_cross_day_file_only_once",
+        "index_uses_headers_in_an_arbitrary_directory_tree",
+        "index_separates_same_station_code_in_different_networks",
+        "repeated_queries_do_not_reread_headers",
+    ],
+)
+def test_index_lookup(tmp_path, scenario):
     archive_root = tmp_path / "archive"
-    path = _archived_sac(archive_root)
-    index = WaveformArchiveIndex.build(archive_root / "NZ")
-
-    records = index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
-
-    assert [record.path for record in records] == [path]
-
-
-def test_index_returns_cross_day_file_only_once(tmp_path):
-    archive_root = tmp_path / "archive"
-    path = _archived_sac(archive_root)
-    index = WaveformArchiveIndex.build(archive_root / "NZ")
-
-    records = index.overlapping(
-        "NZ",
-        "WEL",
-        UTCDateTime("2025-01-01T23:59:55"),
-        UTCDateTime("2025-01-02T00:00:05"),
-    )
-
-    assert [record.path for record in records] == [path]
-
-
-def test_index_uses_headers_in_an_arbitrary_directory_tree(tmp_path):
-    archive_root = tmp_path / "archive"
-    original = _archived_sac(archive_root)
-    arbitrary = archive_root / "unrelated" / "names" / "waveform.bin"
-    arbitrary.parent.mkdir(parents=True)
-    original.rename(arbitrary)
-
-    index = WaveformArchiveIndex.build(archive_root, pattern="*")
-
-    records = index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
-    assert [record.path for record in records] == [arbitrary]
-
-
-def test_index_separates_same_station_code_in_different_networks(tmp_path):
-    archive_root = tmp_path / "archive"
-    nz = _archived_sac(archive_root, network="NZ")
-    iu = _archived_sac(archive_root, network="IU")
-
-    index = WaveformArchiveIndex.build(archive_root)
-
-    assert [
-        item.path
-        for item in index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
-    ] == [nz]
-    assert [
-        item.path
-        for item in index.overlapping("IU", "WEL", _event()["start"], _event()["end"])
-    ] == [iu]
-
-
-def test_repeated_queries_do_not_reread_headers(tmp_path):
-    archive_root = tmp_path / "archive"
-    _archived_sac(archive_root)
-    from seispy.event import archive_index as index_module
-
-    with patch.object(
-        index_module.obspy, "read", wraps=index_module.obspy.read
-    ) as read:
+    if scenario == "index_finds_previous_day_file_by_actual_time_overlap":
+        path = _archived_sac(archive_root)
         index = WaveformArchiveIndex.build(archive_root / "NZ")
-        index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
-        index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
 
-    assert read.call_count == 1
+        records = index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
+
+        assert [record.path for record in records] == [path]
+    elif scenario == "index_returns_cross_day_file_only_once":
+        path = _archived_sac(archive_root)
+        index = WaveformArchiveIndex.build(archive_root / "NZ")
+
+        records = index.overlapping(
+            "NZ",
+            "WEL",
+            UTCDateTime("2025-01-01T23:59:55"),
+            UTCDateTime("2025-01-02T00:00:05"),
+        )
+
+        assert [record.path for record in records] == [path]
+    elif scenario == "index_uses_headers_in_an_arbitrary_directory_tree":
+        original = _archived_sac(archive_root)
+        arbitrary = archive_root / "unrelated" / "names" / "waveform.bin"
+        arbitrary.parent.mkdir(parents=True)
+        original.rename(arbitrary)
+
+        index = WaveformArchiveIndex.build(archive_root, pattern="*")
+
+        records = index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
+        assert [record.path for record in records] == [arbitrary]
+    elif scenario == "index_separates_same_station_code_in_different_networks":
+        nz = _archived_sac(archive_root, network="NZ")
+        iu = _archived_sac(archive_root, network="IU")
+
+        index = WaveformArchiveIndex.build(archive_root)
+
+        assert [
+            item.path
+            for item in index.overlapping(
+                "NZ", "WEL", _event()["start"], _event()["end"]
+            )
+        ] == [nz]
+        assert [
+            item.path
+            for item in index.overlapping(
+                "IU", "WEL", _event()["start"], _event()["end"]
+            )
+        ] == [iu]
+    elif scenario == "repeated_queries_do_not_reread_headers":
+        _archived_sac(archive_root)
+        from seispy.event import archive_index as index_module
+
+        with patch.object(
+            index_module.obspy, "read", wraps=index_module.obspy.read
+        ) as read:
+            index = WaveformArchiveIndex.build(archive_root / "NZ")
+            index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
+            index.overlapping("NZ", "WEL", _event()["start"], _event()["end"])
+
+        assert read.call_count == 1
 
 
 def test_waveform_reader_reuses_full_file_without_sharing_mutations(tmp_path):
@@ -133,97 +137,105 @@ def test_waveform_reader_reuses_full_file_without_sharing_mutations(tmp_path):
     assert np.any(second[0].data)
 
 
-def test_cut_keeps_same_channel_different_locations_separate(tmp_path):
-    archive_root = tmp_path / "archive"
-    _archived_sac(archive_root, location="10")
-    _archived_sac(archive_root, location="20")
-    index = WaveformArchiveIndex.build(archive_root / "NZ")
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "cut_keeps_same_channel_different_locations_separate",
+        "cut_preserves_gaps_as_named_segments",
+        "public_cutting_workflow_uses_arbitrary_source_layout",
+        "existing_event_output_is_not_overwritten",
+    ],
+)
+def test_event_outputs(tmp_path, scenario):
+    if scenario == "cut_keeps_same_channel_different_locations_separate":
+        archive_root = tmp_path / "archive"
+        _archived_sac(archive_root, location="10")
+        _archived_sac(archive_root, location="20")
+        index = WaveformArchiveIndex.build(archive_root / "NZ")
 
-    result = cut_event_station(
-        _event(),
-        {"network": "NZ", "station": "WEL"},
-        tmp_path / "events",
-        archive_index=index,
-    )
+        result = cut_event_station(
+            _event(),
+            {"network": "NZ", "station": "WEL"},
+            tmp_path / "events",
+            archive_index=index,
+        )
 
-    outputs = sorted((tmp_path / "events").rglob("*.sac"))
-    assert result.succeeded == 1
-    assert result.outputs == 2
-    assert any(".10.BHZ." in path.name for path in outputs)
-    assert any(".20.BHZ." in path.name for path in outputs)
+        outputs = sorted((tmp_path / "events").rglob("*.sac"))
+        assert result.succeeded == 1
+        assert result.outputs == 2
+        assert any(".10.BHZ." in path.name for path in outputs)
+        assert any(".20.BHZ." in path.name for path in outputs)
+    elif scenario == "cut_preserves_gaps_as_named_segments":
+        archive_root = tmp_path / "archive"
+        _archived_sac(
+            archive_root, location="", starttime="2025-01-02T00:00:00", npts=2
+        )
+        _archived_sac(
+            archive_root, location="", starttime="2025-01-02T00:00:04", npts=2
+        )
+        index = WaveformArchiveIndex.build(archive_root)
 
+        result = cut_event_station(
+            _event(),
+            {"network": "NZ", "station": "WEL"},
+            tmp_path / "events",
+            archive_index=index,
+        )
 
-def test_cut_preserves_gaps_as_named_segments(tmp_path):
-    archive_root = tmp_path / "archive"
-    _archived_sac(archive_root, location="", starttime="2025-01-02T00:00:00", npts=2)
-    _archived_sac(archive_root, location="", starttime="2025-01-02T00:00:04", npts=2)
-    index = WaveformArchiveIndex.build(archive_root)
+        outputs = sorted((tmp_path / "events").rglob("*.sac"))
+        assert result.outputs == 2
+        assert all(path.name.startswith("NZ.WEL.--.BHZ.") for path in outputs)
+        assert [path.name.rsplit(".", 2)[1] for path in outputs] == ["s01", "s02"]
+        assert all(
+            path.parent == tmp_path / "events" / "20250102000000" for path in outputs
+        )
+    elif scenario == "public_cutting_workflow_uses_arbitrary_source_layout":
+        archive_root = tmp_path / "source"
+        original = _archived_sac(archive_root)
+        arbitrary = archive_root / "flat" / "input.sac"
+        arbitrary.parent.mkdir(parents=True)
+        original.rename(arbitrary)
+        second = _archived_sac(archive_root, station="ABC")
+        second.rename(archive_root / "flat" / "input-2.sac")
+        catalog = tmp_path / "events.csv"
+        catalog.write_text(
+            "time,latitude,longitude,depth,mag\n2025-01-02T00:00:00.123Z,1,2,3,4\n",
+            encoding="utf-8",
+        )
+        output = tmp_path / "events"
 
-    result = cut_event_station(
-        _event(),
-        {"network": "NZ", "station": "WEL"},
-        tmp_path / "events",
-        archive_index=index,
-    )
+        summary = cut_event_waveforms(
+            archive_root,
+            catalog,
+            output_dir=output,
+            time_window=5,
+            max_workers=2,
+            save_report=False,
+            save_log=False,
+        )
 
-    outputs = sorted((tmp_path / "events").rglob("*.sac"))
-    assert result.outputs == 2
-    assert all(path.name.startswith("NZ.WEL.--.BHZ.") for path in outputs)
-    assert [path.name.rsplit(".", 2)[1] for path in outputs] == ["s01", "s02"]
-    assert all(
-        path.parent == tmp_path / "events" / "20250102000000" for path in outputs
-    )
+        assert summary.succeeded == 2
+        assert summary.outputs_written == 2
+        assert {str(path.relative_to(output)) for path in output.rglob("*.sac")} == {
+            "20250102000000/NZ.WEL.10.BHZ.20250102000000.sac",
+            "20250102000000/NZ.ABC.10.BHZ.20250102000000.sac",
+        }
+    elif scenario == "existing_event_output_is_not_overwritten":
+        archive_root = tmp_path / "archive"
+        _archived_sac(archive_root)
+        index = WaveformArchiveIndex.build(archive_root / "NZ")
+        args = (
+            _event(),
+            {"network": "NZ", "station": "WEL"},
+            tmp_path / "events",
+        )
+        first = cut_event_station(*args, archive_index=index)
+        output = next((tmp_path / "events").rglob("*.sac"))
+        original = output.read_bytes()
 
+        second = cut_event_station(*args, archive_index=index)
 
-def test_public_cutting_workflow_uses_arbitrary_source_layout(tmp_path):
-    archive_root = tmp_path / "source"
-    original = _archived_sac(archive_root)
-    arbitrary = archive_root / "flat" / "input.sac"
-    arbitrary.parent.mkdir(parents=True)
-    original.rename(arbitrary)
-    second = _archived_sac(archive_root, station="ABC")
-    second.rename(archive_root / "flat" / "input-2.sac")
-    catalog = tmp_path / "events.csv"
-    catalog.write_text(
-        "time,latitude,longitude,depth,mag\n2025-01-02T00:00:00.123Z,1,2,3,4\n",
-        encoding="utf-8",
-    )
-    output = tmp_path / "events"
-
-    summary = cut_event_waveforms(
-        archive_root,
-        catalog,
-        output_dir=output,
-        time_window=5,
-        max_workers=2,
-        save_report=False,
-        save_log=False,
-    )
-
-    assert summary.succeeded == 2
-    assert summary.outputs_written == 2
-    assert {str(path.relative_to(output)) for path in output.rglob("*.sac")} == {
-        "20250102000000/NZ.WEL.10.BHZ.20250102000000.sac",
-        "20250102000000/NZ.ABC.10.BHZ.20250102000000.sac",
-    }
-
-
-def test_existing_event_output_is_not_overwritten(tmp_path):
-    archive_root = tmp_path / "archive"
-    _archived_sac(archive_root)
-    index = WaveformArchiveIndex.build(archive_root / "NZ")
-    args = (
-        _event(),
-        {"network": "NZ", "station": "WEL"},
-        tmp_path / "events",
-    )
-    first = cut_event_station(*args, archive_index=index)
-    output = next((tmp_path / "events").rglob("*.sac"))
-    original = output.read_bytes()
-
-    second = cut_event_station(*args, archive_index=index)
-
-    assert first.outputs == 1
-    assert second.failed == 1
-    assert second.outputs == 0
-    assert output.read_bytes() == original
+        assert first.outputs == 1
+        assert second.failed == 1
+        assert second.outputs == 0
+        assert output.read_bytes() == original
