@@ -238,9 +238,9 @@ residuals, missing components and trimmed coverage. `summary.ok` reflects
 archive warnings/failures, but quality-filtered response skips are not
 necessarily failures; review the counters too.
 
-Clock and orientation stages also write `.corrections` fingerprints and output
-hashes for retries and processing-state checks. Resume with the same input,
-XML and parameters; response removal has its own output-integrity checks.
+Clock and orientation stages do not resume or skip existing outputs. Existing
+destinations fail unless `overwrite=True`; no `.corrections` records are written.
+Response removal has its own output-integrity checks.
 Use new stage directories when changing settings, especially when replacing
 previous 50 Hz products with 25 Hz products. If an interruption leaves an
 incomplete correction group, inspect the log and use that function's

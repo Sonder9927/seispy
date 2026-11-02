@@ -18,9 +18,8 @@ from seispy.waveform._correction import (
     failure,
     inputs,
     mark,
-    provenance,
+    logger,
     read_one,
-    resume,
     run,
     value,
     write_group,
@@ -50,15 +49,14 @@ def correct_clock_drift(
     override these fields. Full-record epoch/model coverage is required.
 
     Samples, npts and sampling interval stay unchanged. No rounding to a sample
-    interval is performed. Per-file provenance records contain the applied
-    shift and maximum endpoint residual of this constant-shift approximation.
+    interval is performed. The midpoint shift is a constant-shift approximation.
     This is not a full linear time-axis correction. Identical Z/N/E windows
     receive the same shift; rotation subsequently rejects misaligned grids.
 
     Sources and inventory are preserved. Outputs use canonical SAC paths and
     SAC kuser0='SPCLK'; this reserved field must be empty on first input.
-    Reprocessing corrected input is rejected. overwrite=False resumes only
-    outputs with matching input/settings fingerprints and valid output hashes.
+    Reprocessing corrected input is rejected. Existing outputs fail unless
+    overwrite=True, which recalculates and replaces them.
     Counters count input files; unselected channels (including BHH by default)
     are counted as ignored. Use max_workers=1 for serial execution.
     """
@@ -66,7 +64,7 @@ def correct_clock_drift(
         raise ValueError(
             "channels must be a nonempty sequence of distinct channel codes"
         )
-    source, output, files, inv = inputs(
+    _, output, files, inv = inputs(
         source_dir,
         output_dir,
         inventory,
@@ -109,7 +107,7 @@ def correct_clock_drift(
     return run(
         tasks,
         _clock_batch,
-        (source, output, overwrite),
+        (output, overwrite),
         operation="correct-clock-drift",
         output=output,
         max_workers=max_workers,
@@ -163,45 +161,24 @@ def _clock_model(fields):
     )
 
 
-def _clock_batch(tasks, source, output, overwrite):
+def _clock_batch(tasks, output, overwrite):
     results = []
     for task in tasks:
         try:
             (path,) = task["paths"]
             model = task["model"]
-            payload, fingerprint = provenance(
-                (path,), source, "clock", dict(method="midpoint_shift", **model)
-            )
-            if resume(output, fingerprint, overwrite):
-                results.append(dict(status="skipped", files_written=0))
-                continue
             tr = read_one(path)
             mark(tr, "clock")
-            duration = tr.stats.endtime - tr.stats.starttime
-            correction = _offset(tr, model)
-            original_start = tr.stats.starttime
-            tr.stats.starttime -= correction
-            written = write_group(
-                [tr],
-                output,
-                fingerprint,
-                payload,
-                dict(
-                    id=tr.id,
-                    original_start=str(original_start),
-                    corrected_start=str(tr.stats.starttime),
-                    clock_offset_seconds=correction,
-                    applied_shift_seconds=-correction,
-                    max_endpoint_residual_seconds=abs(model["rate"]) * duration / 2,
-                    max_endpoint_residual_samples=abs(model["rate"])
-                    * duration
-                    * tr.stats.sampling_rate
-                    / 2,
-                    sampling_rate=tr.stats.sampling_rate,
-                    interpolation=False,
-                ),
-                overwrite,
+            offset = _offset(tr, model)
+            tr.stats.starttime -= offset
+            logger.info(
+                "Clock correction %s: model=%s shift_seconds=%.12g max_endpoint_residual_seconds=%.12g",
+                path,
+                model,
+                -offset,
+                abs(model["rate"]) * (tr.stats.npts - 1) / tr.stats.sampling_rate / 2,
             )
+            written = write_group([tr], output, overwrite)
             results.append(dict(status="succeeded", files_written=written))
         except Exception as exc:
             results.append(failure(task["paths"], exc))

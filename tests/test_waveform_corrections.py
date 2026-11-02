@@ -1,7 +1,5 @@
 """Public-interface tests of sample-preserving clocks and physical axis recovery."""
 
-import json
-
 import numpy as np
 import obspy
 import pytest
@@ -112,11 +110,7 @@ def test_clock_preserves_samples_rate_and_fractional_shift(tmp_path):
     np.testing.assert_array_equal(output.data, source.data)
     assert output.stats.delta == source.stats.delta
     assert raw.read_bytes() == original
-    report = json.loads(
-        next((tmp_path / "out/.corrections").glob("*.json")).read_text()
-    )
-    assert report["details"]["interpolation"] is False
-    assert report["details"]["max_endpoint_residual_seconds"] > 0
+    assert not (tmp_path / "out/.corrections").exists()
 
 
 @pytest.mark.parametrize(
@@ -144,12 +138,13 @@ def test_clock_rejects_unsafe_models_or_partial_coverage(tmp_path, change):
     assert result.failed == 1 and not list((tmp_path / "out").rglob("*.sac"))
 
 
-def test_clock_resume_validates_content_and_prevents_double_application(tmp_path):
+def test_clock_conflicts_overwrite_and_prevents_double_application(tmp_path):
     put(tmp_path / "src", "BHZ", signals()[0])
     inv = make_inventory()
     first = waveform.correct_clock_drift(tmp_path / "src", inv, **options(tmp_path))
     second = waveform.correct_clock_drift(tmp_path / "src", inv, **options(tmp_path))
-    assert first.succeeded == 1 and second.skipped == 1
+    assert first.succeeded == 1 and second.failed == 1
+    assert "overwrite=True" in second.issue_samples[0].error
     duplicate = waveform.correct_clock_drift(
         tmp_path / "out", inv, output_dir=tmp_path / "twice", max_workers=1
     )
@@ -199,7 +194,21 @@ def test_horizontal_recovery_uses_xml_and_writes_vertical(tmp_path):
     again = waveform.correct_orientation(
         tmp_path / "src", inv, components=("BH3", "BH1", "BH2"), **options(tmp_path)
     )
-    assert again.skipped == 1
+    assert again.failed == 1
+    assert "overwrite=True" in again.issue_samples[0].error
+    replaced = waveform.correct_orientation(
+        tmp_path / "src",
+        inv,
+        components=("BH3", "BH1", "BH2"),
+        overwrite=True,
+        **options(tmp_path),
+    )
+    assert replaced.succeeded == 1 and replaced.files_written == 3
+    assert not (tmp_path / "out/.corrections").exists()
+    for i, code in enumerate(("BHZ", "BHN", "BHE")):
+        np.testing.assert_allclose(
+            records(tmp_path / "out")[code].data, expected[i], atol=3e-7
+        )
     # Channel names changed, but corrected outputs still cannot be rotated twice.
     duplicate_inv = make_inventory()
     duplicate = waveform.correct_orientation(

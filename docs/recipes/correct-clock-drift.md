@@ -88,13 +88,12 @@ as clock-corrected observations.
 Summary counters count selected input **files**. `ignored` counts unselected
 channels, including BHH. Files are discovered recursively from header identity.
 
-Each successful file has a `.corrections/<fingerprint>.json` record containing
-source hashes, model/settings, timing diagnostics and output hashes. These
-records are required for `overwrite=False` retries, even when `save_report=False`.
-Existing outputs are skipped only when a complete record and hashes match.
-Conflicting outputs fail rather than being silently reused. Use a new output
-directory when changing models or time coverage; `overwrite=True` replaces
-current destinations but does not clean historical paths from other settings.
+Correction functions do not resume or automatically skip existing outputs.
+With `overwrite=False`, an existing destination is reported as a failure.
+Use `overwrite=True` to recalculate and replace it, or choose a new output
+directory. No `.corrections` records or file hashes are generated.
+Changing the clock model can change output paths, so use a new directory when
+changing models; overwriting does not remove files from earlier settings.
 
 SAC `kuser0="SPCLK"` marks corrected samples. Applying clock correction again
 to marked input is rejected. This header slot must be empty before first use.

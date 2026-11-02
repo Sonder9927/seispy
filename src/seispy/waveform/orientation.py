@@ -20,9 +20,8 @@ from seispy.waveform._correction import (
     failure,
     inputs,
     mark,
-    provenance,
+    logger,
     read_one,
-    resume,
     run,
     value,
     write_group,
@@ -62,7 +61,7 @@ def correct_orientation(
     gaps stay gaps, conflicting overlaps and noninteger sample offsets fail.
     No interpolation, padding or rate conversion is performed. Outputs are
     Z/N/E with updated cmpaz/cmpinc and reserved SAC kuser1='SPORI'.
-    Provenance records document trimming, directions and correction settings.
+    Existing outputs fail unless overwrite=True; completed files are not skipped.
     Source inventory describes raw axes and is never modified or relabelled
     as an output response. Do not reuse it to rotate corrected output again.
     """
@@ -89,7 +88,7 @@ def correct_orientation(
         )
     if not isinstance(apply_tilt, bool):
         raise ValueError("apply_tilt must be a bool")
-    source, output, files, inv = inputs(
+    _, output, files, inv = inputs(
         source_dir,
         output_dir,
         inventory,
@@ -118,7 +117,7 @@ def correct_orientation(
     return run(
         tasks,
         _orientation_batch,
-        (source, output, inv, tuple(components), apply_tilt, prefix, overwrite),
+        (output, inv, tuple(components), apply_tilt, prefix, overwrite),
         operation="correct-orientation",
         output=output,
         max_workers=max_workers,
@@ -229,9 +228,7 @@ def _rotate(traces, directions, apply_tilt, prefix):
     return traces
 
 
-def _orientation_batch(
-    tasks, source, output, inv, components, apply_tilt, prefix, overwrite
-):
+def _orientation_batch(tasks, output, inv, components, apply_tilt, prefix, overwrite):
     results = []
     for task in tasks:
         try:
@@ -258,22 +255,10 @@ def _orientation_batch(
                     "Missing required component(s): "
                     + ", ".join(c for c in components if not streams[c])
                 )
-            settings = dict(
-                components=components,
-                directions=directions,
-                apply_tilt=apply_tilt,
-                output_prefix=prefix,
-            )
-            payload, fingerprint = provenance(
-                task["paths"], source, "orientation", settings
-            )
-            if resume(output, fingerprint, overwrite):
-                results.append(dict(status="skipped", files_written=0))
-                continue
             for stream in streams.values():
                 merge_contiguous_segments(stream)
             ordered = [streams[c] for c in components]
-            original_samples = sum(len(t) for stream in ordered for t in stream)
+            input_samples = sum(len(tr) for stream in ordered for tr in stream)
             traces = []
             for window in _common_windows(ordered):
                 traces.extend(
@@ -283,22 +268,16 @@ def _orientation_batch(
                 )
             if not traces:
                 raise ValueError("Components have no common data coverage")
-            written = write_group(
-                traces,
-                output,
-                fingerprint,
-                payload,
-                dict(
-                    interpolation=False,
-                    apply_tilt=apply_tilt,
-                    samples_trimmed_to_common_coverage=original_samples
-                    - sum(len(t) for t in traces),
-                    output_axes="Z up, N true north, E east",
-                    output_cmpaz=[0.0, 0.0, 90.0],
-                    output_cmpinc=[0.0, 90.0, 90.0],
-                ),
-                overwrite,
+            logger.info(
+                "Orientation correction %s: components=%s directions=%s apply_tilt=%s output_prefix=%s trimmed_samples=%d",
+                task["paths"],
+                components,
+                directions,
+                apply_tilt,
+                prefix,
+                input_samples - sum(len(tr) for tr in traces),
             )
+            written = write_group(traces, output, overwrite)
             results.append(dict(status="succeeded", files_written=written))
         except Exception as exc:
             results.append(failure(task["paths"], exc))

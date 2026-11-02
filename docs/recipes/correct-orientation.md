@@ -84,8 +84,8 @@ An axis-direction change within one group requires inputs to be split at the
 metadata epoch. Each input must fit a single full-coverage metadata epoch.
 
 Compatible contiguous segments and identical overlaps merge losslessly.
-The function writes common coverage only, trimming integer sample offsets;
-trimmed sample counts appear in provenance. It preserves real gaps and rejects
+The function writes common coverage only, trimming integer sample offsets.
+It preserves real gaps and rejects
 conflicting overlaps, unequal sample rates and fractional-sample offsets.
 There is no interpolation, padding or automatic resampling. A different
 midpoint clock shift for differently sized component records can therefore
@@ -97,21 +97,21 @@ Outputs use canonical paths calculated from corrected timestamps. SAC
 input. Source metadata is unchanged and continues to describe the original
 axes and raw response. Do not interpret that response as a calibrated response
 for already corrected/rotated nm data. Direction and processing state are
-recorded in the output headers and provenance.
+recorded in the output headers.
 
 Counters count station/location/day **groups**, including incomplete groups as
 failures; `files_written` counts actual SAC outputs. `ignored` counts files of
 unselected channels. All three outputs are staged and validated before commit;
 ordinary write errors roll back newly committed siblings. A process or machine
-crash can leave an incomplete group without its completion record: it is not
-considered resumable success. Use `overwrite=True` to repair it after checking
-logs. Existing destinations without matching provenance fail with
-`overwrite=False`.
+crash can still leave an incomplete group. After checking logs, rerun from the
+source with `overwrite=True` to replace the outputs.
 
-Both corrections use `.corrections` input/settings fingerprints and output
-hashes for retries. Reprocessing source data with changed settings should use
-a new output directory. Process pools keep bounded pending tasks and recycle
-at `files_per_pool` task groups; they never load a station's whole recording
-history at once. Separate source and output trees are required.
+Neither correction automatically resumes or skips existing files. Existing
+destinations fail with `overwrite=False`; `overwrite=True` recalculates and
+replaces them. No `.corrections` records or file hashes are generated.
+Use a new output directory when changing settings. Process pools keep bounded
+pending tasks and recycle at `files_per_pool` task groups; they never load a
+station's whole recording history at once. Separate source and output trees
+are required. Reports and logs follow the normal batch contract.
 
 [See all parameters](../api/waveform.md#correct-component-orientation).

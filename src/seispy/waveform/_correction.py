@@ -1,9 +1,7 @@
-"""Private batch, provenance and output support for waveform corrections."""
+"""Private batch and output support for waveform corrections."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
 import shutil
@@ -138,49 +136,16 @@ def mark(tr, operation):
     tr.stats.sac[slot] = marker
 
 
-def sha(path):
-    h = hashlib.sha256()
-    with Path(path).open("rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def provenance(paths, source, operation, settings):
-    payload = dict(
-        version=1,
-        operation=operation,
-        settings=settings,
-        inputs=[dict(path=str(p.relative_to(source)), sha256=sha(p)) for p in paths],
-    )
-    encoded = json.dumps(payload, sort_keys=True, default=str).encode()
-    return payload, hashlib.sha256(encoded).hexdigest()
-
-
-def resume(output, fingerprint, overwrite):
-    record = output / ".corrections" / f"{fingerprint}.json"
-    if not overwrite and record.is_file():
-        data = json.loads(record.read_text())
-        if data["fingerprint"] == fingerprint and all(
-            (output / f["path"]).is_file() and sha(output / f["path"]) == f["sha256"]
-            for f in data["outputs"]
-        ):
-            return True
-    return False
-
-
-def write_group(traces, output, fingerprint, payload, details, overwrite):
+def write_group(traces, output, overwrite):
     """Stage and verify all outputs, then commit with rollback on ordinary errors."""
     destinations = [WaveformIdentity.from_trace(t).sac_path(output) for t in traces]
     if len(set(destinations)) != len(destinations):
         raise ValueError("Several output segments map to the same canonical filename")
     if not overwrite and any(p.exists() for p in destinations):
         raise FileExistsError(
-            "Output exists without a matching complete provenance record; use a new directory or overwrite=True"
+            "Output already exists; use a new directory or overwrite=True"
         )
     staged, backups, committed = [], {}, []
-    record = output / ".corrections" / f"{fingerprint}.json"
-    record_tmp = None
     try:
         for tr, target in zip(traces, destinations, strict=True):
             temp = temporary_output_path(target)
@@ -221,18 +186,6 @@ def write_group(traces, output, fingerprint, payload, details, overwrite):
         for temp, target in zip(staged, destinations, strict=True):
             commit_output(temp, target, overwrite=overwrite)
             committed.append(target)
-        data = dict(
-            **payload,
-            fingerprint=fingerprint,
-            details=details,
-            outputs=[
-                dict(path=str(p.relative_to(output)), sha256=sha(p))
-                for p in destinations
-            ],
-        )
-        record_tmp = temporary_output_path(record)
-        record_tmp.write_text(json.dumps(data, indent=2, default=str) + "\n")
-        commit_output(record_tmp, record, overwrite=True)
     except BaseException:
         for target in reversed(committed):
             if target in backups:
@@ -241,7 +194,7 @@ def write_group(traces, output, fingerprint, payload, details, overwrite):
                 target.unlink(missing_ok=True)
         raise
     finally:
-        for p in [*staged, *backups.values(), *([record_tmp] if record_tmp else [])]:
+        for p in [*staged, *backups.values()]:
             p.unlink(missing_ok=True)
     return len(destinations)
 
