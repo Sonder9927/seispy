@@ -128,8 +128,9 @@ in km. The original `vs` field still reads the second column of
 4. Identify a valid band and its gradient-peak depth for each state, then
    summarize the resulting depths with their iteration multiplicities.
    This computes a derived quantity for each posterior state before aggregation,
-   following the uncertainty-propagation principle described by Hazzard et al.
-   (2023, equations 22–24). A LAB extracted from the average velocity profile
+   following the uncertainty-propagation principle described by
+   [Hazzard et al. (2023)](https://doi.org/10.1029/2023JB026653).
+   A LAB extracted from the average velocity profile
    generally differs from the aggregate of individual LAB estimates.
 
 #### Default identification rules
@@ -210,7 +211,8 @@ quantiles are obtained from the same multiplicity-weighted empirical samples;
 `lab_depth_km_q025`–`lab_depth_km_q975` span the central 68% and 95%, respectively.
 They are not automatically equal to mean plus/minus one or two standard
 deviations. Posterior summaries and parameter trade-offs should be interpreted
-together, as discussed by Xing and Beghein (2015, equations 20–23).
+together, as discussed by
+[Xing and Beghein (2015)](https://doi.org/10.1093/gji/ggv401).
 
 `lab_depth_km_*` intervals remain conditional on successful per-state detection,
 even when the single user-facing `lab` is withheld. Diagnostics retain detection,
@@ -222,7 +224,8 @@ records may wrap over several text lines; every numeric token is parsed and
 the exact total state count checked against the run inputs.
 
 This seismic gradient-center definition must be distinguished from a thermal
-LAB: Salajegheh et al. (2025, section 4.2.1) define the thermal lithosphere
+LAB: [Salajegheh et al. (2025)](https://doi.org/10.1029/2024GC011724)
+define the thermal lithosphere
 base using the 1250 degrees C isotherm. SeisPy's collector does not infer that
 isotherm or convert velocity to temperature. A low-velocity-zone minimum is
 also a different quantity from the maximum descent location.
@@ -241,20 +244,25 @@ prints nothing; display, filter or log `summary.diagnostics` in the caller.
 
 ### References
 
-References are listed in order of first citation.
+Hazzard, J. A. N., Richards, F. D., Goes, S. D. B. & Roberts, G. G. (2023).
+Probabilistic assessment of Antarctic thermomechanical structure: Impacts on
+ice sheet stability.
+*Journal of Geophysical Research: Solid Earth*, **128**, e2023JB026653.
+[https://doi.org/10.1029/2023JB026653](https://doi.org/10.1029/2023JB026653)
 
-1. Hazzard, J. A. N., Richards, F. D., Goes, S. D. B. & Roberts, G. G.
-   Probabilistic assessment of Antarctic thermomechanical structure: Impacts
-   on ice sheet stability. *J. Geophys. Res. Solid Earth* **128**, e2023JB026653
-   (2023). https://doi.org/10.1029/2023JB026653
-2. Xing, Z. & Beghein, C. A Bayesian approach to assess the importance of
-   crustal corrections in global anisotropic surface wave tomography.
-   *Geophys. J. Int.* **203**, 1832–1846 (2015).
-   https://doi.org/10.1093/gji/ggv401
-3. Salajegheh, F. *et al.* The lithosphere-asthenosphere system beneath the
-   North Atlantic and surroundings: Results from multi-observable probabilistic
-   inversions. *Geochem. Geophys. Geosyst.* **26**, e2024GC011724 (2025).
-   https://doi.org/10.1029/2024GC011724
+Salajegheh, F., Afonso, J. C., Minakov, A., Ajourlou, P., Gaina, C. &
+Ortega-Gelabert, O. (2025).
+The lithosphere-asthenosphere system beneath the North Atlantic and
+surroundings: Results from multi-observable probabilistic
+inversions.
+*Geochemistry, Geophysics, Geosystems*, **26**, e2024GC011724.
+[https://doi.org/10.1029/2024GC011724](https://doi.org/10.1029/2024GC011724)
+
+Xing, Z. & Beghein, C. (2015).
+A Bayesian approach to assess the importance of crustal corrections in global
+anisotropic surface wave tomography.
+*Geophysical Journal International*, **203**, 1832–1846.
+[https://doi.org/10.1093/gji/ggv401](https://doi.org/10.1093/gji/ggv401)
 
 !!! note "Start with one grid point"
 
