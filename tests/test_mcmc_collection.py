@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,12 @@ def test_collection_preserves_values_is_silent_and_isolates_failures(tmp_path, c
     assert (result.grid_count, result.success_count, result.failed_count) == (2, 1, 1)
     profiles = pd.read_parquet(result.output_paths["profiles"])
     pd.testing.assert_frame_equal(profiles[before.profile.columns], before.profile)
+    np.testing.assert_allclose(profiles.z, [0, 50, 100])
+    np.testing.assert_allclose(profiles.vs, [3.0, 4.0, 3.8])
+    assert (
+        json.loads(result.output_paths["metadata"].read_text())["depth_positive"]
+        == "down"
+    )
     row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
     assert list(row[["x", "y", "misfit", "moho"]]) == [1.5, 2.5, 1.25, 45.0]
     assert row.moho_km_mean == 41.0  # 3*40 + 44, divided by 4
@@ -53,6 +60,26 @@ def test_collection_preserves_values_is_silent_and_isolates_failures(tmp_path, c
     assert not (tmp_path / "out" / "vs.csv").exists()
 
 
+def test_collection_exports_lab_positive_downward(tmp_path, monkeypatch):
+    from seispy.mcmc import collection
+
+    grid = tmp_path / "1.50_2.50"
+    _write_grid(grid)
+    _chain_inputs(grid)
+    original = collection.collect_posterior
+
+    def with_resolved_lab(*args, **kwargs):
+        profile, summary, samples, covariance, chain = original(*args, **kwargs)
+        summary.update(lab_estimate_km=102.4, lab_estimate_status="resolved")
+        return profile, summary, samples, covariance, chain
+
+    monkeypatch.setattr(collection, "collect_posterior", with_resolved_lab)
+    result = collection.collect_results(tmp_path, tmp_path / "out")
+    row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
+    assert row.lab == 102.4
+    assert row.lab == row.lab_estimate_km
+
+
 def test_missing_chain_keeps_original_data_but_marks_partial(tmp_path):
     _write_grid(tmp_path / "0.00_0.00")
     result = collect_results(tmp_path, tmp_path / "out")
@@ -60,6 +87,14 @@ def test_missing_chain_keeps_original_data_but_marks_partial(tmp_path):
     row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
     assert np.isnan(row.lab)
     assert row.posterior_status == "unavailable"
+
+
+def test_collection_rejects_negative_input_depths(tmp_path):
+    grid = tmp_path / "0.00_0.00"
+    _write_grid(grid)
+    (grid / "mean_prob.lst").write_text("0 3.0\n-50 4.0\n")
+    with pytest.raises(ValueError, match="positive-downward"):
+        read_grid_result(grid)
 
 
 def test_chain_statistics_keep_rejected_state_multiplicities(tmp_path):
@@ -211,3 +246,63 @@ def test_reconstruction_layer_and_component_modes(tmp_path, mode):
         np.testing.assert_allclose(fields["xi"], (1.02 / 0.99) ** 2)
     else:
         assert "vsh" in fields and "vsv" not in fields
+
+
+def test_wrapped_fortran_chain_is_identical_to_unwrapped(tmp_path):
+    from seispy.mcmc.posterior import read_chain
+
+    _chain_inputs(tmp_path)
+    layout = ModelLayout.read(tmp_path / "para.inp")
+    expected, burn = read_chain(tmp_path, layout)
+    p = tmp_path / "fort.8010"
+    lines = p.read_text().splitlines()
+    tokens = " ".join(lines[2:]).split()
+    p.write_text(
+        "\n".join(lines[:2])
+        + "\n"
+        + "\n".join(
+            " ".join(tokens[i : i + 5]).replace("e", "D")
+            for i in range(0, len(tokens), 5)
+        )
+    )
+    actual, actual_burn = read_chain(tmp_path, layout)
+    np.testing.assert_array_equal(actual, expected)
+    assert actual_burn == burn
+    p.write_text(p.read_text() + "\nBAD_TOKEN\n")
+    with pytest.raises(ValueError):
+        read_chain(tmp_path, layout)
+
+
+def test_wide_transition_center_survives_width_crossing_search_limit():
+    z = np.arange(30.0, 301.0)
+    # Half-gradient width reaches above the search floor, but center is resolved.
+    r = identify_lab(z, 4.7 - _step(z, 90.0, width=60), 30.0, LABSettings())
+    assert r["lab_status"] == "detected"
+    assert abs(r["lab_depth_km"] - 90) <= 3
+    assert r["lab_width_limited"]
+
+
+def test_boundary_candidate_does_not_veto_resolved_interior_candidate():
+    z = np.arange(30.0, 301.0)
+    r = identify_lab(z, 4.9 - _step(z, 125.0) - _step(z, 249.0), 30.0, LABSettings())
+    assert r["lab_status"] == "detected"
+    assert abs(r["lab_depth_km"] - 125) <= 3
+
+
+def test_constant_descent_does_not_create_interface():
+    z = np.arange(30.0, 301.0)
+    assert not np.isfinite(
+        identify_lab(z, 4.8 - 0.001 * z, 30.0, LABSettings())["lab_depth_km"]
+    )
+
+
+def test_single_lab_requires_support_and_no_separated_modes():
+    from seispy.mcmc.lab import summarize_lab
+
+    assert np.isnan(summarize_lab([100.0, np.nan], [49, 51])["lab_estimate_km"])
+    assert (
+        summarize_lab([100.0, 105.0, np.nan], [30, 30, 40])["lab_estimate_km"] == 102.5
+    )
+    r = summarize_lab([80.0, 150.0], [50, 50])
+    assert r["lab_estimate_status"] == "multimodal"
+    assert np.isnan(r["lab_estimate_km"])

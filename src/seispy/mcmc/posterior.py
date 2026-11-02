@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from seispy.mcmc.bspline import node_matrix
-from seispy.mcmc.lab import LABSettings, identify_lab
+from seispy.mcmc.lab import LABSettings, identify_lab, summarize_lab
 
 
 @lru_cache(maxsize=64)
@@ -181,12 +181,15 @@ def read_chain(directory, layout):
     lines = (directory / "fort.8010").read_text().splitlines()
     if len(lines) < 3 or "misfit" not in lines[1].lower():
         raise ValueError("Expected MCMC chain headers (not --forward output)")
-    chain = np.loadtxt(
-        [line.replace("D", "e").replace("d", "e") for line in lines[2:]], ndmin=2
-    )
     expected = int(settings["nsimu"]) - burn + 1
-    if chain.shape != (expected, len(layout.keys) + 1) or not np.isfinite(chain).all():
-        raise ValueError("Retained chain shape/values do not match run inputs")
+    # List-directed Fortran output may wrap each state across physical lines.
+    # Convert every token strictly: fromstring can silently accept a valid prefix.
+    tokens = " ".join(lines[2:]).replace("D", "e").replace("d", "e").split()
+    if expected <= 0 or len(tokens) != expected * (len(layout.keys) + 1):
+        raise ValueError("Retained chain length does not match run inputs")
+    chain = np.asarray(tokens, dtype=float).reshape(expected, len(layout.keys) + 1)
+    if not np.isfinite(chain).all():
+        raise ValueError("Retained chain contains non-finite values")
     return chain, burn
 
 
@@ -246,6 +249,10 @@ def collect_posterior(directory: Path, depths, settings: LABSettings):
         summary[f"lab_{status}_fraction"] = float(
             counts[samples.lab_status == status].sum() / len(chain)
         )
+    summary.update(summarize_lab(samples.lab_depth_km, counts))
+    summary["lab_width_limited_fraction"] = float(
+        counts[samples.lab_width_limited].sum() / len(chain)
+    )
     profile_summary = {}
     for name, values in profiles.items():
         arr = np.asarray(values)

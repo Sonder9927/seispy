@@ -101,11 +101,11 @@ def read_grid_result(grid_path: Path) -> GridResult:
     )
     if profile.empty:
         raise ValueError(f"Empty mean_prob.lst in {grid_path}")
-    profile["z"] = -pd.to_numeric(profile["z"], errors="raise")
+    profile["z"] = pd.to_numeric(profile["z"], errors="raise")
     profile["vs"] = pd.to_numeric(profile["vs"], errors="raise")
     if not np.isfinite(profile[["z", "vs"]]).all().all():
         raise ValueError("Non-finite profile")
-    if (profile["z"] > 0).any() or not np.all(np.diff(profile["z"]) < 0):
+    if (profile["z"] < 0).any() or not np.all(np.diff(profile["z"]) > 0):
         raise ValueError("Profile depths must be increasing positive-downward in input")
     profile["x"], profile["y"] = lon, lat
 
@@ -142,9 +142,12 @@ def collect_results(
 ) -> CollectionSummary:
     """Write silent, provenance-labelled Parquet results and diagnostics.
 
-    Existing x/y/z/vs/misfit/moho values retain their original definitions.
-    Full-chain statistics use explicit new column names. LAB is the negative
-    of the detected-sample median depth (km), or NaN. Positive-downward LAB
+    Vs, misfit and Moho retain their original definitions. All depths, including
+    z, Moho and LAB, are positive downward in kilometres. Full-chain statistics
+    use explicit new column names. LAB is the detected-sample median depth (km),
+    provided at least half the retained
+    mass supports detection and no clearly separated comparable modes are found;
+    otherwise NaN. Positive-downward LAB
     quantiles have explicit ``_km_`` names. Their intervals are conditional on
     unambiguous detection, not unconditional evidence for an interface.
 
@@ -205,7 +208,7 @@ def collect_results(
         diagnostic["status"] = "partial"
         try:
             extra, summary, samples, covariance, retained = collect_posterior(
-                grid_path, -result.profile.z.to_numpy(), settings
+                grid_path, result.profile.z.to_numpy(), settings
             )
             point_out = run_dir / grid_path.name
             point_out.mkdir(parents=True)
@@ -218,11 +221,9 @@ def collect_results(
             # Preserve vs: it is the historical Vsv field, even for other modes.
             result.profile[extra.columns] = extra
             row.update(summary)
-            row["lab"] = -summary["lab_depth_km_median"]
+            row["lab"] = summary["lab_estimate_km"]
             row["posterior_status"] = "available"
-            row["lab_status"] = (
-                "conditional_estimate" if np.isfinite(row["lab"]) else "unresolved"
-            )
+            row["lab_status"] = summary["lab_estimate_status"]
             diagnostic.update(status="ok", posterior_path=str(point_out))
         except Exception as exc:
             diagnostic["message"] = f"{type(exc).__name__}: {exc}"
@@ -276,11 +277,11 @@ def collect_results(
         temporary.replace(paths[name])
     paths["metadata"] = out_path / "metadata.json"
     metadata = dict(
-        schema_version=1,
+        schema_version=3,
         run_id=run_id,
         grids_dir=str(grids_path),
         lab_settings=asdict(settings),
-        lab_method="smoothed_forward_mantle_nodes_negative_gradient",
+        lab_method="smoothed_forward_mantle_descent_band_v2",
         units={
             "velocity": "km/s",
             "depth": "km",
@@ -288,10 +289,21 @@ def collect_results(
             "xi": "(vsh/vsv)^2",
             "objective": "Fortran misfit including enabled smoothing, excluding separate prior",
         },
-        preserved_fields=["x", "y", "z", "vs", "misfit", "moho"],
+        lab_reporting={
+            "min_detection_fraction": 0.5,
+            "mode_bin_km": 5,
+            "mode_smoothing_km": 7.5,
+            "mode_separation_km": 20,
+            "shoulder_gradient_fraction": 0.1,
+            "competing_drop_ratio": 0.8,
+        },
+        preserved_fields=["x", "y", "vs", "misfit", "moho"],
         original_source="mean_prob.lst, moho.lst, Litmod_output.log",
         posterior_source="fort.8010 retained iteration states including repeats",
-        depth_convention="z/lab negative downward; moho and *_km* positive downward",
+        depth_convention="all depths positive downward",
+        depth_positive="down",
+        depth_unit="km",
+        depth_reference="inherited from per-grid inversion inputs; no datum conversion",
         intervals="pointwise equal-tailed; LAB conditional on unambiguous detection",
         diagnostics="No automatic convergence certification; retained chains saved for diagnostics",
         posterior_directory=str(run_dir),

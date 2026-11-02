@@ -23,9 +23,13 @@ stopping the others.
 
 `collect_results` silently writes `profiles.parquet`, `interfaces.parquet`,
 `diagnostics.parquet`, and `metadata.json`. It preserves the historical
-`x,y,z,vs,misfit,moho` values and adds explicitly named full-chain statistics.
+`x,y,vs,misfit,moho` values and adds explicitly named full-chain statistics.
+All depths, including `z` and `lab`, are positive downward in kilometres;
+these two fields had the opposite sign in older collected outputs.
 Updated LAB estimates use per-state mantle gradients, including rejection
-multiplicities. See [collection definitions and quality states](../recipes/mcmc.md#collect-results).
+multiplicities. See [LAB calculation and default rules](../recipes/mcmc.md#lab-calculation),
+[references](../recipes/mcmc.md#references), and
+[collection definitions and quality states](../recipes/mcmc.md#collect-results).
 
 `CollectionSummary.success_count` includes partial historical-only results;
 `posterior_count` and `partial_count` distinguish complete posterior products.
