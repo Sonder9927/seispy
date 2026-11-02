@@ -997,3 +997,81 @@ def test_inventory_partial_epoch_warns_without_discarding_trace(monkeypatch):
     warnings = archiving._inventory_warnings([trace])
     assert len(warnings) == 1
     assert "complete trace" in warnings[0]
+
+
+def test_sac_archive_copies_unchanged_file_without_rewriting(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    trace = _trace_at("2026-01-01", data=np.arange(1000, dtype=np.float32))
+    trace.stats.sac = dict(a=1.25, t0=2.5, user0=3.5, kuser0="CUSTOM")
+    original = source / "arbitrary.sac"
+    trace.write(str(original), format="SAC", byteorder=">")
+    contents = original.read_bytes()
+    monkeypatch.setattr(
+        Trace,
+        "write",
+        lambda *args, **kwargs: pytest.fail("unchanged SAC was rewritten"),
+    )
+    result = archiving._archive_one(
+        str(original),
+        str(source),
+        str(tmp_path / "out"),
+        "sac",
+        False,
+        True,
+        TraceFilter(min_duration_seconds=1),
+    )
+    assert result.succeeded == 1 and not result.issues
+    target = next((tmp_path / "out").rglob("*.sac"))
+    assert target.read_bytes() == contents == original.read_bytes()
+
+
+@pytest.mark.parametrize("renamed", [False, True])
+@pytest.mark.parametrize("policy", [None, TraceFilter(min_duration_seconds=1)])
+def test_unchanged_mseed_copies_after_filter_and_path_selection(
+    tmp_path, monkeypatch, renamed, policy
+):
+    source = tmp_path / "source"
+    original = _raw_mseed(source)
+    if renamed:
+        renamed_path = source / "arbitrary.mseed.raw"
+        original.rename(renamed_path)
+        original = renamed_path
+    contents = original.read_bytes()
+    monkeypatch.setattr(
+        Stream,
+        "write",
+        lambda *args, **kwargs: pytest.fail("unchanged MiniSEED was reencoded"),
+    )
+    result = archiving._archive_one(
+        str(original), str(source), str(tmp_path / "out"), "mseed", False, True, policy
+    )
+    assert result.succeeded == 1 and not result.issues
+    assert next((tmp_path / "out").rglob("*.mseed")).read_bytes() == contents
+
+
+@pytest.mark.parametrize("dtype", ["int32", "float32", "float64", ">f4"])
+def test_fast_sac_writer_matches_obspy_headers_and_samples(tmp_path, dtype):
+    data = (np.random.default_rng(42).normal(size=10001) * 1000).astype(dtype)
+    trace = _trace_at("2026-01-01T12:34:56.123456", data=data)
+    trace.stats.sac = dict(a=1.25, o=-2.5, t0=3.75, user0=4.5, kuser1="CUSTOM")
+    normal, fast = tmp_path / "normal.sac", tmp_path / "fast.sac"
+    trace.write(str(normal), format="SAC")
+    archiving._write_sac(trace, fast)
+    assert fast.read_bytes() == normal.read_bytes()
+
+
+def test_mseed_copy_is_verified_before_commit(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    original = _raw_mseed(source)
+
+    def corrupt_copy(source, destination):
+        Path(destination).write_bytes(b"corrupt")
+
+    monkeypatch.setattr(archiving.shutil, "copyfile", corrupt_copy)
+    result = archiving._archive_one(
+        str(original), str(source), str(tmp_path / "out"), "mseed", False, True
+    )
+    assert result.failed == 1 and result.files_written == 0
+    assert "differs from its source" in result.issues[0].error
+    assert not list((tmp_path / "out").rglob("*.mseed"))

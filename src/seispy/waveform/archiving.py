@@ -1,5 +1,6 @@
 """Validate and organize waveform files into trusted canonical archives."""
 
+import filecmp
 import shutil
 import warnings
 from collections import defaultdict
@@ -11,6 +12,7 @@ import numpy as np
 from obspy import Stream, read, read_inventory
 from obspy.core.inventory import Inventory
 from obspy.io.mseed import InternalMSEEDWarning
+from obspy.io.sac import SACTrace
 from seispy.progress import progress_bar, resolve_worker_call
 
 from seispy.archive import (
@@ -150,6 +152,9 @@ def archive_waveforms(
     Empty traces do not determine archive identity. Constant (flat-line) and
     non-finite traces are skipped rather than failed and are counted under
     traces_filtered. Native waveform reads run in isolated worker processes.
+    Unchanged single-trace SAC and MiniSEED files are copied after validation,
+    including when a trace filter passes without changing the data. Copies
+    preserve source bytes and headers; conversions refresh SAC data headers.
     Source files are never modified or removed. MiniSEED outputs can be passed
     directly to :func:`seispy.event.cut_event_waveforms` with
     ``pattern="*.mseed"`` to create event SAC windows.
@@ -424,6 +429,7 @@ def _archive_one(
                 Path(output_root),
                 overwrite,
                 trace_filter=trace_filter,
+                copy_source=trusted_source if is_sac else None,
             )
         (
             written,
@@ -645,23 +651,11 @@ def _archive_mseed_traces(
     intended = output_root / source.relative_to(source_root).with_name(
         source.name.removesuffix(".raw")
     )
-    if (
-        trace_filter is None
-        and allow_raw_copy
+    can_copy = (
+        allow_raw_copy
         and len(traces) == 1
-        and _matches_mseed_path(intended, output_root, traces)
         and _benign_empty_traces(traces, empty_traces)
-    ):
-        written, skipped = _archive_mseed(
-            source,
-            trusted_source,
-            traces,
-            source_root,
-            output_root,
-            overwrite,
-        )
-        existing = len(traces) if skipped else 0
-        return written, existing, len(traces), (), False, 0
+    )
 
     grouped = defaultdict(list)
     for trace in traces:
@@ -716,9 +710,17 @@ def _archive_mseed_traces(
                     continue
                 claimed.add(destination)
                 try:
-                    written, skipped = _write_mseed_group(
-                        [segment], destination, overwrite
-                    )
+                    if can_copy:
+                        written, skipped = _write_mseed_group(
+                            [segment],
+                            destination,
+                            overwrite,
+                            copy_source=trusted_source,
+                        )
+                    else:
+                        written, skipped = _write_mseed_group(
+                            [segment], destination, overwrite
+                        )
                 except Exception as exc:
                     errors.append(
                         (
@@ -808,16 +810,26 @@ def _recovered_mseed_path(output_root, traces, *, start_token=None):
     )
 
 
-def _write_mseed_group(traces, destination, overwrite):
+def _write_mseed_group(traces, destination, overwrite, *, copy_source=None):
     destination = Path(destination)
     if destination.exists() and not overwrite:
         _validate_existing_mseed(destination, destination.parents[3], traces)
         return 0, True
     temporary = temporary_output_path(destination)
     try:
-        Stream(traces=traces).write(str(temporary), format="MSEED")
-        written = _read_full_mseed(temporary)
         root = destination.parents[3]
+        if copy_source is not None:
+            shutil.copyfile(copy_source, temporary)
+            # The source was fully decoded and validated. Exact byte comparison
+            # validates its copy without decoding the same STEIM records twice.
+            if not filecmp.cmp(copy_source, temporary, shallow=False):
+                raise _ArchiveValidationError(
+                    "MiniSEED copy differs from its source", "output_validation_failed"
+                )
+            written = traces
+        else:
+            Stream(traces=traces).write(str(temporary), format="MSEED")
+            written = _read_full_mseed(temporary)
         if not matches_mseed_path(destination, root, written):
             raise _ArchiveValidationError(
                 "written MiniSEED path disagrees with trace headers",
@@ -829,7 +841,9 @@ def _write_mseed_group(traces, destination, overwrite):
     return 1, False
 
 
-def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
+def _archive_sac_traces(
+    traces, output_root, overwrite, *, trace_filter=None, copy_source=None
+):
     grouped = defaultdict(list)
     for trace in traces:
         grouped[WaveformIdentity.from_trace(trace).day_key].append(trace)
@@ -878,7 +892,10 @@ def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
                         continue
                     temporary = temporary_output_path(destination)
                     try:
-                        trace.write(str(temporary), format="SAC")
+                        if copy_source is not None and len(traces) == 1:
+                            shutil.copyfile(copy_source, temporary)
+                        else:
+                            _write_sac(trace, temporary)
                         _validate_sac_output(temporary, trace)
                         commit_output(temporary, destination, overwrite=overwrite)
                     finally:
@@ -912,30 +929,22 @@ def _archive_sac_traces(traces, output_root, overwrite, *, trace_filter=None):
     )
 
 
-def _archive_mseed(source, trusted_source, stream, source_root, output_root, overwrite):
-    relative = source.relative_to(source_root)
-    name = relative.name
-    if name.endswith(".mseed.raw"):
-        archived_name = name.removesuffix(".raw")
-    elif name.endswith(".mseed"):
-        archived_name = name
-    else:
-        raise ValueError(f"source is not a miniSEED file: {source}")
-    destination = output_root / relative.with_name(archived_name)
-    if not matches_mseed_path(destination, output_root, stream):
-        raise ValueError(
-            f"raw response headers do not match intended archive path {destination}"
-        )
-    if destination.exists() and not overwrite:
-        _validate_existing_mseed(destination, output_root, stream)
-        return 0, True
-    temporary = temporary_output_path(destination)
-    try:
-        shutil.copyfile(trusted_source, temporary)
-        commit_output(temporary, destination, overwrite=overwrite)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return 1, False
+class _ArchiveSACTrace(SACTrace):
+    """Keep ObsPy header handling, using vectorized extrema for large records."""
+
+    @property
+    def depmin(self):
+        return float(np.min(self.data)) if self.data is not None else super().depmin
+
+    @property
+    def depmax(self):
+        return float(np.max(self.data)) if self.data is not None else super().depmax
+
+
+def _write_sac(trace, destination):
+    """Write ordinary ObsPy SAC, including refreshed headers, without Python scans."""
+    sac = _ArchiveSACTrace.from_obspy_trace(trace)
+    sac.write(str(destination), byteorder="little")
 
 
 def _same_coverage(actual, expected):

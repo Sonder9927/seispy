@@ -33,6 +33,10 @@ print(summary.succeeded, summary.failed)
 
 SAC headers, not source filenames, determine the canonical destination. Each
 output is validated and committed atomically. Source files are always kept.
+Unchanged SAC files are copied byte for byte, preserving their original headers
+and byte order. MiniSEED files that need no splitting or merging also avoid
+re-encoding, even when a supplied filter accepts them unchanged. Format
+conversion refreshes SAC data headers using vectorized NumPy reductions.
 
 `trace_filter=TraceFilter(min_duration_seconds=60)` drops traces shorter than
 a minute before they are committed, so truncated or test files cannot enter the
