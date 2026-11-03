@@ -68,6 +68,9 @@ def test_collection_preserves_values_is_silent_and_isolates_failures(
     assert row.retained_states == 4
     assert row.unique_states == 2
     assert set(result.diagnostics.status) == {"ok", "failed"}
+    assert result.lab_valid_count == 1
+    assert result.lab_nan_count == 0
+    assert result.lab_status_counts == {"resolved": 1}
     again = collect_results(tmp_path, tmp_path / "out")
     assert again.grid_count == 2
     assert not (tmp_path / "out" / "vs.csv").exists()
@@ -91,6 +94,8 @@ def test_collection_failures(tmp_path, monkeypatch, problem):
     if problem == "empty_directory":
         result = collect_results(tmp_path, tmp_path / "out")
         assert result.grid_count == 0
+        assert result.lab_valid_count == result.lab_nan_count == 0
+        assert result.lab_status_counts == {}
         assert pd.read_parquet(result.output_paths["profiles"]).empty
         return
     grid = tmp_path / "0.00_0.00"
@@ -112,6 +117,9 @@ def test_collection_failures(tmp_path, monkeypatch, problem):
         monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_samples)
     result = collect_results(tmp_path, tmp_path / "out")
     assert result.partial_count == 1
+    assert result.lab_valid_count == 0
+    assert result.lab_nan_count == 1
+    assert result.lab_status_counts == {"posterior_unavailable": 1}
     assert result.diagnostics.status.tolist() == ["partial"]
     row = pd.read_parquet(result.output_paths["interfaces"]).iloc[0]
     assert row.posterior_status == "unavailable"
@@ -158,7 +166,7 @@ def test_chain_records(tmp_path, problem):
         read_chain(tmp_path, layout)
 
 
-def test_chain_statistics_keep_rejected_state_multiplicities(tmp_path):
+def test_chain_statistics_keep_rejected_state_multiplicities(tmp_path, monkeypatch):
     _chain_inputs(tmp_path)
     profile, summary, samples, covariance, chain = collect_posterior(
         tmp_path, np.array([0.0, 50.0, 100.0]), LABSettings()
@@ -181,6 +189,28 @@ def test_chain_statistics_keep_rejected_state_multiplicities(tmp_path):
         correlated[i] = 0.95 * correlated[i - 1] + independent[i]
     assert effective_sample_size(correlated) < effective_sample_size(independent) / 5
     assert np.isnan(effective_sample_size(np.ones(100)))
+
+    from seispy.mcmc import posterior
+
+    identify = posterior.identify_lab
+
+    def controlled_detection(z, v, moho, settings, **kwargs):
+        result = identify(z, v, moho, settings, **kwargs)
+        result.update(
+            lab_depth_km=100.0 if moho == 40 else np.nan,
+            lab_status="detected" if moho == 40 else "not_detected",
+        )
+        return result
+
+    monkeypatch.setattr(posterior, "identify_lab", controlled_detection)
+    for fraction, status in [(0.7, "resolved"), (0.8, "low_support")]:
+        _, row, *_ = collect_posterior(
+            tmp_path,
+            np.array([0.0, 50.0, 100.0]),
+            LABSettings(min_detection_fraction=fraction),
+        )
+        assert row["lab_detected_fraction"] == 0.75
+        assert row["lab_estimate_status"] == status
 
 
 @pytest.mark.parametrize("mode", ["oracle", "water", "sediment", "joint", "sh"])
@@ -243,7 +273,7 @@ def _step(z, center, width=8):
         ("boundary_and_interior", "detected", 125, False),
         ("increasing", "not_detected", None, False),
         ("flat", "not_detected", None, False),
-        ("constant_descent", "boundary_limited", None, False),
+        ("constant_descent", "not_detected", None, False),
         ("double", "ambiguous", None, False),
         ("edge", "boundary_limited", None, False),
     ],
@@ -264,10 +294,51 @@ def test_lab_bands(kind, status, center, width_limited):
     assert result["lab_status"] == status
     if center is None:
         assert np.isnan(result["lab_depth_km"])
+        assert result["lab_rejection_reason"] != "none"
     else:
         assert result["lab_depth_km"] == pytest.approx(center, abs=3)
         assert result["lab_drop_km_s"] > 0.05
         assert result["lab_width_limited"] == width_limited
+
+
+@pytest.mark.parametrize("resolution", [1.0, 7.0, 14.0])
+def test_lab_resolution_and_noise(resolution):
+    """Known weak/strong interfaces versus noisy profiles without an interface."""
+    z = np.arange(30.0, 301.0)
+    native = np.arange(30.0, 301.0, resolution)
+    settings = LABSettings()
+    for drop, width in [(0.03, 3), (0.03, 8), (0.03, 25), (0.1, 8), (0.3, 60)]:
+        values = (
+            4.6
+            - 0.0003 * (native - 30)
+            - drop / 2 * (1 + np.tanh((native - 130) / width))
+        )
+        result = identify_lab(
+            z, np.interp(z, native, values), 30, settings, resolution_km=resolution
+        )
+        assert result["lab_status"] == "detected"
+        assert abs(result["lab_depth_km"] - 130) <= max(3, resolution / 2)
+        assert result["lab_smoothing_km"] >= resolution / 2
+        if resolution == 14 and width == 3:
+            assert not result["lab_width_resolved"]
+    # A tiny smooth oscillation must not be promoted just because it has a peak.
+    tiny = 4.6 - 0.0025 * (1 + np.tanh((native - 130) / 8))
+    result = identify_lab(
+        z, np.interp(z, native, tiny), 30, settings, resolution_km=resolution
+    )
+    assert result["lab_status"] == "not_detected"
+    assert result["lab_rejection_reason"] == "weak_drop"
+    assert np.isfinite(result["lab_candidate_depth_km"])
+    rng = np.random.default_rng(71349)
+    false_detections = 0
+    for j in range(200):
+        values = 4.6 - (0.0003 if j % 2 else 0) * (native - 30)
+        values += rng.normal(0, 0.015, len(native))
+        result = identify_lab(
+            z, np.interp(z, native, values), 30, settings, resolution_km=resolution
+        )
+        false_detections += result["lab_status"] == "detected"
+    assert false_detections <= 2  # <=1% on this fixed null ensemble; not a p value.
 
 
 def test_single_lab_requires_support_and_no_separated_modes():
@@ -280,3 +351,20 @@ def test_single_lab_requires_support_and_no_separated_modes():
     r = summarize_lab([80.0, 150.0], [50, 50])
     assert r["lab_estimate_status"] == "multimodal"
     assert np.isnan(r["lab_estimate_km"])
+    assert (
+        summarize_lab([100.0, np.nan], [49, 51], min_detection_fraction=0.4)[
+            "lab_estimate_km"
+        ]
+        == 100
+    )
+    assert (
+        summarize_lab([100.0, np.nan], [60, 40], min_detection_fraction=0.7)[
+            "lab_estimate_status"
+        ]
+        == "low_support"
+    )
+    for value in [0, 1.01, np.nan]:
+        with pytest.raises(ValueError):
+            LABSettings(min_detection_fraction=value)
+        with pytest.raises(ValueError):
+            summarize_lab([100.0], [1], min_detection_fraction=value)

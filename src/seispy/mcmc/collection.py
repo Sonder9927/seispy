@@ -59,6 +59,27 @@ class CollectionSummary:
     def partial_count(self) -> int:
         return int((self.diagnostics.status == "partial").sum())
 
+    @property
+    def lab_valid_count(self) -> int:
+        """Number of finite LAB estimates in interfaces.parquet."""
+        return int(np.isfinite(self.diagnostics.lab.to_numpy(dtype=float)).sum())
+
+    @property
+    def lab_nan_count(self) -> int:
+        """NaN LAB rows in interfaces.parquet, including partial results.
+
+        Failed grids have no interface row and are counted by failed_count.
+        """
+        return self.success_count - self.lab_valid_count
+
+    @property
+    def lab_status_counts(self) -> dict[str, int]:
+        """LAB status counts for grids with an exported interface row."""
+        counts = self.diagnostics.loc[
+            self.diagnostics.status != "failed", "lab_status"
+        ].value_counts()
+        return {str(key): int(value) for key, value in counts.items()}
+
 
 def _coordinates_from_name(grid_path: Path) -> tuple[float | None, float | None]:
     try:
@@ -145,7 +166,7 @@ def collect_results(
     Vs, misfit and Moho retain their original definitions. All depths, including
     z, Moho and LAB, are positive downward in kilometres. Full-chain statistics
     use explicit new column names. LAB is the detected-sample median depth (km),
-    provided at least half the retained
+    provided the configured fraction of retained
     mass supports detection and no clearly separated comparable modes are found;
     otherwise NaN. Positive-downward LAB
     quantiles have explicit ``_km_`` names. Their intervals are conditional on
@@ -187,6 +208,8 @@ def collect_results(
             status="failed",
             message="",
             posterior_path="",
+            lab=np.nan,
+            lab_status="not_collected",
         )
         try:
             result = read_grid_result(grid_path)
@@ -228,6 +251,7 @@ def collect_results(
         except Exception as exc:
             diagnostic["message"] = f"{type(exc).__name__}: {exc}"
             row["lab_status"] = "posterior_unavailable"
+        diagnostic.update(lab=row["lab"], lab_status=row["lab_status"])
         figure = grid_path / PROBABILITY_FIGURE
         if figure.is_file():
             figure_dir = out_path / "mcmc_prob_figs" / run_id
@@ -263,6 +287,8 @@ def collect_results(
             "status",
             "message",
             "posterior_path",
+            "lab",
+            "lab_status",
         ],
     )
     paths = {}
@@ -277,11 +303,11 @@ def collect_results(
         temporary.replace(paths[name])
     paths["metadata"] = out_path / "metadata.json"
     metadata = dict(
-        schema_version=3,
+        schema_version=4,
         run_id=run_id,
         grids_dir=str(grids_path),
         lab_settings=asdict(settings),
-        lab_method="smoothed_forward_mantle_descent_band_v2",
+        lab_method="resolution_aware_multiscale_mantle_descent_v3",
         units={
             "velocity": "km/s",
             "depth": "km",
@@ -290,12 +316,18 @@ def collect_results(
             "objective": "Fortran misfit including enabled smoothing, excluding separate prior",
         },
         lab_reporting={
-            "min_detection_fraction": 0.5,
+            "min_detection_fraction": settings.min_detection_fraction,
             "mode_bin_km": 5,
             "mode_smoothing_km": 7.5,
             "mode_separation_km": 20,
             "shoulder_gradient_fraction": 0.1,
             "competing_drop_ratio": 0.8,
+            "native_spacing_smoothing_factor": 0.5,
+            "confirmation_scale_ratio": 2,
+            "max_profile_fwhm_fraction": 0.8,
+            "width_resolved_min_native_spacings": 2,
+            "width_resolved_min_smoothing_sigmas": 3,
+            "low_parameter_ess_threshold": 100,
         },
         preserved_fields=["x", "y", "vs", "misfit", "moho"],
         original_source="mean_prob.lst, moho.lst, Litmod_output.log",
@@ -306,6 +338,19 @@ def collect_results(
         depth_reference="inherited from per-grid inversion inputs; no datum conversion",
         intervals="pointwise equal-tailed; LAB conditional on unambiguous detection",
         diagnostics="No automatic convergence certification; retained chains saved for diagnostics",
+        lab_summary={
+            "valid_count": int(np.isfinite(interfaces.lab).sum()),
+            "nan_count": int(interfaces.lab.isna().sum()),
+            "status_counts": {
+                str(key): int(value)
+                for key, value in diagnostic_table.loc[
+                    diagnostic_table.status != "failed", "lab_status"
+                ]
+                .value_counts()
+                .items()
+            },
+            "scope": "exported interface rows; failed grids excluded",
+        },
         posterior_directory=str(run_dir),
     )
     paths["metadata"].write_text(json.dumps(metadata, indent=2) + "\n")

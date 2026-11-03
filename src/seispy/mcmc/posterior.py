@@ -213,7 +213,13 @@ def collect_posterior(directory: Path, depths, settings: LABSettings):
         eval_z = np.arange(z[mantle][0], layout.maximum, settings.step_km)
         # Interpolate forward mantle nodes, then smooth at an explicit physical scale.
         eval_v = np.interp(eval_z, z[mantle], fields[component][mantle])
-        lab = identify_lab(eval_z, eval_v, moho, settings)
+        lab = identify_lab(
+            eval_z,
+            eval_v,
+            moho,
+            settings,
+            resolution_km=float(np.median(np.diff(z[mantle]))),
+        )
         sample_rows.append({"moho_km": moho, "lab_component": component, **lab})
     samples = pd.DataFrame(sample_rows)
     samples["multiplicity"] = counts
@@ -230,7 +236,11 @@ def collect_posterior(directory: Path, depths, settings: LABSettings):
         "moho_km",
         "lab_depth_km",
         "lab_width_km",
+        "lab_fwhm_km",
         "lab_drop_km_s",
+        "lab_total_drop_km_s",
+        "lab_smoothing_km",
+        "lab_drop_threshold_km_s",
         "mantle_lithosphere_km",
     ):
         summary.update(
@@ -249,7 +259,35 @@ def collect_posterior(directory: Path, depths, settings: LABSettings):
         summary[f"lab_{status}_fraction"] = float(
             counts[samples.lab_status == status].sum() / len(chain)
         )
-    summary.update(summarize_lab(samples.lab_depth_km, counts))
+    summary.update(
+        summarize_lab(
+            samples.lab_depth_km,
+            counts,
+            min_detection_fraction=settings.min_detection_fraction,
+        )
+    )
+    detected = samples.lab_status == "detected"
+    summary["lab_detected_states"] = int(counts[detected].sum())
+    summary["lab_detected_unique_states"] = int(detected.sum())
+    summary["lab_width_unresolved_fraction"] = (
+        float(
+            counts[detected & ~samples.lab_width_resolved].sum()
+            / counts[detected].sum()
+        )
+        if detected.any()
+        else np.nan
+    )
+    summary["lab_interval_status"] = (
+        "conditional"
+        if summary["lab_estimate_status"] == "resolved"
+        else "insufficient_support"
+        if summary["lab_estimate_status"] == "low_support"
+        else "multimodal"
+    )
+    rejected = samples.loc[~detected].groupby("lab_rejection_reason").multiplicity.sum()
+    summary["lab_main_rejection_reason"] = (
+        str(rejected.idxmax()) if len(rejected) else "none"
+    )
     summary["lab_width_limited_fraction"] = float(
         counts[samples.lab_width_limited].sum() / len(chain)
     )
@@ -266,6 +304,13 @@ def collect_posterior(directory: Path, depths, settings: LABSettings):
         float(finite_ess.min()) if finite_ess.size else np.nan
     )
     summary["parameter_ess_unavailable_count"] = int(len(ess) - finite_ess.size)
+    summary["lab_chain_quality"] = (
+        "ess_unavailable"
+        if not finite_ess.size
+        else "low_parameter_ess"
+        if finite_ess.min() < 100
+        else "single_chain_not_certified"
+    )
     summary["convergence_status"] = "single_chain_not_certified"
     summary["rhat"] = np.nan
     cov = np.atleast_2d(np.cov(chain[:, 1:], rowvar=False))
