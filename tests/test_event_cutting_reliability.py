@@ -373,26 +373,26 @@ def test_cut_filter_does_not_add_durations_across_gaps(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "minimum,policy_minimum,kept,workers",
-    [
-        (None, None, True, 1),
-        (2, None, True, 2),
-        (3, None, True, 1),
-        (4, None, False, 2),
-        (2, 4, False, 1),
-        (4, 2, False, 2),
-    ],
+    "minimum,kept,workers",
+    [(None, True, 1), (2, True, 2), (3, True, 1), (4, False, 2)],
 )
-def test_public_minimum_cut_window(tmp_path, minimum, policy_minimum, kept, workers):
+def test_public_cut_filter_and_partial_coverage_report(
+    tmp_path, minimum, kept, workers, caplog
+):
+    import json
     from seispy.waveform.integrity import TraceFilter
 
     policy = (
-        TraceFilter(min_duration_seconds=policy_minimum, min_samples=0)
-        if policy_minimum is not None
+        TraceFilter(
+            min_duration_seconds=minimum, min_samples=0, reject_unusable_samples=False
+        )
+        if minimum is not None
         else None
     )
     source = tmp_path / "source"
-    source_trace(source, offset=0, npts=3, rate=1)
+    sibling = read(source_trace(source, offset=0, npts=3, rate=1))[0]
+    sibling.stats.channel = "BHN"
+    sibling.write(str(source / "other.sac"), format="SAC")
     catalog = tmp_path / "events.csv"
     pd.DataFrame(
         [dict(time=str(BASE), latitude=35, longitude=105, depth=12, mag=6)]
@@ -402,23 +402,34 @@ def test_public_minimum_cut_window(tmp_path, minimum, policy_minimum, kept, work
         catalog,
         output_dir=tmp_path / "out",
         time_window=5,
-        min_time_window=minimum,
         trace_filter=policy,
         max_workers=workers,
-        save_report=False,
-        save_log=False,
+        save_report=None,
     )
     assert result.failed == 0
-    assert result.succeeded == result.outputs_written == int(kept)
-    assert result.skipped == result.traces_filtered == int(not kept)
-
-
-@pytest.mark.parametrize("minimum", [0, 6, float("nan")])
-def test_invalid_minimum_cut_window(tmp_path, minimum):
-    with pytest.raises(ValueError, match="min_time_window"):
-        cut_event_waveforms(
-            tmp_path, tmp_path / "events.csv", time_window=5, min_time_window=minimum
-        )
+    assert result.succeeded == int(kept)
+    assert result.outputs_written == 2 * int(kept)
+    assert result.skipped == int(not kept)
+    assert result.traces_filtered == 2 * int(not kept)
+    warnings = [
+        record
+        for record in caplog.records
+        if result.run_id in record.getMessage()
+        and "status=partial_coverage" in record.getMessage()
+    ]
+    assert len(warnings) == int(kept)
+    assert not result.issue_samples
+    if kept:
+        assert warnings[0].levelname == "WARNING"
+        assert result.has_issues and not result.ok
+        report = json.loads(result.report_path.read_text())
+        assert report["succeeded"] == 1
+        assert report["partial_channels"] == 2
+        assert report["failed"] == 0 and not report["issue_samples"]
+        assert report["coverage_samples"][0]["coverage_fraction"] == 0.5
+    else:
+        assert not result.has_issues
+        assert result.report_path is None
 
 
 def test_rerun_compares_samples_after_first_megabyte(tmp_path):

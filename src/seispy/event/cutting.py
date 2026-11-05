@@ -248,7 +248,6 @@ def cut_event_waveforms(
     output_dir: str | Path | None = None,
     station_csv: str | Path | None = None,
     time_window: float = 10800,
-    min_time_window: float | None = None,
     pattern: str = "*.sac",
     trace_filter: TraceFilter | None = None,
     max_workers: int | None = None,
@@ -274,11 +273,6 @@ def cut_event_waveforms(
         time_window: Window length in seconds, beginning at the event origin
             floored to an integer UTC second. The precise origin remains in
             the output event identity and SAC ``o`` header.
-        min_time_window: Optional minimum duration in seconds per continuous
-            cut segment, measured as npts / sampling_rate. Segments below the
-            threshold are filtered, not failed; equality is accepted. None adds
-            no duration threshold. Must be positive and no larger than time_window.
-            With trace_filter, the stricter duration threshold applies.
         pattern: Recursive source filename pattern. Defaults to ``"*.sac"``;
             use ``"*.mseed"`` for MiniSEED archives. Output is always SAC.
         max_workers: Station workers. Defaults to the smaller of 5 and the CPU
@@ -316,26 +310,6 @@ def cut_event_waveforms(
         raise ValueError("cache_max_bytes cannot be negative")
     if not np.isfinite(time_window) or time_window <= 0:
         raise ValueError("time_window must be positive")
-    if min_time_window is not None:
-        if (
-            not np.isfinite(min_time_window)
-            or min_time_window <= 0
-            or min_time_window > time_window
-        ):
-            raise ValueError("min_time_window must be positive and <= time_window")
-        if trace_filter is None:
-            trace_filter = TraceFilter(
-                min_duration_seconds=min_time_window,
-                min_samples=0,
-                reject_unusable_samples=False,
-            )
-        else:
-            trace_filter = replace(
-                trace_filter,
-                min_duration_seconds=max(
-                    trace_filter.min_duration_seconds, min_time_window
-                ),
-            )
     workers = min(5, cpu_count() or 1) if max_workers is None else max_workers
     if workers < 1:
         raise ValueError("max_workers must be at least 1")
@@ -451,6 +425,13 @@ def cut_event_waveforms(
                 "run_id=%s status=no_data tasks=%d (included in skipped; details omitted)",
                 run_id,
                 summary.no_data,
+            )
+        if summary.partial_channels:
+            run.warning(
+                "run_id=%s status=partial_coverage channels=%d "
+                "(requested windows not fully covered; see coverage_samples)",
+                run_id,
+                summary.partial_channels,
             )
         issue_total = summary.failed + summary.input_read_failed
         if issue_total > len(summary.issue_samples):

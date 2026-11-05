@@ -232,15 +232,38 @@ reads and cuts source waveforms; it does not bypass input processing. Comparison
 is byte-for-byte, so externally rewritten SAC files can be reported as conflicts.
 
 To request three hours but retain continuous segments with at least two hours of
-samples, use `time_window=3 * 3600, min_time_window=2 * 3600`.
-`min_time_window` defaults to `None`, preserving the existing behavior of writing
-available partial segments. The minimum applies to each continuous segment after
-cutting, measured as `npts / sampling_rate`; equality is accepted and disjoint
-segments are not added together. Shorter segments count in `traces_filtered`;
-a task with only filtered segments is `skipped`, not `failed`. No matching input
-counts as `no_data` and `skipped`. When `trace_filter` is also supplied, both
-policies apply, using the stricter minimum duration.
+samples, use the shared trace-filter policy:
 
+```python
+from seispy import event, waveform
+
+summary = event.cut_event_waveforms(
+    source_dir, event_csv, output_dir=output_dir,
+    time_window=3 * 3600,
+    trace_filter=waveform.TraceFilter(
+        min_duration_seconds=2 * 3600,
+        min_samples=0,
+        reject_unusable_samples=False,
+    ),
+)
+```
+
+`trace_filter=None` preserves available partial segments without a minimum duration.
+The minimum applies to each continuous segment after cutting, measured as
+`npts / sampling_rate`; equality is accepted and disjoint segments are not added
+together. Shorter segments count in `traces_filtered`; a task with only filtered
+segments is `skipped`, not `failed`. The former `min_time_window` argument has
+been removed; use `trace_filter` instead. The explicit options above apply only
+a duration threshold; other `TraceFilter` defaults also reject unusable samples
+and impose a minimum sample count.
+
+Accepted partial windows still count as successful tasks when there are no
+processing errors. A run with partial coverage emits one WARN summary and records
+`partial_channels` plus bounded `coverage_samples`, without adding ERROR samples.
+For example, a two-hour accepted segment from a requested three-hour window is
+successful but has partial coverage. `has_issues=True` (and `ok=False`) also covers
+warnings, not just processing failures. Automatic issue-only reports are retained
+for these runs.
 
 Routine missing coverage is counted in `no_data` and `skipped`, not `failed`.
 Each run with missing coverage emits one WARN summary; individual no-data tasks
