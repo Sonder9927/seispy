@@ -94,7 +94,9 @@ def merge_waveforms_by_day(
                 written_count += 1
     if errs:
         error_path = output_path / "merge-errors.txt"
-        error_path.write_text("".join(errs))
+        error_path.write_text(
+            f"src_path: {src_path}\noutput_path: {output_path}\n\n" + "".join(errs)
+        )
         print(f"Check {error_path} for more information")
     else:
         print("All done with no errors.")
@@ -202,7 +204,9 @@ def _merge_mseed_days(source, output, pattern, max_workers, overwrite):
                 errors.append(error)
     report = output / "merge-errors.txt"
     if errors:
-        report.write_text("\n".join(errors) + "\n")
+        report.write_text(
+            f"src_path: {source}\noutput_path: {output}\n\n" + "\n".join(errors) + "\n"
+        )
     else:
         report.unlink(missing_ok=True)
     return DailyMergeSummary(written, skipped, failed, tuple(errors))

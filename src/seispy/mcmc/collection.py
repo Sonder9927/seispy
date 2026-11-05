@@ -306,6 +306,8 @@ def collect_results(
         schema_version=4,
         run_id=run_id,
         grids_dir=str(grids_path),
+        src_path=str(grids_path),
+        output_path=str(out_path),
         lab_settings=asdict(settings),
         lab_method="resolution_aware_multiscale_mantle_descent_v3",
         units={

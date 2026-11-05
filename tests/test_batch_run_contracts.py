@@ -8,6 +8,8 @@ def test_public_batch_contracts():
     functions = (
         download.download_waveforms,
         download.mass_download_waveforms,
+        waveform.archive_waveforms,
+        waveform.filter_waveforms,
         waveform.convert_mseed_to_sac,
         waveform.format_sac_headers,
         waveform.decimate_waveforms,
@@ -25,6 +27,8 @@ def test_public_batch_contracts():
     summary_types = (
         download.BulkDownloadSummary,
         download.WaveformDownloadSummary,
+        waveform.WaveformArchiveSummary,
+        waveform.WaveformFilterSummary,
         waveform.WaveformConversionSummary,
         waveform.SacHeaderSummary,
         waveform.DecimationSummary,
@@ -35,6 +39,11 @@ def test_public_batch_contracts():
 
     for summary_type in summary_types:
         assert issubclass(summary_type, BatchSummary)
-        assert {"total", "succeeded", "failed", "issue_samples"}.issubset(
-            summary_type.__dataclass_fields__
-        )
+        assert {
+            "total",
+            "succeeded",
+            "failed",
+            "issue_samples",
+            "src_path",
+            "output_path",
+        }.issubset(summary_type.__dataclass_fields__)

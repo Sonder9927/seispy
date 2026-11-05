@@ -305,7 +305,7 @@ def test_incremental_progress(tmp_path, scenario):
         assert 0 < first.tasks < len(events)
         rest = list(results)
         assert sum(x.tasks for x in [first, *rest]) == 40
-        assert sum(len(x.samples) for x in [first, *rest]) == 3
+        assert sum(len(x.samples) for x in [first, *rest]) == 0
     elif scenario == "parallel_progress_can_be_closed_early":
         events = [event(i * 10) for i in range(200)]
         tasks = [({"network": "XX", "station": f"S{i}"}, ()) for i in range(5)]
@@ -327,8 +327,9 @@ def test_progress_counts_do_not_duplicate_or_drop_tasks(tmp_path, workers):
     tasks = [({"network": "XX", "station": f"S{i}"}, ()) for i in range(3)]
     results = list(_station_results(tasks, events, tmp_path, 2, workers))
     assert sum(x.tasks for x in results) == 120
-    assert sum(x.no_data for x in results) == 120
-    assert sum(len(x.samples) for x in results) == 6
+    assert sum(x.no_data for x in results) == sum(x.skipped for x in results) == 120
+    assert sum(x.failed for x in results) == 0
+    assert sum(len(x.samples) for x in results) == 0
 
 
 def test_event_distance_headers_are_recalculated(tmp_path):

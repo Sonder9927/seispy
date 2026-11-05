@@ -95,6 +95,8 @@ def test_batch_reports(tmp_path, scenario):
         saved = summary.save_report("task", True, tmp_path)
         assert saved.report_path == tmp_path / "task-run.json"
         data = json.loads(saved.report_path.read_text())
+        assert data["src_path"] is None
+        assert data["output_path"] is None
         assert data["value"] == "data"
         assert data["report_path"] == str(saved.report_path)
         assert summary.save_report("task", False, tmp_path).report_path is None
@@ -114,10 +116,14 @@ def test_batch_reports(tmp_path, scenario):
         with BatchRun(
             "task",
             tmp_path,
+            src_path=tmp_path / "input",
             run_id="run",
             checkpoint_interval=0,
             progress_log_interval=0,
         ) as run:
+            initial = json.loads(run.report_path.read_text())
+            assert initial["src_path"] == str((tmp_path / "input").resolve())
+            assert initial["output_path"] == str(tmp_path.resolve())
             run.start(total=3, succeeded=0, failed=0)
             run.checkpoint(completed=1, total=3, succeeded=1, failed=0)
             progress = json.loads(run.report_path.read_text())
@@ -131,6 +137,11 @@ def test_batch_reports(tmp_path, scenario):
                 )
             )
 
+        assert summary.src_path == (tmp_path / "input").resolve()
+        assert summary.output_path == tmp_path.resolve()
+        completed = json.loads(summary.report_path.read_text())
+        assert completed["src_path"] == initial["src_path"]
+        assert completed["output_path"] == initial["output_path"]
         assert summary.status == "completed"
         assert summary.report_path.is_file()
         assert summary.log_path.is_file()
@@ -216,7 +227,11 @@ def test_batch_termination(tmp_path, scenario):
     if scenario == "batch_run_marks_keyboard_interrupt":
         try:
             with BatchRun(
-                "task", tmp_path, run_id="run", checkpoint_interval=3600
+                "task",
+                tmp_path,
+                src_path=tmp_path / "input",
+                run_id="run",
+                checkpoint_interval=3600,
             ) as run:
                 run.start(total=2, succeeded=0)
                 run.checkpoint(completed=1, total=2, succeeded=1)
@@ -230,6 +245,8 @@ def test_batch_termination(tmp_path, scenario):
 
         report = json.loads((tmp_path / "logs/reports/task-run.json").read_text())
         log = (tmp_path / "logs/task-run.log").read_text()
+        assert report["src_path"] == str((tmp_path / "input").resolve())
+        assert report["output_path"] == str(tmp_path.resolve())
         assert report["status"] == "interrupted"
         assert report["completed"] == 1
         assert "interrupted" in log

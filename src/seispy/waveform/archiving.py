@@ -227,6 +227,7 @@ def archive_waveforms(
     with BatchRun(
         "waveform-archive",
         output,
+        src_path=source,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,

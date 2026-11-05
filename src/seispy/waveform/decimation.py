@@ -187,6 +187,7 @@ def decimate_waveforms(
     with BatchRun(
         "decimate",
         output_path,
+        src_path=src_path,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,

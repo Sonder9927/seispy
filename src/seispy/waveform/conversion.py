@@ -145,6 +145,7 @@ def convert_mseed_to_sac(
     with BatchRun(
         "convert_mseed_to_sac",
         output,
+        src_path=source,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,

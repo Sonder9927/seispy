@@ -228,6 +228,7 @@ def run(
     args,
     *,
     operation,
+    source,
     output,
     max_workers,
     files_per_pool,
@@ -246,6 +247,7 @@ def run(
     with BatchRun(
         operation,
         output,
+        src_path=source,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,

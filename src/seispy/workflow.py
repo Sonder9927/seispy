@@ -110,6 +110,8 @@ class BatchSummary(ABC):
         duration_seconds: Elapsed wall-clock time.
         report_path: Atomic JSON report path when enabled.
         log_path: Persistent text log path when enabled.
+        src_path: Resolved local input file/directory, or None for remote inputs.
+        output_path: Resolved output root for the run.
         status: Lifecycle state: running, completed, interrupted, or failed.
 
     Every concrete batch summary additionally exposes ``total``, ``succeeded``,
@@ -122,6 +124,8 @@ class BatchSummary(ABC):
     report_path: Path | None = None
     log_path: Path | None = None
     status: Literal["running", "completed", "interrupted", "failed"] = "completed"
+    src_path: Path | None = None
+    output_path: Path | None = None
 
     @property
     @abstractmethod
@@ -165,6 +169,7 @@ class BatchRun(AbstractContextManager):
         name: str,
         artifact_root: str | Path,
         *,
+        src_path: str | Path | None = None,
         run_id: str | None = None,
         save_report: bool | None = True,
         save_log: bool = True,
@@ -179,6 +184,9 @@ class BatchRun(AbstractContextManager):
         self.name = name
         self.run_id = run_id or new_run_id()
         self.artifact_root = Path(artifact_root).expanduser().resolve()
+        self.src_path = (
+            Path(src_path).expanduser().resolve() if src_path is not None else None
+        )
         logs = self.artifact_root / "logs"
         self.report_path = (
             logs / "reports" / f"{name}-{self.run_id}.json"
@@ -225,6 +233,8 @@ class BatchRun(AbstractContextManager):
             "duration_seconds": 0.0,
             "report_path": self.report_path,
             "log_path": self.log_path,
+            "src_path": self.src_path,
+            "output_path": self.artifact_root,
         }
         self._write_report()
         now = time.monotonic()
@@ -266,6 +276,8 @@ class BatchRun(AbstractContextManager):
         completed_tasks = self._state.get("completed")
         completed = replace(
             summary,
+            src_path=self.src_path,
+            output_path=self.artifact_root,
             duration_seconds=self.duration_seconds,
             report_path=self.report_path,
             log_path=self.log_path,

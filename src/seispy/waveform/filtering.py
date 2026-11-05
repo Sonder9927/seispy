@@ -148,6 +148,7 @@ def filter_waveforms(
     with BatchRun(
         "waveform-filter",
         output,
+        src_path=source,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,

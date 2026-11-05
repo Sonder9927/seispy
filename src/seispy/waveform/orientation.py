@@ -131,6 +131,7 @@ def correct_orientation(
         _orientation_batch,
         (output, inv, tuple(components), apply_tilt, prefix, overwrite),
         operation="correct-orientation",
+        source=source,
         output=output,
         max_workers=max_workers,
         files_per_pool=files_per_pool,

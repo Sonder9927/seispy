@@ -187,11 +187,11 @@ class CutEventSummary(BatchSummary):
         run_id: Unique identifier for the processing run.
         total: Number of event-station combinations considered.
         succeeded: Number that wrote output without read/write failures.
-        failed: Number that did not complete successfully.
+        failed: Number with actual processing failures; excludes missing coverage.
         outputs_written: Number of event waveform files written.
         input_read_failed: Number of source waveform read failures.
-        no_data: Number of tasks with no usable waveform data.
-        issue_samples: Bounded sample of cutting issues.
+        no_data: Tasks with no usable coverage, included in skipped.
+        issue_samples: Bounded sample of cutting issues, excluding routine no_data.
         channels: Number of event/channel windows with usable trimmed samples.
         partial_channels: Windows with less than complete sample-grid coverage.
         gapped_channels: Windows with internal gaps between segments.
@@ -199,9 +199,11 @@ class CutEventSummary(BatchSummary):
         existing_outputs: Existing files preserved, including conflicting files.
         traces_filtered: Cut segments rejected by the optional trace filter.
         existing_skipped: Tasks with all expected outputs already matching (included in skipped).
-        skipped: Tasks with only filtered segments or already complete outputs.
+        skipped: Tasks with no coverage, only filtered segments, or complete outputs.
         coverage_samples: Bounded details of partial or segmented windows.
         duration_seconds: Total elapsed wall-clock time.
+        src_path: Resolved absolute source directory for this run.
+        output_path: Resolved absolute output directory for this run.
         report_path: JSON report path when a report was generated.
 
     Examples:
@@ -233,6 +235,7 @@ class CutEventSummary(BatchSummary):
         return bool(
             self.failed
             or self.input_read_failed
+            or self.no_data
             or self.partial_channels
             or self.overlapping_channels
         )
@@ -375,12 +378,15 @@ def cut_event_waveforms(
     with BatchRun(
         "cut-events",
         artifact_root,
+        src_path=source,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,
         logger=logger,
     ) as run:
-        run.start(**(totals.report_fields() | {"total": total, "tasks_completed": 0}))
+        run.start(
+            **(totals.report_fields() | {"total": total, "tasks_completed": 0}),
+        )
         run.info(
             "run_id=%s source=%s output=%s stations=%d events=%d time_window=%s workers=%d",
             run_id,
@@ -440,6 +446,12 @@ def cut_event_waveforms(
                 item.source,
                 item.error,
             )
+        if summary.no_data:
+            run.warning(
+                "run_id=%s status=no_data tasks=%d (included in skipped; details omitted)",
+                run_id,
+                summary.no_data,
+            )
         issue_total = summary.failed + summary.input_read_failed
         if issue_total > len(summary.issue_samples):
             run.warning(
@@ -450,7 +462,7 @@ def cut_event_waveforms(
             )
     print(
         f"Cut events complete [{run_id}]: {summary.succeeded} succeeded, "
-        f"{summary.failed} failed, {summary.skipped} skipped, "
+        f"{summary.failed} failed, {summary.skipped} skipped ({summary.no_data} no data), "
         f"{summary.traces_filtered} segments filtered, "
         f"{summary.outputs_written} outputs written."
     )
@@ -642,8 +654,7 @@ def cut_event_station(
         network, station_name, event["start"], event["end"]
     )
     if not records:
-        issues.add("no_data", "no matching waveform traces found")
-        return _CutCounts(tasks=1, failed=1, no_data=1, samples=tuple(issues.samples))
+        return _CutCounts(tasks=1, skipped=1, no_data=1)
 
     totals = _CutAccumulator(max_error_samples, max_coverage_samples)
     waveform_data = defaultdict(obspy.Stream)
@@ -769,12 +780,11 @@ def _finish_cut_task(counts, issues):
         status = {"skipped": 1, "existing_skipped": 1}
     elif counts.traces_filtered and not counts.channels:
         status = {"skipped": 1}
+    elif not counts.channels:
+        status = {"skipped": 1, "no_data": 1}
     else:
-        no_data = int(counts.channels == 0)
-        issues.add(
-            "no_data" if no_data else "no_output", "no event channel was written"
-        )
-        status = {"failed": 1, "no_data": no_data}
+        issues.add("no_output", "no event channel was written")
+        status = {"failed": 1}
     return replace(counts, tasks=1, samples=tuple(issues.samples), **status)
 
 

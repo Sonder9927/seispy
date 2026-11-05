@@ -10,6 +10,8 @@ report and a human-readable text log by default:
 
 - `download_waveforms`
 - `mass_download_waveforms`
+- `archive_waveforms`
+- `filter_waveforms`
 - `convert_mseed_to_sac`
 - `format_sac_headers`
 - `decimate_waveforms`
@@ -28,6 +30,17 @@ root:
 
 For in-place header formatting, decimation or response removal, `<output>` is
 the source root.
+
+Every batch report includes `src_path` and `output_path`. Local paths are expanded
+and resolved to absolute paths; a single-file input records the file itself.
+For in-place operations both fields point to the input location. Downloads have
+no local waveform source, so `src_path` is `null` and `output_path` is the download
+root. Existing function-specific fields such as `output_dir` remain available.
+These fields are present from report creation through checkpoints, interruption,
+and completion. Returned summaries expose them as `Path` objects (or `None`).
+
+MCMC collection also records these fields in `metadata.json`. Daily merge error
+reports include both paths in their text header.
 
 ## Interpret run status
 

@@ -263,6 +263,7 @@ def deconvolve_waveforms(
         with BatchRun(
             "deconvolution",
             output_path,
+            src_path=src_path,
             run_id=run_id,
             save_report=save_report,
             save_log=save_log,

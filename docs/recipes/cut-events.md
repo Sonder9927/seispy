@@ -238,5 +238,21 @@ available partial segments. The minimum applies to each continuous segment after
 cutting, measured as `npts / sampling_rate`; equality is accepted and disjoint
 segments are not added together. Shorter segments count in `traces_filtered`;
 a task with only filtered segments is `skipped`, not `failed`. No matching input
-still counts as `no_data` and `failed`. When `trace_filter` is also supplied, both
+counts as `no_data` and `skipped`. When `trace_filter` is also supplied, both
 policies apply, using the stricter minimum duration.
+
+
+Routine missing coverage is counted in `no_data` and `skipped`, not `failed`.
+Each run with missing coverage emits one WARN summary; individual no-data tasks
+are omitted from `issue_samples` and do not consume `max_error_samples` or trigger
+error-sample truncation warnings. The completion message shows the no-data count
+within the skipped total. `total = succeeded + failed + skipped` remains valid.
+Read/write failures and output conflicts remain failures with ERROR samples.
+`has_issues` includes missing coverage as a warning, so `save_report=None` retains
+a report for a run with no data even when it has no processing failures.
+
+
+Reports include `src_path` and `output_path` as resolved absolute directories.
+These fields identify the continuous waveform source and the event-output root,
+respectively, and are retained in running, interrupted, and completed reports.
+The returned summary exposes the same fields as `Path` objects.

@@ -197,6 +197,7 @@ def format_sac_headers(
     with BatchRun(
         "format",
         output,
+        src_path=source,
         run_id=run_id,
         save_report=save_report,
         save_log=save_log,
