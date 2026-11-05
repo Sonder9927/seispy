@@ -229,7 +229,9 @@ def test_event_output_collisions(tmp_path, scenario):
         second = cut_event_waveforms(source, csv, **kwargs)
         assert first.outputs_written == 1
         assert second.existing_outputs == 1
-        assert second.issue_samples[0].status == "output_exists"
+        assert second.skipped == second.existing_skipped == 1
+        assert second.failed == 0
+        assert not second.issue_samples
     elif scenario == "same_second_event_does_not_overwrite_existing_output":
         root = tmp_path / "source"
         source_trace(root)
@@ -465,3 +467,53 @@ def test_public_cut_filter_reports_skips_across_workers(tmp_path, workers):
     assert result.succeeded == result.failed == result.outputs_written == 0
     assert not result.has_issues
     assert not list((tmp_path / "out").rglob("*.sac"))
+
+
+@pytest.mark.parametrize(
+    "minimum,policy_minimum,kept",
+    [
+        (None, None, True),
+        (2, None, True),
+        (3, None, True),
+        (4, None, False),
+        (2, 4, False),
+        (4, 2, False),
+    ],
+)
+@pytest.mark.parametrize("workers", [1, 2])
+def test_public_minimum_cut_window(tmp_path, minimum, policy_minimum, kept, workers):
+    from seispy.waveform.integrity import TraceFilter
+
+    policy = (
+        TraceFilter(min_duration_seconds=policy_minimum, min_samples=0)
+        if policy_minimum is not None
+        else None
+    )
+    source = tmp_path / "source"
+    source_trace(source, offset=0, npts=3, rate=1)
+    catalog = tmp_path / "events.csv"
+    pd.DataFrame(
+        [dict(time=str(BASE), latitude=35, longitude=105, depth=12, mag=6)]
+    ).to_csv(catalog, index=False)
+    result = cut_event_waveforms(
+        source,
+        catalog,
+        output_dir=tmp_path / "out",
+        time_window=5,
+        min_time_window=minimum,
+        trace_filter=policy,
+        max_workers=workers,
+        save_report=False,
+        save_log=False,
+    )
+    assert result.failed == 0
+    assert result.succeeded == result.outputs_written == int(kept)
+    assert result.skipped == result.traces_filtered == int(not kept)
+
+
+@pytest.mark.parametrize("minimum", [0, -1, 6, float("nan"), float("inf")])
+def test_invalid_minimum_cut_window(tmp_path, minimum):
+    with pytest.raises(ValueError, match="min_time_window"):
+        cut_event_waveforms(
+            tmp_path, tmp_path / "events.csv", time_window=5, min_time_window=minimum
+        )

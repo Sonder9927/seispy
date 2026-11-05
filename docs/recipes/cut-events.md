@@ -219,3 +219,24 @@ The default `trace_filter=None` preserves the existing output selection.
 fully filtered event/station tasks. Intentional filtering does not count as a
 failure or create an empty event directory; remaining partial or gapped output
 still appears in coverage diagnostics.
+
+
+On reruns, the cutter rebuilds each expected cut and compares the complete SAC
+serialization (headers and samples) with the existing file. Matching files are
+preserved without an error. Tasks with all outputs already matching count in
+`skipped` and `existing_skipped`; tasks that successfully fill missing outputs
+count in `succeeded`. Corrupt or differing existing files are preserved and
+reported as `output_conflict`, making the task fail. `existing_outputs` counts
+all existing destinations encountered, including conflicts. This validation still
+reads and cuts source waveforms; it does not bypass input processing. Comparison
+is byte-for-byte, so externally rewritten SAC files can be reported as conflicts.
+
+To request three hours but retain continuous segments with at least two hours of
+samples, use `time_window=3 * 3600, min_time_window=2 * 3600`.
+`min_time_window` defaults to `None`, preserving the existing behavior of writing
+available partial segments. The minimum applies to each continuous segment after
+cutting, measured as `npts / sampling_rate`; equality is accepted and disjoint
+segments are not added together. Shorter segments count in `traces_filtered`;
+a task with only filtered segments is `skipped`, not `failed`. No matching input
+still counts as `no_data` and `failed`. When `trace_filter` is also supplied, both
+policies apply, using the stricter minimum duration.

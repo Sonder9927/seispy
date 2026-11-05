@@ -49,3 +49,14 @@ executables are user-supplied and are not part of this repository.
 Geometry uses the shared SAC header calculation: WGS84 ellipsoidal distance
 with GeographicLib and geocentric great-circle azimuths and angular distance.
 See [Distance and azimuth convention](../recipes/format-headers.md#distance-and-azimuth-convention).
+
+
+On reruns, the cutter rebuilds each expected cut and compares the complete SAC
+serialization (headers and samples) with the existing file. Matching files are
+preserved without an error. Tasks with all outputs already matching count in
+`skipped` and `existing_skipped`; tasks that successfully fill missing outputs
+count in `succeeded`. Corrupt or differing existing files are preserved and
+reported as `output_conflict`, making the task fail. `existing_outputs` counts
+all existing destinations encountered, including conflicts. This validation still
+reads and cuts source waveforms; it does not bypass input processing. Comparison
+is byte-for-byte, so externally rewritten SAC files can be reported as conflicts.

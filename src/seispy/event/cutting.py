@@ -1,9 +1,10 @@
 """Cut event windows from a continuous waveform archive."""
 
+from io import BytesIO
 import logging
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from os import cpu_count
 from pathlib import Path
 from queue import Empty, Full
@@ -79,6 +80,7 @@ class _CutCounts:
     gapped_channels: int = 0
     overlapping_channels: int = 0
     existing_outputs: int = 0
+    existing_skipped: int = 0
     traces_filtered: int = 0
     skipped: int = 0
     coverage_samples: tuple[CutEventCoverage, ...] = ()
@@ -104,9 +106,10 @@ class CutEventSummary(BatchSummary):
         partial_channels: Windows with less than complete sample-grid coverage.
         gapped_channels: Windows with internal gaps between segments.
         overlapping_channels: Windows with unresolved overlapping segments.
-        existing_outputs: Existing files preserved instead of overwritten.
+        existing_outputs: Existing files preserved, including conflicting files.
         traces_filtered: Cut segments rejected by the optional trace filter.
-        skipped: Event/station tasks with only filtered segments.
+        existing_skipped: Tasks with all expected outputs already matching (included in skipped).
+        skipped: Tasks with only filtered segments or already complete outputs.
         coverage_samples: Bounded details of partial or segmented windows.
         duration_seconds: Total elapsed wall-clock time.
         report_path: JSON report path when a report was generated.
@@ -130,6 +133,7 @@ class CutEventSummary(BatchSummary):
     gapped_channels: int = 0
     overlapping_channels: int = 0
     existing_outputs: int = 0
+    existing_skipped: int = 0
     traces_filtered: int = 0
     skipped: int = 0
     coverage_samples: tuple[CutEventCoverage, ...] = ()
@@ -151,6 +155,7 @@ def cut_event_waveforms(
     output_dir: str | Path | None = None,
     station_csv: str | Path | None = None,
     time_window: float = 10800,
+    min_time_window: float | None = None,
     pattern: str = "*.sac",
     trace_filter: TraceFilter | None = None,
     max_workers: int | None = None,
@@ -176,6 +181,11 @@ def cut_event_waveforms(
         time_window: Window length in seconds, beginning at the event origin
             floored to an integer UTC second. The precise origin remains in
             the output event identity and SAC ``o`` header.
+        min_time_window: Optional minimum duration in seconds per continuous
+            cut segment, measured as npts / sampling_rate. Segments below the
+            threshold are filtered, not failed; equality is accepted. None adds
+            no duration threshold. Must be positive and no larger than time_window.
+            With trace_filter, the stricter duration threshold applies.
         pattern: Recursive source filename pattern. Defaults to ``"*.sac"``;
             use ``"*.mseed"`` for MiniSEED archives. Output is always SAC.
         max_workers: Station workers. Defaults to the smaller of 5 and the CPU
@@ -213,6 +223,26 @@ def cut_event_waveforms(
         raise ValueError("cache_max_bytes cannot be negative")
     if not np.isfinite(time_window) or time_window <= 0:
         raise ValueError("time_window must be positive")
+    if min_time_window is not None:
+        if (
+            not np.isfinite(min_time_window)
+            or min_time_window <= 0
+            or min_time_window > time_window
+        ):
+            raise ValueError("min_time_window must be positive and <= time_window")
+        if trace_filter is None:
+            trace_filter = TraceFilter(
+                min_duration_seconds=min_time_window,
+                min_samples=0,
+                reject_unusable_samples=False,
+            )
+        else:
+            trace_filter = replace(
+                trace_filter,
+                min_duration_seconds=max(
+                    trace_filter.min_duration_seconds, min_time_window
+                ),
+            )
     workers = min(5, cpu_count() or 1) if max_workers is None else max_workers
     if workers < 1:
         raise ValueError("max_workers must be at least 1")
@@ -247,6 +277,7 @@ def cut_event_waveforms(
         gapped_channels=0,
         overlapping_channels=0,
         existing_outputs=0,
+        existing_skipped=0,
         traces_filtered=0,
         skipped=0,
     )
@@ -683,6 +714,10 @@ def cut_event_station(
                         destination = event_dir / out_name
                         if destination.exists():
                             existing_outputs += 1
+                            if _existing_event_output_matches(
+                                destination, trimmed_trace
+                            ):
+                                continue
                             had_issue = True
                             if len(samples) < max_error_samples:
                                 samples.append(
@@ -690,8 +725,8 @@ def cut_event_station(
                                         event_name,
                                         network,
                                         station_name,
-                                        "output_exists",
-                                        str(destination),
+                                        "output_conflict",
+                                        f"Existing output differs from expected SAC: {destination}",
                                     )
                                 )
                             continue
@@ -715,8 +750,10 @@ def cut_event_station(
                             f"{type(exc).__name__}: {exc}",
                         )
                     )
+    existing_skipped = int(not outputs and existing_outputs > 0 and not had_issue)
     skipped = int(
-        not outputs and traces_filtered > 0 and channels == 0 and not had_issue
+        existing_skipped
+        or (not outputs and traces_filtered > 0 and channels == 0 and not had_issue)
     )
     if not outputs and not skipped:
         no_data = int(not had_issue and channels == 0)
@@ -746,6 +783,7 @@ def cut_event_station(
         gapped_channels=gapped_channels,
         overlapping_channels=overlapping_channels,
         existing_outputs=existing_outputs,
+        existing_skipped=existing_skipped,
         coverage_samples=tuple(coverage_samples),
     )
 
@@ -826,6 +864,16 @@ def _event_output_name(identity_key, event_time, segment_index):
     return f"{identity}.s{segment_index + 1:02d}.sac"
 
 
+def _existing_event_output_matches(destination, expected):
+    """Compare full SAC headers and samples against the rebuilt expected cut."""
+    try:
+        with BytesIO() as buffer:
+            expected.write(buffer, format="SAC")
+            return destination.read_bytes() == buffer.getvalue()
+    except Exception:
+        return False
+
+
 def _combine_cut_counts(items, limit):
     samples = []
     for item in items:
@@ -843,6 +891,7 @@ def _combine_cut_counts(items, limit):
         gapped_channels=sum(item.gapped_channels for item in items),
         overlapping_channels=sum(item.overlapping_channels for item in items),
         existing_outputs=sum(item.existing_outputs for item in items),
+        existing_skipped=sum(item.existing_skipped for item in items),
         traces_filtered=sum(item.traces_filtered for item in items),
         skipped=sum(item.skipped for item in items),
         coverage_samples=tuple(

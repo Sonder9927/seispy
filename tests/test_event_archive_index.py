@@ -236,6 +236,45 @@ def test_event_outputs(tmp_path, scenario):
         second = cut_event_station(*args, archive_index=index)
 
         assert first.outputs == 1
-        assert second.failed == 1
+        assert second.failed == 0
+        assert second.skipped == second.existing_skipped == 1
         assert second.outputs == 0
         assert output.read_bytes() == original
+
+
+@pytest.mark.parametrize("change", ["missing", "truncated", "samples", "window"])
+def test_resume_validates_existing_and_fills_missing(tmp_path, change):
+    root = tmp_path / "archive"
+    _archived_sac(root)
+    _archived_sac(root, channel="BHN")
+    index = WaveformArchiveIndex.build(root)
+    station = {"network": "NZ", "station": "WEL"}
+    output = tmp_path / "events"
+    cut_event_station(_event(), station, output, archive_index=index)
+    paths = sorted(output.rglob("*.sac"))
+    original = paths[1].read_bytes()
+    event = _event()
+    if change == "missing":
+        paths[0].unlink()
+    elif change == "truncated":
+        paths[0].write_bytes(paths[0].read_bytes()[:640])
+    elif change == "samples":
+        import obspy
+
+        trace = obspy.read(str(paths[0]))[0]
+        trace.data[0] += 1
+        trace.write(str(paths[0]), format="SAC")
+    else:
+        event["end"] += 1
+    preserved = paths[0].read_bytes() if paths[0].exists() else None
+    result = cut_event_station(event, station, output, archive_index=index)
+    assert paths[1].read_bytes() == original
+    if change == "missing":
+        assert result.succeeded == result.outputs == result.existing_outputs == 1
+        assert result.failed == result.skipped == result.existing_skipped == 0
+        assert paths[0].exists()
+    else:
+        assert result.failed == 1
+        assert result.outputs == result.skipped == result.existing_skipped == 0
+        assert result.samples[0].status == "output_conflict"
+        assert paths[0].read_bytes() == preserved
