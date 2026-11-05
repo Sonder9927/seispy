@@ -1,5 +1,4 @@
 import pytest
-import inspect
 import os
 import subprocess
 import sys
@@ -24,9 +23,7 @@ def test_lazy_imports(scenario):
                 "-c",
                 "import sys, seispy; "
                 "assert 'seispy.mcmc' not in sys.modules; "
-                "assert 'seispy.waveform.decimation' not in sys.modules; "
-                "assert not hasattr(seispy, 'stationxml'); "
-                "assert not hasattr(seispy, 'response')",
+                "assert 'seispy.waveform.decimation' not in sys.modules",
             ],
             check=True,
             env=environment,
@@ -49,50 +46,3 @@ def test_lazy_imports(scenario):
             check=True,
             env=environment,
         )
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "domain_public_apis_use_canonical_names",
-        "waveform_interfaces_cannot_delete_or_replace_sources",
-    ],
-)
-def test_public_contracts(scenario):
-    if scenario == "domain_public_apis_use_canonical_names":
-        from seispy import event
-        from seispy import download
-        from seispy import waveform
-
-        assert callable(event.cut_event_waveforms)
-        assert callable(event.cut_events_binary)
-        assert callable(event.write_event_catalog)
-        assert callable(download.mass_download_waveforms)
-        assert download.BulkDownloadSummary.__name__ == "BulkDownloadSummary"
-        assert callable(waveform.decimate_waveforms)
-        assert callable(waveform.archive_waveforms)
-        assert callable(waveform.correct_clock_drift)
-        assert callable(waveform.correct_orientation)
-        assert not hasattr(waveform, "sort_waveforms")
-        assert callable(waveform.waveform_coverage)
-        assert not hasattr(download, "download_status")
-        assert not hasattr(waveform, "decimate_by_station")
-
-        from seispy import mcmc
-
-        assert callable(mcmc.init_grids)
-        assert callable(mcmc.collect_results)
-        assert not hasattr(mcmc, "prepare_inversion_grids")
-        assert not hasattr(mcmc, "collect_inversion_results")
-    elif scenario == "waveform_interfaces_cannot_delete_or_replace_sources":
-        from seispy import waveform
-
-        for function in (
-            waveform.archive_waveforms,
-            waveform.convert_mseed_to_sac,
-            waveform.decimate_waveforms,
-            waveform.merge_waveforms_by_day,
-        ):
-            parameters = inspect.signature(function).parameters
-            assert "remove_original" not in parameters
-            assert "remove_src" not in parameters

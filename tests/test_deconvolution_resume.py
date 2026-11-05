@@ -289,76 +289,48 @@ def test_post_decimation_rejects_invalid_factors_before_inventory_read(
         )
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "post_decimation_keeps_response_precision_and_writes_only_final_rate",
-        "resume_replaces_old_25hz_outputs_then_skips_final_5hz_outputs",
-    ],
-)
-def test_final_rate_outputs(case, scenario):
-    if (
-        scenario
-        == "post_decimation_keeps_response_precision_and_writes_only_final_rate"
+def test_response_processing_preserves_precision_at_final_rate(case):
+    from scipy.signal import convolve
+
+    original_filter = removal._sac_compatible_decimate_trace
+    original_write = Trace.write
+    captured = []
+    write_rates = []
+
+    def corrected(stream, inventory, *, decimate_factors, **kwargs):
+        assert decimate_factors == (4,)
+        assert kwargs["pre_filt"] == removal.DEFAULT_PRE_FILTER
+        stream = process(stream, inventory, decimate_factors=decimate_factors)
+        for trace in stream:
+            trace.data = trace.data.astype(np.float64) + np.linspace(
+                0, 1e-07, len(trace.data)
+            )
+        return stream
+
+    def filter_spy(trace, factors):
+        if tuple(factors) == (5,):
+            assert trace.data.dtype == np.float64
+            assert np.any(trace.data != trace.data.astype(np.float32))
+            captured.append(trace.data.copy())
+        original_filter(trace, factors)
+
+    def write_spy(trace, *args, **kwargs):
+        write_rates.append(trace.stats.sampling_rate)
+        return original_write(trace, *args, **kwargs)
+
+    with (
+        patch.object(removal, "remove_response", side_effect=corrected),
+        patch.object(removal, "_sac_compatible_decimate_trace", side_effect=filter_spy),
+        patch.object(Trace, "write", write_spy),
     ):
-        from scipy.signal import convolve
-
-        original_filter = removal._sac_compatible_decimate_trace
-        original_write = Trace.write
-        captured = []
-        write_rates = []
-
-        def corrected(stream, inventory, *, decimate_factors, **kwargs):
-            assert decimate_factors == (4,)
-            assert kwargs["pre_filt"] == removal.DEFAULT_PRE_FILTER
-            stream = process(stream, inventory, decimate_factors=decimate_factors)
-            for trace in stream:
-                trace.data = trace.data.astype(np.float64) + np.linspace(
-                    0, 1e-7, len(trace.data)
-                )
-            return stream
-
-        def filter_spy(trace, factors):
-            if tuple(factors) == (5,):
-                assert trace.data.dtype == np.float64
-                assert np.any(trace.data != trace.data.astype(np.float32))
-                captured.append(trace.data.copy())
-            original_filter(trace, factors)
-
-        def write_spy(trace, *args, **kwargs):
-            write_rates.append(trace.stats.sampling_rate)
-            return original_write(trace, *args, **kwargs)
-
-        with (
-            patch.object(removal, "remove_response", side_effect=corrected),
-            patch.object(
-                removal, "_sac_compatible_decimate_trace", side_effect=filter_spy
-            ),
-            patch.object(Trace, "write", write_spy),
-        ):
-            result = run(case, factors=(4,), post_factors=(5,))
-        assert result.succeeded == 1
-        assert write_rates == [5] * len(captured)
-        coefficients = import_module(
-            "seispy.waveform.decimation"
-        )._sac_fir_coefficients(5)
-        for path, before in zip(destinations(case), captured, strict=True):
-            actual = read(str(path))[0]
-            assert actual.stats.sampling_rate == 5
-            expected = convolve(before, coefficients, mode="same", method="direct")[::5]
-            np.testing.assert_allclose(
-                actual.data, expected.astype(np.float32), rtol=1e-7, atol=1e-8
-            )
-    elif scenario == "resume_replaces_old_25hz_outputs_then_skips_final_5hz_outputs":
-        with patch.object(removal, "remove_response", side_effect=process) as remove:
-            assert run(case, factors=(4,)).succeeded == 1
-            assert (
-                run(case, factors=(4,), post_factors=(5,), overwrite=False).succeeded
-                == 1
-            )
-            result = run(case, factors=(4,), post_factors=(5,), overwrite=False)
-        assert result.existing_skipped == 1 and remove.call_count == 2
-        assert all(
-            read(str(p), headonly=True)[0].stats.sampling_rate == 5
-            for p in destinations(case)
+        result = run(case, factors=(4,), post_factors=(5,))
+    assert result.succeeded == 1
+    assert write_rates == [5] * len(captured)
+    coefficients = import_module("seispy.waveform.decimation")._sac_fir_coefficients(5)
+    for path, before in zip(destinations(case), captured, strict=True):
+        actual = read(str(path))[0]
+        assert actual.stats.sampling_rate == 5
+        expected = convolve(before, coefficients, mode="same", method="direct")[::5]
+        np.testing.assert_allclose(
+            actual.data, expected.astype(np.float32), rtol=1e-07, atol=1e-08
         )

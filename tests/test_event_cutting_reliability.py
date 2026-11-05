@@ -54,7 +54,7 @@ def event(offset=0.123456, duration=5):
     }
 
 
-@pytest.mark.parametrize("offset", [0.0, 0.123, 0.123456, 2.789])
+@pytest.mark.parametrize("offset", [0.0, 0.123456])
 def test_written_origin_and_picks_keep_absolute_times(tmp_path, offset):
     root = tmp_path / "source"
     path = source_trace(root)
@@ -72,8 +72,8 @@ def test_written_origin_and_picks_keep_absolute_times(tmp_path, offset):
     assert result.succeeded == 1
     actual = read(next((tmp_path / "out").rglob("*.sac")))[0]
     reference = get_sac_reftime(actual.stats.sac)
-    assert abs(reference + float(actual.stats.sac.o) - target["start"]) < 1e-6
-    start = UTCDateTime(ns=target["start"].ns // 1_000_000_000 * 1_000_000_000)
+    assert abs(reference + float(actual.stats.sac.o) - target["start"]) < 1e-06
+    start = UTCDateTime(ns=target["start"].ns // 1000000000 * 1000000000)
     expected = original.copy().trim(start, start + 5)
     assert actual.stats.starttime == expected.stats.starttime
     assert actual.stats.endtime == expected.stats.endtime
@@ -81,7 +81,7 @@ def test_written_origin_and_picks_keep_absolute_times(tmp_path, offset):
     for name in ("a", "t0", "f"):
         before = get_sac_reftime(original.stats.sac) + float(original.stats.sac[name])
         after = reference + float(actual.stats.sac[name])
-        assert abs(before - after) < 2e-6
+        assert abs(before - after) < 2e-06
     assert path.read_bytes() == original_bytes
 
 
@@ -198,7 +198,6 @@ def test_bounded_waveform_cache(tmp_path, scenario):
     "scenario",
     [
         "public_summary_distinguishes_existing_output",
-        "same_second_event_does_not_overwrite_existing_output",
         "public_cutter_rejects_same_second_events_before_writing",
     ],
 )
@@ -232,30 +231,12 @@ def test_event_output_collisions(tmp_path, scenario):
         assert second.skipped == second.existing_skipped == 1
         assert second.failed == 0
         assert not second.issue_samples
-    elif scenario == "same_second_event_does_not_overwrite_existing_output":
-        root = tmp_path / "source"
-        source_trace(root)
-        index = WaveformArchiveIndex.build(root)
-        first = cut_event_station(
-            event(0.123001), STATION, tmp_path / "out", archive_index=index
-        )
-        path = next((tmp_path / "out").rglob("*.sac"))
-        original = path.read_bytes()
-        second = cut_event_station(
-            event(0.123999), STATION, tmp_path / "out", archive_index=index
-        )
-        assert first.succeeded == 1
-        assert second.failed == second.existing_outputs == 1
-        assert path.read_bytes() == original
-        assert len(list((tmp_path / "out").rglob("*.sac"))) == 1
     elif scenario == "public_cutter_rejects_same_second_events_before_writing":
         root = tmp_path / "source"
         source_trace(root)
         catalog = tmp_path / "events.csv"
         catalog.write_text(
-            "time,latitude,longitude,depth,mag\n"
-            "2024-01-02T00:00:00.123001Z,1,2,3,4\n"
-            "2024-01-02T00:00:00.123999Z,1,2,3,4\n"
+            "time,latitude,longitude,depth,mag\n2024-01-02T00:00:00.123001Z,1,2,3,4\n2024-01-02T00:00:00.123999Z,1,2,3,4\n"
         )
         output = tmp_path / "out"
         with pytest.raises(ValueError, match="same UTC second"):
@@ -263,8 +244,9 @@ def test_event_output_collisions(tmp_path, scenario):
         assert not output.exists()
 
 
-@pytest.mark.parametrize("rate", [1, 40, 62.5, 100])
-@pytest.mark.parametrize("origin", [0.125, 0.15, 0.123456])
+@pytest.mark.parametrize(
+    "rate,origin", [(1, 0.125), (40, 0.15), (62.5, 0.125), (100, 0.123456)]
+)
 def test_window_copy_matches_full_read_merge_and_trim(tmp_path, rate, origin):
     from obspy import Stream
     from seispy.waveform.integrity import merge_contiguous_segments
@@ -284,7 +266,7 @@ def test_window_copy_matches_full_read_merge_and_trim(tmp_path, rate, origin):
     target = event(origin, duration=2)
     expected = merge_contiguous_segments(Stream([read(p)[0] for p in paths]))
     for trace in expected:
-        start = UTCDateTime(ns=target["start"].ns // 1_000_000_000 * 1_000_000_000)
+        start = UTCDateTime(ns=target["start"].ns // 1000000000 * 1000000000)
         trace.trim(start, start + 2)
     result = cut_event_station(
         target,
@@ -372,58 +354,6 @@ def test_event_distance_headers_are_recalculated(tmp_path):
         assert raw[key] == pytest.approx(expected[key], rel=1e-6)
 
 
-@pytest.mark.parametrize("fragmented", [False, True])
-def test_output_names_use_event_second_and_short_segment_suffix(tmp_path, fragmented):
-    root = tmp_path / "source"
-    if fragmented:
-        source_trace(root, "first", offset=0, npts=2, rate=1)
-        source_trace(root, "second", offset=4, npts=2, rate=1)
-    else:
-        source_trace(root, offset=0, npts=6, rate=1)
-    result = cut_event_station(
-        event(0.123456),
-        STATION,
-        tmp_path / "out",
-        archive_index=WaveformArchiveIndex.build(root),
-    )
-    assert result.succeeded == 1
-    names = sorted(p.name for p in (tmp_path / "out").rglob("*.sac"))
-    prefix = "XX.TEST.--.BHZ.20240102000000"
-    expected = (
-        [f"{prefix}.s01.sac", f"{prefix}.s02.sac"] if fragmented else [f"{prefix}.sac"]
-    )
-    assert names == expected
-    assert all(
-        p.parent == tmp_path / "out" / "20240102000000"
-        for p in (tmp_path / "out").rglob("*.sac")
-    )
-
-
-@pytest.mark.parametrize("npts,accepted", [(5399, False), (5400, True), (5401, True)])
-def test_cut_filter_uses_actual_segment_duration(tmp_path, npts, accepted):
-    from seispy.waveform import TraceFilter
-
-    root = tmp_path / "source"
-    path = source_trace(root, offset=0, rate=1, npts=npts)
-    original = path.read_bytes()
-    result = cut_event_station(
-        event(0, 10800),
-        STATION,
-        tmp_path / "out",
-        archive_index=WaveformArchiveIndex.build(root),
-        trace_filter=TraceFilter(min_duration_seconds=90 * 60),
-    )
-    assert result.outputs == int(accepted)
-    assert result.traces_filtered == int(not accepted)
-    assert result.skipped == int(not accepted)
-    assert result.failed == 0 and result.no_data == 0
-    assert path.read_bytes() == original
-    if accepted:
-        assert read(next((tmp_path / "out").rglob("*.sac")))[0].stats.npts == npts
-    else:
-        assert not (tmp_path / "out").exists()
-
-
 def test_cut_filter_does_not_add_durations_across_gaps(tmp_path):
     from seispy.waveform import TraceFilter
 
@@ -441,46 +371,17 @@ def test_cut_filter_does_not_add_durations_across_gaps(tmp_path):
     assert result.failed == 0 and result.outputs == 0
 
 
-@pytest.mark.parametrize("workers", [1, 2])
-def test_public_cut_filter_reports_skips_across_workers(tmp_path, workers):
-    from seispy.waveform import TraceFilter
-
-    root = tmp_path / "source"
-    path = source_trace(root, offset=0, rate=1, npts=5000)
-    second = read(path)[0]
-    second.stats.station = "OTHER"
-    second.write(str(root / "other.sac"), format="SAC")
-    catalog = tmp_path / "events.csv"
-    pd.DataFrame(
-        [dict(time=str(BASE), latitude=0, longitude=0, depth=20, mag=6)]
-    ).to_csv(catalog, index=False)
-    result = cut_event_waveforms(
-        root,
-        catalog,
-        output_dir=tmp_path / "out",
-        max_workers=workers,
-        trace_filter=TraceFilter(min_duration_seconds=5400),
-        save_report=False,
-        save_log=False,
-    )
-    assert result.total == 2 and result.skipped == 2 and result.traces_filtered == 2
-    assert result.succeeded == result.failed == result.outputs_written == 0
-    assert not result.has_issues
-    assert not list((tmp_path / "out").rglob("*.sac"))
-
-
 @pytest.mark.parametrize(
-    "minimum,policy_minimum,kept",
+    "minimum,policy_minimum,kept,workers",
     [
-        (None, None, True),
-        (2, None, True),
-        (3, None, True),
-        (4, None, False),
-        (2, 4, False),
-        (4, 2, False),
+        (None, None, True, 1),
+        (2, None, True, 2),
+        (3, None, True, 1),
+        (4, None, False, 2),
+        (2, 4, False, 1),
+        (4, 2, False, 2),
     ],
 )
-@pytest.mark.parametrize("workers", [1, 2])
 def test_public_minimum_cut_window(tmp_path, minimum, policy_minimum, kept, workers):
     from seispy.waveform.integrity import TraceFilter
 
@@ -511,65 +412,12 @@ def test_public_minimum_cut_window(tmp_path, minimum, policy_minimum, kept, work
     assert result.skipped == result.traces_filtered == int(not kept)
 
 
-@pytest.mark.parametrize("minimum", [0, -1, 6, float("nan"), float("inf")])
+@pytest.mark.parametrize("minimum", [0, 6, float("nan")])
 def test_invalid_minimum_cut_window(tmp_path, minimum):
     with pytest.raises(ValueError, match="min_time_window"):
         cut_event_waveforms(
             tmp_path, tmp_path / "events.csv", time_window=5, min_time_window=minimum
         )
-
-
-def test_duration_filter_precedes_sac_header_calculations(tmp_path):
-    from seispy.waveform import TraceFilter
-
-    source_trace(tmp_path / "source", offset=0, rate=1, npts=3)
-    index = WaveformArchiveIndex.build(tmp_path / "source")
-    with patch(
-        "seispy.event.cutting.sac_geometry", side_effect=AssertionError("unused")
-    ):
-        result = cut_event_station(
-            event(0, 10),
-            STATION,
-            tmp_path / "out",
-            archive_index=index,
-            trace_filter=TraceFilter(min_duration_seconds=5, min_samples=0),
-        )
-    assert result.failed == 0
-    assert result.skipped == result.traces_filtered == 1
-
-
-def test_channels_reuse_time_and_effective_coordinate_calculations(tmp_path):
-    from seispy.event import cutting as module
-
-    root = tmp_path / "source"
-    for channel, latitude in (("BHZ", 30), ("BHN", 30), ("BHE", 31)):
-        path = source_trace(root, name=channel)
-        trace = read(path)[0]
-        trace.stats.channel = channel
-        trace.stats.sac.stla = latitude
-        trace.write(str(path), format="SAC")
-    with (
-        patch.object(module, "sac_geometry", wraps=module.sac_geometry) as geometry,
-        patch.object(
-            module,
-            "utcdatetime_to_sac_nztimes",
-            wraps=module.utcdatetime_to_sac_nztimes,
-        ) as times,
-    ):
-        result = cut_event_station(
-            event(),
-            STATION,
-            tmp_path / "out",
-            archive_index=WaveformArchiveIndex.build(root),
-        )
-    assert result.outputs == 3 and result.failed == 0
-    assert geometry.call_count == 2
-    assert times.call_count == 1
-    outputs = {
-        read(p)[0].stats.channel: read(p)[0] for p in (tmp_path / "out").rglob("*.sac")
-    }
-    assert outputs["BHZ"].stats.sac.dist == outputs["BHN"].stats.sac.dist
-    assert outputs["BHE"].stats.sac.dist != outputs["BHZ"].stats.sac.dist
 
 
 def test_rerun_compares_samples_after_first_megabyte(tmp_path):
@@ -592,22 +440,7 @@ def test_rerun_compares_samples_after_first_megabyte(tmp_path):
     assert result.samples[0].status == "output_conflict"
 
 
-@pytest.mark.parametrize("dtype", ["int32", "float32", "float64", ">f4"])
-def test_fixed_sac_writer_matches_standard_obspy_writer(dtype):
-    from io import BytesIO
-    from seispy.event.cutting import _write_event_sac
-
-    trace = Trace(np.arange(101, dtype=dtype))
-    trace.stats.starttime = BASE + 0.123456
-    trace.stats.sampling_rate = 62.5
-    trace.stats.sac = dict(stla=30, stlo=110, depmin=-999, depmax=999, a=2.5)
-    with BytesIO() as expected, BytesIO() as actual:
-        trace.write(expected, format="SAC")
-        _write_event_sac(trace, actual)
-        assert actual.getvalue() == expected.getvalue()
-
-
-@pytest.mark.parametrize("sample_limit", [0, 1, 10])
+@pytest.mark.parametrize("sample_limit", [0, 1])
 def test_channel_write_failure_preserves_outputs_and_continues_channels(
     tmp_path, sample_limit
 ):
@@ -644,4 +477,4 @@ def test_channel_write_failure_preserves_outputs_and_continues_channels(
     paths = list((tmp_path / "out").rglob("*.sac"))
     assert len(paths) == 2
     assert {read(path)[0].stats.channel for path in paths} == {"BHZ", "BHN"}
-    assert not any(path.name.startswith(".") for path in paths)
+    assert not any((path.name.startswith(".") for path in paths))

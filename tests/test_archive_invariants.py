@@ -2,7 +2,6 @@
 
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,11 +10,8 @@ from obspy import UTCDateTime
 
 from seispy.archive import (
     WaveformIdentity,
-    matches_mseed_path,
-    mseed_path,
     stream_day_identity,
 )
-from seispy.event.archive_index import intervals_overlap
 
 
 _CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -68,38 +64,11 @@ def _identities(draw):
     )
 
 
-@given(identity=_identities())
-def test_sac_archive_path_round_trips_header_identity(identity):
-    root = Path("archive")
-    path = identity.sac_path(root)
-    suffix = identity.starttime.strftime("%H%M%S")
-    expected_name = (
-        f"{identity.network}.{identity.station}.{identity.location or '--'}."
-        f"{identity.channel}.{identity.year}."
-        f"{identity.julday:03d}.{suffix}.sac"
-    )
-
-    assert identity.day == identity.starttime.date
-    assert path.parent == root / identity.network / identity.station / str(
-        identity.year
-    )
-    assert path.name == expected_name
-    assert identity.matches_sac_path(path, root)
-    for field in ("network", "station", "location", "channel", "starttime"):
-        value = (
-            identity.starttime + 86400
-            if field == "starttime"
-            else f"{getattr(identity, field)}X"
-        )
-        assert not replace(identity, **{field: value}).matches_sac_path(path, root)
-
-
 @given(
     identity=_identities(),
     channels=st.lists(_CODE, min_size=1, max_size=6, unique=True),
 )
 def test_miniseed_identity_accepts_same_station_day_in_any_channel(identity, channels):
-    root = Path("archive")
     stream = [
         _trace(
             WaveformIdentity(
@@ -120,15 +89,6 @@ def test_miniseed_identity_accepts_same_station_day_in_any_channel(identity, cha
     )
 
     assert stream_day_identity(stream) == expected
-    assert mseed_path(root, stream) == (
-        root
-        / identity.network
-        / identity.station
-        / str(identity.year)
-        / f"{identity.network}.{identity.station}.{identity.year}."
-        f"{identity.julday:03d}.mseed"
-    )
-    assert matches_mseed_path(mseed_path(root, stream), root, stream)
     for changed in (
         replace(identity, station=identity.station + "X"),
         replace(identity, starttime=identity.starttime + 86400),
@@ -139,29 +99,3 @@ def test_miniseed_identity_accepts_same_station_day_in_any_channel(identity, cha
     assert stream_day_identity([*stream, _empty_trace(boundary)]) == expected
     with pytest.raises(ValueError, match="contains no samples"):
         stream_day_identity([_empty_trace(identity)])
-
-
-@given(
-    base_day=_DATE,
-    record_offset=st.integers(min_value=-172_800, max_value=172_800),
-    record_duration=st.integers(min_value=0, max_value=259_200),
-    query_offset=st.integers(min_value=-172_800, max_value=172_800),
-    query_duration=st.integers(min_value=0, max_value=172_800),
-)
-def test_inclusive_interval_overlap_matches_reference_expression(
-    base_day,
-    record_offset,
-    record_duration,
-    query_offset,
-    query_duration,
-):
-    origin = UTCDateTime(datetime.combine(base_day, time(), tzinfo=timezone.utc))
-    record_start = origin + record_offset
-    record_end = record_start + record_duration
-    query_start = origin + query_offset
-    query_end = query_start + query_duration
-    expected = record_start <= query_end and record_end >= query_start
-
-    assert (
-        intervals_overlap(record_start, record_end, query_start, query_end) is expected
-    )

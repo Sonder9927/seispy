@@ -10,6 +10,26 @@ the new case. Avoid separate tests for trivial helpers, implementation constants
 or a migration that the supported interface no longer promises. A function-count
 reduction does not imply the same reduction in executed parameter cases.
 
+## Keep tests focused
+
+Do not add standalone tests for exact output filenames, directory spelling,
+segment suffixes, retired aliases, or migration from obsolete naming schemes.
+Document those conventions in the relevant recipe. Workflow tests should discover
+outputs and check sample values, header identity, time alignment, and preservation
+of source data rather than repeat filename templates.
+
+Keep collision protection, input/output separation, atomic writes, and recovery
+checks: those prevent data loss and are distinct from naming conventions. Prefer
+observable results over assertions about private helper calls or a particular
+optimization implementation.
+
+For independent parameter axes, use representative combinations rather than a
+full Cartesian product. Retain distinct numerical and failure modes, including
+sampling boundaries, byte orders, supported file formats, and process failures.
+Remove redundant cases instead of hiding them in a loop or disabling collection.
+Report test-function counts and expanded case counts separately when describing
+suite size; pytest's passed/skipped totals count expanded cases, not functions.
+
 ## MCMC
 
 - `test_mcmc_config.py`: configuration loading, validation and Fortran ordering.

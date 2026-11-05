@@ -84,8 +84,10 @@ def _run_cutters(tmp_path, rate, fraction, gap_seconds=0):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("rate", [1, 5, 20, 25, 40, 100])
-@pytest.mark.parametrize("fraction", [0, 0.123, 0.125, 0.237, 0.123456, 0.999999])
+@pytest.mark.parametrize(
+    "rate,fraction",
+    [(1, 0), (5, 0.123), (20, 0.125), (25, 0.237), (40, 0.123456), (100, 0.999999)],
+)
 def test_public_cutters_match_contiguous_samples_and_event_time(
     tmp_path, binaries, rate, fraction
 ):
@@ -95,14 +97,14 @@ def test_public_cutters_match_contiguous_samples_and_event_time(
     assert a.stats.starttime == b.stats.starttime
     assert a.stats.endtime == b.stats.endtime
     assert a.stats.sampling_rate == b.stats.sampling_rate
-    start = UTCDateTime(ns=origin.ns // 1_000_000_000 * 1_000_000_000)
+    start = UTCDateTime(ns=origin.ns // 1000000000 * 1000000000)
     assert a.stats.starttime == start
     assert a.stats.endtime == start + 5
     assert a.stats.npts == 5 * rate + 1
     for trace in (a, b):
         assert (
             abs(get_sac_reftime(trace.stats.sac) + float(trace.stats.sac.o) - origin)
-            < 1e-6
+            < 1e-06
         )
         for key, value in [("evla", 35), ("evlo", 105), ("evdp", 12), ("mag", 6)]:
             assert trace.stats.sac[key] == value

@@ -235,87 +235,19 @@ def test_coverage_figures(tmp_path, scenario):
 @pytest.mark.parametrize(
     "scenario",
     [
-        "deconvolved_layout_reads_stem_preserving_names",
-        "deconvolved_layout_reads_segmented_partial_day_names",
-        "deconvolved_layout_rejects_directory_mismatch",
         "header_mode_measures_deconvolved_tree_without_path_checks",
-        "header_mode_can_still_enforce_canonical_paths",
-        "deconvolved_layout_can_validate_paths_on_request",
         "unknown_layout_is_rejected",
     ],
 )
 def test_coverage_layouts(tmp_path, scenario):
-    if scenario == "deconvolved_layout_reads_stem_preserving_names":
+    if scenario == "header_mode_measures_deconvolved_tree_without_path_checks":
         _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
-        _deconvolved_sac(
-            tmp_path, "BBB", 2026, 1, "NZ.BBB.10.HHZ.2026.001T010000000.sac"
-        )
-
-        result = scan_waveform_coverage(
-            tmp_path / "NZ", read_mode="filename", layout="deconvolved"
-        )
-
-        assert list(result["station"]) == ["AAA", "BBB"]
-        assert set(result["read_mode"]) == {"filename"}
-        assert list(result["coverage_percent"]) == [100.0, 100.0]
-    elif scenario == "deconvolved_layout_reads_segmented_partial_day_names":
-        _deconvolved_sac(
-            tmp_path,
-            "AAA",
-            2026,
-            1,
-            "NZ.AAA.10.HHZ.2026.001.060000.2026001T010000000.sac",
-        )
-        _deconvolved_sac(
-            tmp_path,
-            "BBB",
-            2026,
-            1,
-            "NZ.BBB.2026.001.NZ.BBB.--.HHZ.2026001T010000000.sac",
-            location="",
-        )
-
-        result = scan_waveform_coverage(
-            tmp_path / "NZ", read_mode="filename", layout="deconvolved"
-        )
-
-        assert list(result["station"]) == ["AAA", "BBB"]
-        assert set(result["coverage_percent"]) == {100.0}
-    elif scenario == "deconvolved_layout_rejects_directory_mismatch":
-        path = _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
-        path.rename(path.with_name("NZ.WRONG.10.HHZ.2026.001.sac"))
-
-        result = scan_waveform_coverage(
-            tmp_path / "NZ", read_mode="filename", layout="deconvolved"
-        )
-
-        assert result.empty
-    elif scenario == "header_mode_measures_deconvolved_tree_without_path_checks":
-        _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
-
         result = scan_waveform_coverage(tmp_path / "NZ")
-
         assert len(result) == 1
         assert result.loc[0, "station"] == "AAA"
         assert result.loc[0, "coverage_seconds"] == pytest.approx(10)
-    elif scenario == "header_mode_can_still_enforce_canonical_paths":
-        _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
-
-        result = scan_waveform_coverage(tmp_path / "NZ", require_canonical_paths=True)
-
-        assert result.empty
-    elif scenario == "deconvolved_layout_can_validate_paths_on_request":
-        _deconvolved_sac(tmp_path, "AAA", 2026, 1, "NZ.AAA.10.HHZ.2026.001.sac")
-
-        result = scan_waveform_coverage(
-            tmp_path / "NZ", layout="deconvolved", require_canonical_paths=True
-        )
-
-        assert len(result) == 1
-        assert result.loc[0, "station"] == "AAA"
     elif scenario == "unknown_layout_is_rejected":
         (tmp_path / "NZ").mkdir()
-
         with pytest.raises(ValueError, match="layout"):
             scan_waveform_coverage(tmp_path / "NZ", layout="nonsense")
 

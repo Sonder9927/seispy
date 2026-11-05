@@ -66,7 +66,6 @@ def _stage(client, destination, **kwargs):
         "raw_response_is_saved_byte_for_byte",
         "existing_raw_response_is_skipped_without_request",
         "transient_request_is_retried",
-        "inventory_task_uses_self_describing_raw_name",
     ],
 )
 def test_raw_download_and_resume(tmp_path, scenario):
@@ -97,14 +96,12 @@ def test_raw_download_and_resume(tmp_path, scenario):
                 0,
                 None,
             )
-
         assert destination.read_bytes() == payload
         assert result.succeeded == 1
         assert result.files_written == 1
     elif scenario == "existing_raw_response_is_skipped_without_request":
         destination = tmp_path / "NZ.AAA.2026.001.mseed.raw"
         destination.write_bytes(b"existing")
-
         with patch.object(waveforms, "_fetch_waveform_file") as fetch:
             result = waveforms._download_raw_response(
                 "client",
@@ -123,7 +120,6 @@ def test_raw_download_and_resume(tmp_path, scenario):
                 0,
                 None,
             )
-
         fetch.assert_not_called()
         assert result.skipped == 1
     elif scenario == "transient_request_is_retried":
@@ -155,24 +151,9 @@ def test_raw_download_and_resume(tmp_path, scenario):
                 2,
                 0.5,
             )
-
         assert destination.read_bytes() == payload
         assert client.get_waveforms.call_count == 2
         assert sleep.call_count == 1
-    elif scenario == "inventory_task_uses_self_describing_raw_name":
-        task = waveforms._InventoryTask(
-            "NZ",
-            "AAA",
-            "10",
-            "HHZ",
-            100.0,
-            UTCDateTime("2026-01-01T06:00:00"),
-            UTCDateTime("2026-01-01T18:00:00"),
-        )
-
-        path = waveforms._inventory_raw_path(tmp_path, task)
-
-        assert path.name == "NZ.AAA.10.HHZ.2026.001.060000.mseed.raw"
 
 
 @pytest.mark.parametrize(

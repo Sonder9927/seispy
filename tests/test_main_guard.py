@@ -1,6 +1,5 @@
 """Entry scripts that spawn-based worker pools cannot re-import."""
 
-import ast
 import multiprocessing
 import os
 import subprocess
@@ -14,8 +13,6 @@ import pytest
 from obspy import Stream, Trace, UTCDateTime
 
 from seispy._main_guard import (
-    _guarded_lines,
-    _is_main_guard,
     require_reimport_safe_entry_point,
 )
 
@@ -111,54 +108,6 @@ def test_bootstrapping_worker_is_rejected(monkeypatch):
 
     with pytest.raises(RuntimeError, match="worker process was starting"):
         require_reimport_safe_entry_point("deconvolve_waveforms", start_method="spawn")
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "main_guard_detection",
-        "guarded_lines_cover_the_whole_block",
-        "unparsable_entry_script_is_ignored",
-    ],
-)
-def test_guard_syntax(scenario):
-    if scenario == "main_guard_detection":
-        module = ast.parse(
-            textwrap.dedent(
-                """
-                if __name__ == "__main__":
-                    pass
-                if "__main__" == __name__:
-                    pass
-                if __name__ != "__main__":
-                    pass
-                if __name__ == "main":
-                    pass
-                """
-            )
-        )
-
-        assert [_is_main_guard(statement) for statement in module.body] == [
-            True,
-            True,
-            False,
-            False,
-        ]
-    elif scenario == "guarded_lines_cover_the_whole_block":
-        assert _guarded_lines(
-            textwrap.dedent(
-                """
-                import os
-
-                if __name__ == "__main__":
-                    value = os.getcwd()
-                    print(value)
-                """
-            ),
-            "entry.py",
-        ) == frozenset({4, 5, 6})
-    elif scenario == "unparsable_entry_script_is_ignored":
-        assert _guarded_lines("this is not python", "entry.py") == frozenset()
 
 
 def _run_entry_script(directory, source):

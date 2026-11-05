@@ -1,149 +1,11 @@
-import pytest
 from datetime import date
 from types import SimpleNamespace
 
 from obspy import UTCDateTime
 
 from seispy.archive import (
-    WaveformIdentity,
-    channel_mseed_path,
     coverage_day,
-    matches_mseed_path,
-    start_day_token,
 )
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "channel_mseed_path_is_self_describing_and_unique_for_partials",
-        "sac_path_uses_header_identity_and_flattens_julian_day",
-        "mass_downloader_channel_chunk_path_matches_headers",
-        "channel_mseed_path_honours_explicit_archive_day",
-        "paths_mark_the_start_day_when_it_differs_from_the_archive_day",
-    ],
-)
-def test_archive_names(tmp_path, scenario):
-    if scenario == "channel_mseed_path_is_self_describing_and_unique_for_partials":
-        full_day = channel_mseed_path(
-            tmp_path,
-            "NZ",
-            "ABAZ",
-            "11",
-            "HHN",
-            UTCDateTime("2023-08-25"),
-            UTCDateTime("2023-08-26"),
-        )
-        partial = channel_mseed_path(
-            tmp_path,
-            "NZ",
-            "ABAZ",
-            "11",
-            "HHN",
-            UTCDateTime("2023-08-25T12:00:00"),
-            UTCDateTime("2023-08-26"),
-        )
-
-        assert full_day.name == "NZ.ABAZ.11.HHN.2023.237.mseed"
-        assert partial.name == "NZ.ABAZ.11.HHN.2023.237.120000.mseed"
-        assert "180000" not in partial.name
-
-        fractional_a = channel_mseed_path(
-            tmp_path,
-            "NZ",
-            "ABAZ",
-            "11",
-            "HHN",
-            UTCDateTime("2023-08-25T12:00:00.100000"),
-            UTCDateTime("2023-08-25T18:00:00"),
-        )
-        fractional_b = channel_mseed_path(
-            tmp_path,
-            "NZ",
-            "ABAZ",
-            "11",
-            "HHN",
-            UTCDateTime("2023-08-25T12:00:00.200000"),
-            UTCDateTime("2023-08-25T18:00:00"),
-        )
-        assert fractional_a != fractional_b
-    elif scenario == "sac_path_uses_header_identity_and_flattens_julian_day":
-        identity = WaveformIdentity.from_trace(_trace())
-
-        path = identity.sac_path(tmp_path)
-
-        assert path == (
-            tmp_path / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.2025.001.010203.sac"
-        )
-        assert identity.matches_sac_path(path, tmp_path)
-    elif scenario == "mass_downloader_channel_chunk_path_matches_headers":
-        stream = [_trace(channel="BHZ")]
-        path = tmp_path / "NZ" / "WEL" / "2025" / "NZ.WEL.10.BHZ.2025.001.010203.mseed"
-
-        assert matches_mseed_path(path, tmp_path, stream)
-    elif scenario == "channel_mseed_path_honours_explicit_archive_day":
-        path = channel_mseed_path(
-            tmp_path,
-            "NZ",
-            "ABAZ",
-            "11",
-            "HHN",
-            UTCDateTime("2026-01-01T23:59:57"),
-            UTCDateTime("2026-01-02T00:00:07"),
-            archive_day=date(2026, 1, 2),
-        )
-
-        assert path == (
-            tmp_path
-            / "NZ"
-            / "ABAZ"
-            / "2026"
-            / "NZ.ABAZ.11.HHN.2026.002.001T235957.mseed"
-        )
-    elif scenario == "paths_mark_the_start_day_when_it_differs_from_the_archive_day":
-        stats = _sampled_stats("2026-01-01T23:59:57", npts=1000, sampling_rate=100)
-        identity = WaveformIdentity.from_trace(SimpleNamespace(stats=stats))
-
-        assert identity.day == date(2026, 1, 2)
-        assert (
-            identity.sac_path(tmp_path).name == "NZ.WEL.10.BHZ.2026.002.001T235957.sac"
-        )
-        assert start_day_token(stats.starttime, identity.day) == "001T"
-        assert (
-            start_day_token(UTCDateTime("2026-01-02T00:00:00"), date(2026, 1, 2)) == ""
-        )
-
-        mseed = channel_mseed_path(
-            tmp_path,
-            "NZ",
-            "WEL",
-            "10",
-            "BHZ",
-            stats.starttime,
-            stats.starttime + 1,
-            archive_day=identity.day,
-        )
-        assert mseed.name == "NZ.WEL.10.BHZ.2026.002.001T235957.mseed"
-        assert matches_mseed_path(mseed, tmp_path, [SimpleNamespace(stats=stats)])
-
-
-def _trace(
-    *,
-    network="NZ",
-    station="WEL",
-    location="10",
-    channel="BHZ",
-    starttime="2025-01-01T01:02:03",
-):
-    return SimpleNamespace(
-        stats=SimpleNamespace(
-            network=network,
-            station=station,
-            location=location,
-            channel=channel,
-            starttime=UTCDateTime(starttime),
-        )
-    )
 
 
 def _sampled_stats(starttime, *, npts, sampling_rate):
@@ -158,103 +20,16 @@ def _sampled_stats(starttime, *, npts, sampling_rate):
     )
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "coverage_day_follows_the_sample_majority_across_midnight",
-        "identity_archive_day_drives_the_day_slot",
-    ],
-)
-def test_archive_day(scenario):
-    if scenario == "coverage_day_follows_the_sample_majority_across_midnight":
-        assert coverage_day(
-            _sampled_stats("2026-01-01T23:59:57", npts=1000, sampling_rate=100)
-        ) == date(2026, 1, 2)
-        assert coverage_day(
-            _sampled_stats("2026-01-02T23:59:00", npts=10000, sampling_rate=100)
-        ) == date(2026, 1, 2)
-        assert coverage_day(
-            _sampled_stats("2026-01-01T23:59:57", npts=0, sampling_rate=100)
-        ) == date(2026, 1, 1)
-        assert coverage_day(
-            _sampled_stats("2026-01-01T23:59:57", npts=1000, sampling_rate=0)
-        ) == date(2026, 1, 1)
-    elif scenario == "identity_archive_day_drives_the_day_slot":
-        identity = WaveformIdentity.from_trace(
-            SimpleNamespace(
-                stats=_sampled_stats(
-                    "2026-01-01T23:59:57", npts=1000, sampling_rate=100
-                )
-            )
-        )
-
-        assert identity.archive_day == date(2026, 1, 2)
-        assert (identity.year, identity.julday, identity.day) == (
-            2026,
-            2,
-            date(2026, 1, 2),
-        )
-        assert identity.day_key[4:] == (2026, 2)
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    ["full_day_sac_and_mseed_share_filename_stem", "sac_paths_require_current_naming"],
-)
-def test_archive_format_identity(scenario):
-    import numpy as np
-    from obspy import Trace, UTCDateTime
-
-    if scenario == "full_day_sac_and_mseed_share_filename_stem":
-        from seispy.archive import channel_mseed_path
-
-        trace = Trace(np.zeros(86400, dtype=np.float32))
-        trace.stats.update(
-            dict(
-                network="XX",
-                station="AAA",
-                location="",
-                channel="BHZ",
-                starttime=UTCDateTime("2024-01-01"),
-                sampling_rate=1,
-            )
-        )
-        identity = WaveformIdentity.from_trace(trace)
-        sac = identity.sac_path("archive")
-        mseed = channel_mseed_path(
-            "archive",
-            "XX",
-            "AAA",
-            "",
-            "BHZ",
-            trace.stats.starttime,
-            trace.stats.endtime + trace.stats.delta,
-        )
-        assert sac.stem == mseed.stem == "XX.AAA.--.BHZ.2024.001"
-        trace.stats.starttime += 0.125
-        assert (
-            WaveformIdentity.from_trace(trace)
-            .sac_path("archive")
-            .name.endswith(".000000.125.sac")
-        )
-    elif scenario == "sac_paths_require_current_naming":
-        trace = Trace(np.zeros(86400, dtype=np.float32))
-        trace.stats.update(
-            dict(
-                network="XX",
-                station="AAA",
-                location="",
-                channel="BHZ",
-                starttime=UTCDateTime("2024-01-01"),
-                sampling_rate=1,
-            )
-        )
-        identity = WaveformIdentity.from_trace(trace)
-        canonical = identity.sac_path("archive")
-        assert identity.matches_sac_path(canonical, "archive")
-        for name in (
-            "XX.AAA.--.BHZ.2024.001.000000.sac",
-            "XX.AAA.--.BHZ.2024.001.merged.sac",
-            "XX.AAA..BHZ.2024.001.sac",
-        ):
-            assert not identity.matches_sac_path(canonical.with_name(name), "archive")
+def test_archive_day():
+    assert coverage_day(
+        _sampled_stats("2026-01-01T23:59:57", npts=1000, sampling_rate=100)
+    ) == date(2026, 1, 2)
+    assert coverage_day(
+        _sampled_stats("2026-01-02T23:59:00", npts=10000, sampling_rate=100)
+    ) == date(2026, 1, 2)
+    assert coverage_day(
+        _sampled_stats("2026-01-01T23:59:57", npts=0, sampling_rate=100)
+    ) == date(2026, 1, 1)
+    assert coverage_day(
+        _sampled_stats("2026-01-01T23:59:57", npts=1000, sampling_rate=0)
+    ) == date(2026, 1, 1)

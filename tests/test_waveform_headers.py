@@ -129,18 +129,29 @@ def test_real_event_layout_preserves_components_segments_and_empty_location(
         assert p.read_bytes() == before[p]
 
 
-@pytest.mark.parametrize("event", [False, True])
-@pytest.mark.parametrize("version", [6, 7])
-@pytest.mark.parametrize("byteorder", ["little", "big"])
-@pytest.mark.parametrize("inplace", [False, True])
+# Representative combinations retain both layouts, SAC versions, byte orders,
+# and write modes without repeating the full Cartesian product.
+@pytest.mark.parametrize(
+    "event,version,byteorder,inplace",
+    [
+        (False, 6, "little", False),
+        (True, 6, "little", True),
+        (True, 6, "big", False),
+        (False, 6, "big", True),
+        (True, 7, "little", False),
+        (False, 7, "little", True),
+        (False, 7, "big", False),
+        (True, 7, "big", True),
+    ],
+)
 def test_header_only_updates_preserve_data_and_precision(
     tmp_path, tables, version, byteorder, inplace, event
 ):
     src = tmp_path / "src"
     p = make_sac(
-        (src / "20241217221040" / "event.sac")
+        src / "20241217221040" / "event.sac"
         if event
-        else (src / "XX" / "GL04" / "2024" / "arbitrary.sac"),
+        else src / "XX" / "GL04" / "2024" / "arbitrary.sac",
         byteorder=byteorder,
         version=version,
     )

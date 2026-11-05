@@ -40,8 +40,10 @@ def event():
     )
 
 
-@pytest.mark.parametrize("with_station_metadata", [False, True])
-@pytest.mark.parametrize("segments", ["continuous", "cross_day", "gap", "overlap"])
+@pytest.mark.parametrize(
+    "segments,with_station_metadata",
+    [("continuous", False), ("cross_day", True), ("gap", False), ("overlap", True)],
+)
 def test_archive_to_cut_matches_sac_path(tmp_path, segments, with_station_metadata):
     raw = tmp_path / "raw"
     raw.mkdir()
@@ -51,7 +53,6 @@ def test_archive_to_cut_matches_sac_path(tmp_path, segments, with_station_metada
         "gap": [trace(0, 2), trace(4, 2)],
         "overlap": [trace(0, 5), trace(2, 5, bias=100)],
     }[segments]
-    # Also exercise separate locations and channels through both public functions.
     traces += [trace(channel="BHN")]
     other_location = trace()
     other_location.stats.location = "10"
@@ -126,8 +127,10 @@ def test_archive_to_cut_matches_sac_path(tmp_path, segments, with_station_metada
                 )
         else:
             assert all(
-                h not in actual.stats.sac
-                for h in ("stla", "stlo", "dist", "az", "baz", "gcarc")
+                (
+                    h not in actual.stats.sac
+                    for h in ("stla", "stlo", "dist", "az", "baz", "gcarc")
+                )
             )
     for field in (
         "channels",
@@ -251,7 +254,7 @@ def test_multitrace_pipeline(tmp_path, scenario):
             WaveformReader().read(record)
 
 
-@pytest.mark.parametrize("budget", [0, 1, 1_000_000])
+@pytest.mark.parametrize("budget", [0, 1000000])
 def test_one_event_loads_multichannel_file_once(tmp_path, budget):
     path = tmp_path / "multi.mseed"
     Stream([trace(channel=channel) for channel in ("BHZ", "BHN", "BHE")]).write(
