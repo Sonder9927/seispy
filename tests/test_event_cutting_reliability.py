@@ -517,3 +517,131 @@ def test_invalid_minimum_cut_window(tmp_path, minimum):
         cut_event_waveforms(
             tmp_path, tmp_path / "events.csv", time_window=5, min_time_window=minimum
         )
+
+
+def test_duration_filter_precedes_sac_header_calculations(tmp_path):
+    from seispy.waveform import TraceFilter
+
+    source_trace(tmp_path / "source", offset=0, rate=1, npts=3)
+    index = WaveformArchiveIndex.build(tmp_path / "source")
+    with patch(
+        "seispy.event.cutting.sac_geometry", side_effect=AssertionError("unused")
+    ):
+        result = cut_event_station(
+            event(0, 10),
+            STATION,
+            tmp_path / "out",
+            archive_index=index,
+            trace_filter=TraceFilter(min_duration_seconds=5, min_samples=0),
+        )
+    assert result.failed == 0
+    assert result.skipped == result.traces_filtered == 1
+
+
+def test_channels_reuse_time_and_effective_coordinate_calculations(tmp_path):
+    from seispy.event import cutting as module
+
+    root = tmp_path / "source"
+    for channel, latitude in (("BHZ", 30), ("BHN", 30), ("BHE", 31)):
+        path = source_trace(root, name=channel)
+        trace = read(path)[0]
+        trace.stats.channel = channel
+        trace.stats.sac.stla = latitude
+        trace.write(str(path), format="SAC")
+    with (
+        patch.object(module, "sac_geometry", wraps=module.sac_geometry) as geometry,
+        patch.object(
+            module,
+            "utcdatetime_to_sac_nztimes",
+            wraps=module.utcdatetime_to_sac_nztimes,
+        ) as times,
+    ):
+        result = cut_event_station(
+            event(),
+            STATION,
+            tmp_path / "out",
+            archive_index=WaveformArchiveIndex.build(root),
+        )
+    assert result.outputs == 3 and result.failed == 0
+    assert geometry.call_count == 2
+    assert times.call_count == 1
+    outputs = {
+        read(p)[0].stats.channel: read(p)[0] for p in (tmp_path / "out").rglob("*.sac")
+    }
+    assert outputs["BHZ"].stats.sac.dist == outputs["BHN"].stats.sac.dist
+    assert outputs["BHE"].stats.sac.dist != outputs["BHZ"].stats.sac.dist
+
+
+def test_rerun_compares_samples_after_first_megabyte(tmp_path):
+    source_trace(tmp_path / "source", offset=0, rate=100, npts=300_001)
+    index = WaveformArchiveIndex.build(tmp_path / "source")
+    args = (event(0, 3000), STATION, tmp_path / "out")
+    first = cut_event_station(*args, archive_index=index)
+    assert first.outputs == 1
+    repeated = cut_event_station(*args, archive_index=index)
+    assert repeated.existing_skipped == 1
+    output = next((tmp_path / "out").rglob("*.sac"))
+    with output.open("r+b") as handle:
+        handle.seek(1024 * 1024 + 100)
+        original = handle.read(1)
+        handle.seek(-1, 1)
+        handle.write(bytes([original[0] ^ 1]))
+    result = cut_event_station(*args, archive_index=index)
+    assert result.failed == 1
+    assert result.outputs == result.skipped == 0
+    assert result.samples[0].status == "output_conflict"
+
+
+@pytest.mark.parametrize("dtype", ["int32", "float32", "float64", ">f4"])
+def test_fixed_sac_writer_matches_standard_obspy_writer(dtype):
+    from io import BytesIO
+    from seispy.event.cutting import _write_event_sac
+
+    trace = Trace(np.arange(101, dtype=dtype))
+    trace.stats.starttime = BASE + 0.123456
+    trace.stats.sampling_rate = 62.5
+    trace.stats.sac = dict(stla=30, stlo=110, depmin=-999, depmax=999, a=2.5)
+    with BytesIO() as expected, BytesIO() as actual:
+        trace.write(expected, format="SAC")
+        _write_event_sac(trace, actual)
+        assert actual.getvalue() == expected.getvalue()
+
+
+@pytest.mark.parametrize("sample_limit", [0, 1, 10])
+def test_channel_write_failure_preserves_outputs_and_continues_channels(
+    tmp_path, sample_limit
+):
+    from seispy.event import cutting as module
+
+    root = tmp_path / "source"
+    for name, offset in (("a", 0), ("b", 5), ("c", 10)):
+        source_trace(root, name=name, offset=offset, rate=1, npts=3)
+    other = source_trace(root, name="d", offset=0, rate=1, npts=4)
+    trace = read(other)[0]
+    trace.stats.channel = "BHN"
+    trace.write(str(other), format="SAC")
+    original_writer = module._write_event_sac
+
+    def failing_writer(trace, destination):
+        if trace.stats.channel == "BHZ" and trace.stats.starttime == BASE + 5:
+            raise OSError("simulated write failure")
+        original_writer(trace, destination)
+
+    with patch.object(module, "_write_event_sac", side_effect=failing_writer):
+        result = cut_event_station(
+            event(0, 20),
+            STATION,
+            tmp_path / "out",
+            archive_index=WaveformArchiveIndex.build(root),
+            max_error_samples=sample_limit,
+        )
+    assert result.failed == 1
+    assert result.succeeded == result.skipped == 0
+    assert result.outputs == result.channels == 2
+    assert len(result.samples) == min(1, sample_limit)
+    if result.samples:
+        assert result.samples[0].status == "output_failed"
+    paths = list((tmp_path / "out").rglob("*.sac"))
+    assert len(paths) == 2
+    assert {read(path)[0].stats.channel for path in paths} == {"BHZ", "BHN"}
+    assert not any(path.name.startswith(".") for path in paths)

@@ -21,6 +21,7 @@ class WaveformRecord:
     endtime: UTCDateTime
     delta: float = 0.0
     trace_index: int = 0
+    format: str | None = None
 
     @property
     def key(self):
@@ -86,6 +87,7 @@ class WaveformArchiveIndex:
                             trace.stats.endtime,
                             trace.stats.delta,
                             trace_index,
+                            trace.stats.get("_format"),
                         )
                     )
                 for record in records:
@@ -132,9 +134,14 @@ class WaveformArchiveIndex:
 
 
 class WaveformReader:
-    """Bounded LRU cache for full waveform reads during chronological cuts."""
+    """Bounded LRU cache shared by SAC and MiniSEED chronological cuts.
 
-    def __init__(self, max_files: int = 8, max_bytes: int = 256 * 1024**2):
+    Retain up to 128 files within the byte budget: a three-hour window over
+    hourly three-component files already exceeds an eight-file cache. Both
+    limits remain necessary to bound sample storage and per-file metadata.
+    """
+
+    def __init__(self, max_files: int = 128, max_bytes: int = 256 * 1024**2):
         if max_files < 1:
             raise ValueError("max_files must be at least 1")
         if max_bytes < 0:
@@ -158,10 +165,61 @@ class WaveformReader:
         than the byte budget is read but never retained. The budget controls
         retained arrays, not peak memory during reads, copies, or merging.
         """
+        stream = self._load(record)
+        return self._select(stream, record, starttime, endtime, padding_samples)
+
+    def read_many(
+        self,
+        records,
+        *,
+        starttime=None,
+        endtime=None,
+        padding_samples=0,
+        full_records=(),
+    ):
+        """Yield (record, stream, error), loading each physical file once.
+
+        A file remains alive until all its requested traces have been selected,
+        even when it cannot enter the persistent cache. Failures are returned
+        per record so other files and traces can still be processed. Records in
+        full_records are copied without windowing for lossless overlap checks.
+        """
+        files = defaultdict(list)
+        for record in records:
+            files[record.path].append(record)
+        full_records = set(full_records)
+        for file_records in files.values():
+            try:
+                stream = self._load(file_records[0])
+            except Exception as exc:
+                for record in file_records:
+                    yield record, None, exc
+                continue
+            for record in file_records:
+                try:
+                    full = record.key in full_records
+                    selected = self._select(
+                        stream,
+                        record,
+                        None if full else starttime,
+                        None if full else endtime,
+                        padding_samples,
+                    )
+                except Exception as exc:
+                    yield record, None, exc
+                else:
+                    yield record, selected, None
+            # Do not retain an uncached file while loading the next one.
+            del stream
+
+    def _load(self, record):
         try:
             stream = self._cache.pop(record.path)
         except KeyError:
-            stream = obspy.read(record.path)
+            # The header index already detected the format from file contents.
+            # Reuse it for both SAC and MiniSEED, including files with arbitrary
+            # extensions. Manual records retain automatic detection via None.
+            stream = obspy.read(record.path, format=record.format)
             for trace in stream:
                 trace.data.flags.writeable = False
             size = sum(trace.data.nbytes for trace in stream)
@@ -175,6 +233,10 @@ class WaveformReader:
         ):
             _, removed = self._cache.popitem(last=False)
             self._cached_bytes -= sum(trace.data.nbytes for trace in removed)
+        return stream
+
+    @staticmethod
+    def _select(stream, record, starttime, endtime, padding_samples):
         if record.trace_index >= len(stream):
             raise ValueError("Waveform trace disappeared after archive indexing")
         trace = stream[record.trace_index]
@@ -185,18 +247,15 @@ class WaveformReader:
             or (record.delta and trace.stats.delta != record.delta)
         ):
             raise ValueError("Waveform trace headers changed after archive indexing")
-        selected = obspy.Stream(traces=[trace])
         if starttime is None and endtime is None:
-            return selected.copy()
-        result = obspy.Stream()
-        for trace in selected:
-            padding = padding_samples * trace.stats.delta
-            first = starttime - padding if starttime is not None else None
-            last = endtime + padding if endtime is not None else None
-            # Trace.slice copies metadata but shares sample storage. Copy only
-            # after slicing so callers can mutate without touching the cache.
-            result += trace.slice(first, last, nearest_sample=True).copy()
-        return result
+            return obspy.Stream(traces=[trace.copy()])
+        padding = padding_samples * trace.stats.delta
+        first = starttime - padding if starttime is not None else None
+        last = endtime + padding if endtime is not None else None
+        # Slice before copying: only selected samples become caller-owned.
+        return obspy.Stream(
+            traces=[trace.slice(first, last, nearest_sample=True).copy()]
+        )
 
 
 def intervals_overlap(first_start, first_end, second_start, second_end) -> bool:

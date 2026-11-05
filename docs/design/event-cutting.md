@@ -20,7 +20,12 @@ Work is partitioned by the network/station identities found in waveform headers,
 by station directories. Each process receives one station at a time and handles
 its events chronologically. Full waveform reads use a bounded LRU cache; returned
 windows are copied so processing one event cannot mutate cached data used by
-another event. Cache retention is bounded by both file count and array bytes.
+another event. Cache retention is bounded by both file count (128 per worker) and array bytes
+(`cache_max_bytes`, 256 MiB per worker by default). This accommodates overlapping
+three-hour windows over hourly three-component archives without evicting files
+solely because the working set exceeds eight files. SAC and MiniSEED share the
+same cache and window-copy path. The index remembers the detected file format,
+so data reads skip format probing without relying on filename extensions.
 Overlapping source records are compared in full to preserve conflicts outside
 the cut window. Workers publish bounded incremental counters through a bounded
 process queue while retaining the station cache; completed futures advertise
@@ -60,3 +65,22 @@ reported as `output_conflict`, making the task fail. `existing_outputs` counts
 all existing destinations encountered, including conflicts. This validation still
 reads and cuts source waveforms; it does not bypass input processing. Comparison
 is byte-for-byte, so externally rewritten SAC files can be reported as conflicts.
+
+
+Event reads are grouped by physical file through `WaveformReader.read_many`.
+Both formats use the same full-file decoding, read-only cache, and independent
+window-copy path. A single-station multichannel MiniSEED is decoded once per
+event on a cache miss, including when caching is disabled or the decoded arrays
+cannot fit the retained-byte budget. File and trace failures are returned per
+record so other inputs can still produce outputs. Overlapping identities retain
+full copies for the existing lossless conflict checks; those comparisons are not
+cached by this optimization.
+
+Duration and sample filters run after trimming but before SAC header generation.
+Accepted channels share event reference-time calculations and geometry keyed by
+the effective event/station coordinates. The fixed public `SACTrace` writer
+updates amplitude statistics and emits little-endian binary SAC without generic
+waveform-plugin dispatch. Strict rerun validation first rejects differing file
+sizes, then compares the expected serialization with the destination in 1 MiB
+chunks. It still retains the expected serialization in memory and rebuilds cuts;
+it does not trust an existing filename alone.

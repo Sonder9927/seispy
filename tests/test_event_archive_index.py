@@ -278,3 +278,70 @@ def test_resume_validates_existing_and_fills_missing(tmp_path, change):
         assert result.outputs == result.skipped == result.existing_skipped == 0
         assert result.samples[0].status == "output_conflict"
         assert paths[0].read_bytes() == preserved
+
+
+@pytest.mark.parametrize("fmt", ["SAC", "MSEED"])
+def test_three_hour_multicomponent_working_set_is_reused(tmp_path, fmt):
+    import obspy
+
+    root = tmp_path / "source"
+    root.mkdir()
+    for channel in ("BHZ", "BHN", "BHE"):
+        for hour in range(4):
+            tr = Trace(
+                np.arange(3600, dtype=np.int32),
+                header=dict(
+                    network="NZ",
+                    station="WEL",
+                    channel=channel,
+                    starttime=UTCDateTime("2025-01-02") + hour * 3600,
+                    sampling_rate=1,
+                ),
+            )
+            # Deliberately avoid format-specific filename extensions.
+            tr.write(str(root / f"{channel}.{hour}.wave"), format=fmt)
+    index = WaveformArchiveIndex.build(root, pattern="*.wave")
+    reader = WaveformReader(max_bytes=1_000_000)
+    records = index.records_for_station("NZ", "WEL")
+    assert len(records) == 12
+    with patch("seispy.event.archive_index.obspy.read", wraps=obspy.read) as load:
+        for shift in (0, 10):
+            event = _event()
+            event["start"] += shift
+            event["end"] = event["start"] + 10800
+            result = cut_event_station(
+                event,
+                {"network": "NZ", "station": "WEL"},
+                tmp_path / "events",
+                archive_index=index,
+                waveform_reader=reader,
+            )
+            assert result.succeeded == 1
+        assert load.call_count == 12
+        assert all(call.kwargs.get("format") == fmt for call in load.call_args_list)
+    assert reader.cached_bytes == 12 * 3600 * 4
+
+    # A deliberately tiny file cache follows the uncached read path. Compare
+    # complete products to ensure cache reuse cannot change headers or samples.
+    reference_reader = WaveformReader(max_files=1, max_bytes=1_000_000)
+    for shift in (0, 10):
+        event = _event()
+        event["start"] += shift
+        event["end"] = event["start"] + 10800
+        result = cut_event_station(
+            event,
+            {"network": "NZ", "station": "WEL"},
+            tmp_path / "reference",
+            archive_index=index,
+            waveform_reader=reference_reader,
+        )
+        assert result.succeeded == 1
+    actual = {
+        p.relative_to(tmp_path / "events"): p.read_bytes()
+        for p in (tmp_path / "events").rglob("*.sac")
+    }
+    expected = {
+        p.relative_to(tmp_path / "reference"): p.read_bytes()
+        for p in (tmp_path / "reference").rglob("*.sac")
+    }
+    assert actual == expected

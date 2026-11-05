@@ -1,5 +1,7 @@
 """Cut event windows from a continuous waveform archive."""
 
+from collections import defaultdict
+from functools import partial
 from io import BytesIO
 import logging
 import multiprocessing
@@ -13,9 +15,9 @@ from time import monotonic
 import numpy as np
 import obspy
 from obspy.core.compatibility import round_away
+from obspy.io.sac import SACTrace
 from obspy.io.sac.util import get_sac_reftime, utcdatetime_to_sac_nztimes
 from seispy._sac_geometry import sac_geometry
-from seispy.archive import WaveformIdentity
 from seispy.workflow import (
     BatchRun,
     BatchSummary,
@@ -84,6 +86,94 @@ class _CutCounts:
     traces_filtered: int = 0
     skipped: int = 0
     coverage_samples: tuple[CutEventCoverage, ...] = ()
+
+
+# Explicit additive fields; samples are bounded separately, never summed.
+_CUT_COUNTERS = (
+    "tasks",
+    "succeeded",
+    "failed",
+    "outputs",
+    "read_failed",
+    "no_data",
+    "channels",
+    "partial_channels",
+    "gapped_channels",
+    "overlapping_channels",
+    "existing_outputs",
+    "existing_skipped",
+    "traces_filtered",
+    "skipped",
+)
+_REPORT_NAMES = {
+    "tasks": "total",
+    "outputs": "outputs_written",
+    "read_failed": "input_read_failed",
+}
+
+
+class _CutAccumulator:
+    """Accumulate counts and independently bounded issue/coverage samples."""
+
+    def __init__(self, limit, coverage_limit=None):
+        self.values = dict.fromkeys(_CUT_COUNTERS, 0)
+        self.samples = []
+        self.coverage_samples = []
+        self.limit = limit
+        self.coverage_limit = limit if coverage_limit is None else coverage_limit
+
+    @property
+    def tasks(self):
+        return self.values["tasks"]
+
+    def add(self, counts):
+        for name in _CUT_COUNTERS:
+            self.values[name] += getattr(counts, name)
+        self.samples.extend(counts.samples[: max(0, self.limit - len(self.samples))])
+        self.coverage_samples.extend(
+            counts.coverage_samples[
+                : max(0, self.coverage_limit - len(self.coverage_samples))
+            ]
+        )
+
+    def counts(self):
+        return _CutCounts(
+            **self.values,
+            samples=tuple(self.samples),
+            coverage_samples=tuple(self.coverage_samples),
+        )
+
+    def report_fields(self):
+        return {
+            **{
+                _REPORT_NAMES.get(name, name): value
+                for name, value in self.values.items()
+            },
+            "issue_samples": tuple(self.samples),
+            "coverage_samples": tuple(self.coverage_samples),
+        }
+
+
+class _CutIssues:
+    """Record task failures even after the issue-sample allowance is exhausted."""
+
+    def __init__(self, event, station, limit):
+        self.identity = (
+            _event_name(event["origin"]),
+            str(station["network"]),
+            str(station["station"]),
+        )
+        self.limit = limit
+        self.samples = []
+        self.failed = False
+
+    def add(self, status, error, source=None):
+        self.failed = True
+        if len(self.samples) < self.limit:
+            self.samples.append(CutEventIssue(*self.identity, status, error, source))
+
+    def exception(self, status, error, source=None):
+        self.add(status, f"{type(error).__name__}: {error}", source)
 
 
 @dataclass(frozen=True)
@@ -270,30 +360,18 @@ def cut_event_waveforms(
     stations = load_stations(set(archive_index.station_keys), station_csv)
     workers = min(workers, max(1, len(stations)))
     total = len(events) * len(stations)
-    tasks_done = succeeded = failed = outputs = no_data = 0
-    quality_totals = dict(
-        channels=0,
-        partial_channels=0,
-        gapped_channels=0,
-        overlapping_channels=0,
-        existing_outputs=0,
-        existing_skipped=0,
-        traces_filtered=0,
-        skipped=0,
-    )
-    coverage_samples = []
-    read_failed = len(archive_index.issues)
-    samples = [
-        CutEventIssue(
-            "",
-            "",
-            "",
-            "archive_index_failed",
-            issue.error,
-            issue.path,
+    totals = _CutAccumulator(max_error_samples)
+    totals.add(
+        _CutCounts(
+            read_failed=len(archive_index.issues),
+            samples=tuple(
+                CutEventIssue(
+                    "", "", "", "archive_index_failed", issue.error, issue.path
+                )
+                for issue in archive_index.issues[:max_error_samples]
+            ),
         )
-        for issue in archive_index.issues[:max_error_samples]
-    ]
+    )
     with BatchRun(
         "cut-events",
         artifact_root,
@@ -302,18 +380,7 @@ def cut_event_waveforms(
         save_log=save_log,
         logger=logger,
     ) as run:
-        run.start(
-            total=total,
-            tasks_completed=0,
-            succeeded=0,
-            failed=0,
-            outputs_written=0,
-            input_read_failed=read_failed,
-            no_data=0,
-            issue_samples=tuple(samples),
-            **quality_totals,
-            coverage_samples=(),
-        )
+        run.start(**(totals.report_fields() | {"total": total, "tasks_completed": 0}))
         run.info(
             "run_id=%s source=%s output=%s stations=%d events=%d time_window=%s workers=%d",
             run_id,
@@ -343,49 +410,23 @@ def cut_event_waveforms(
                 cache_max_bytes,
                 trace_filter=trace_filter,
             ):
-                tasks_done += result.tasks
-                succeeded += result.succeeded
-                failed += result.failed
-                outputs += result.outputs
-                read_failed += result.read_failed
-                no_data += result.no_data
-                for name in quality_totals:
-                    quality_totals[name] += getattr(result, name)
-                coverage_samples.extend(
-                    result.coverage_samples[
-                        : max(0, max_error_samples - len(coverage_samples))
-                    ]
-                )
-                samples.extend(
-                    result.samples[: max(0, max_error_samples - len(samples))]
-                )
+                totals.add(result)
                 pbar.update(result.tasks)
                 run.checkpoint(
-                    completed=tasks_done,
-                    total=total,
-                    tasks_completed=tasks_done,
-                    succeeded=succeeded,
-                    failed=failed,
-                    outputs_written=outputs,
-                    input_read_failed=read_failed,
-                    no_data=no_data,
-                    issue_samples=tuple(samples),
-                    **quality_totals,
-                    coverage_samples=tuple(coverage_samples),
+                    completed=totals.tasks,
+                    **(
+                        totals.report_fields()
+                        | {
+                            "total": total,
+                            "tasks_completed": totals.tasks,
+                        }
+                    ),
                 )
         summary = run.complete(
             CutEventSummary(
                 run_id=run_id,
-                total=tasks_done,
-                succeeded=succeeded,
-                failed=failed,
-                outputs_written=outputs,
-                input_read_failed=read_failed,
-                no_data=no_data,
-                issue_samples=tuple(samples),
-                **quality_totals,
-                coverage_samples=tuple(coverage_samples),
                 duration_seconds=0,
+                **totals.report_fields(),
             )
         )
         for item in summary.issue_samples:
@@ -595,197 +636,146 @@ def cut_event_station(
 ) -> _CutCounts:
     """Cut one event-station window using a reusable header index."""
     event = _integer_second_window(event)
-    network = str(station["network"])
-    station_name = str(station["station"])
-    event_name = _event_name(event["origin"])
+    issues = _CutIssues(event, station, max_error_samples)
+    event_name, network, station_name = issues.identity
     records = archive_index.overlapping(
         network, station_name, event["start"], event["end"]
     )
     if not records:
-        samples = ()
-        if max_error_samples:
-            samples = (
-                CutEventIssue(
-                    event_name,
-                    network,
-                    station_name,
-                    "no_data",
-                    "no matching waveform traces found",
-                ),
-            )
-        return _CutCounts(tasks=1, failed=1, no_data=1, samples=samples)
+        issues.add("no_data", "no matching waveform traces found")
+        return _CutCounts(tasks=1, failed=1, no_data=1, samples=tuple(issues.samples))
 
-    samples = []
-    read_failed = 0
-    had_issue = False
-    waveform_data = {}
+    totals = _CutAccumulator(max_error_samples, max_coverage_samples)
+    waveform_data = defaultdict(obspy.Stream)
     reader = waveform_reader or WaveformReader(max_bytes=0)
     full_reads = _overlapping_identities(records)
-    for record in records:
-        try:
-            if _nslc(record.identity) in full_reads:
-                # A conflict outside the cut must not turn into an identical
-                # overlap merely because the comparison was cropped early.
-                st = reader.read(record)
-            else:
-                st = reader.read(
-                    record,
-                    starttime=event["start"],
-                    endtime=event["end"],
-                    padding_samples=2,
-                )
-            if len(st) != 1:
-                raise ValueError(
-                    "Indexed waveform record must select exactly one trace"
-                )
-            tr = st[0]
-            identity = WaveformIdentity.from_trace(tr)
-            key = (
-                identity.network,
-                identity.station,
-                identity.location,
-                identity.channel,
-            )
-            if key in waveform_data:
-                waveform_data[key] += st
-            else:
-                waveform_data[key] = st
-        except Exception as exc:
-            read_failed += 1
-            had_issue = True
-            if len(samples) < max_error_samples:
-                samples.append(
-                    CutEventIssue(
-                        event_name,
-                        network,
-                        station_name,
-                        "input_read_failed",
-                        f"{type(exc).__name__}: {exc}",
-                        record.path,
-                    )
-                )
+    for record, stream, error in reader.read_many(
+        records,
+        starttime=event["start"],
+        endtime=event["end"],
+        padding_samples=2,
+        full_records=(
+            record.key for record in records if _nslc(record.identity) in full_reads
+        ),
+    ):
+        if error is not None:
+            totals.add(_CutCounts(read_failed=1))
+            issues.exception("input_read_failed", error, record.path)
+            continue
+        waveform_data[_nslc(record.identity)] += stream
 
-    outputs = existing_outputs = no_data = traces_filtered = 0
-    channels = partial_channels = gapped_channels = overlapping_channels = 0
-    coverage_samples = []
-    coverage_limit = (
-        max_error_samples if max_coverage_samples is None else max_coverage_samples
+    time_headers = utcdatetime_to_sac_nztimes(event["start"])[0]
+    annotate = partial(
+        _set_event_headers,
+        event=event,
+        station=station,
+        nztimes=time_headers,
+        reference=get_sac_reftime(time_headers),
+        geometry_cache={},
     )
-    if waveform_data:
-        event_dir = Path(dest_dir) / event_name
-        for identity_key, stream in waveform_data.items():
-            try:
-                merged = merge_contiguous_segments(stream)
-                segments = [
-                    trace
-                    for trace in merged
-                    if trace.stats.starttime <= event["end"] + trace.stats.delta / 2
-                    and trace.stats.endtime >= event["start"] - trace.stats.delta / 2
-                ]
-                trimmed = [
-                    _trimmed_trace(segment, event, station) for segment in segments
-                ]
-                trimmed = [trace for trace in trimmed if trace is not None]
-                if trace_filter is not None:
-                    trimmed, rejected = split_traces_by_filter(trimmed, trace_filter)
-                    traces_filtered += len(rejected)
-                if not trimmed:
-                    continue
-                event_dir.mkdir(parents=True, exist_ok=True)
-                coverage = _channel_coverage(trimmed, identity_key, event)
-                channels += 1
-                partial_channels += int(coverage.coverage_fraction < 1)
-                gapped_channels += int(coverage.has_gaps)
-                overlapping_channels += int(coverage.has_overlaps)
-                if (
-                    coverage.coverage_fraction < 1
-                    or coverage.has_overlaps
-                    or coverage.segments > 1
-                ) and len(coverage_samples) < coverage_limit:
-                    coverage_samples.append(coverage)
-                for index, trimmed_trace in enumerate(trimmed):
-                    temporary = None
-                    try:
-                        out_name = _event_output_name(
-                            identity_key,
-                            event["origin"],
-                            index if len(trimmed) > 1 else None,
-                        )
-                        destination = event_dir / out_name
-                        if destination.exists():
-                            existing_outputs += 1
-                            if _existing_event_output_matches(
-                                destination, trimmed_trace
-                            ):
-                                continue
-                            had_issue = True
-                            if len(samples) < max_error_samples:
-                                samples.append(
-                                    CutEventIssue(
-                                        event_name,
-                                        network,
-                                        station_name,
-                                        "output_conflict",
-                                        f"Existing output differs from expected SAC: {destination}",
-                                    )
-                                )
-                            continue
-                        temporary = temporary_output_path(destination)
-                        trimmed_trace.write(str(temporary), format="SAC")
-                        commit_output(temporary, destination)
-                        temporary = None
-                        outputs += 1
-                    finally:
-                        if temporary is not None:
-                            temporary.unlink(missing_ok=True)
-            except Exception as exc:
-                had_issue = True
-                if len(samples) < max_error_samples:
-                    samples.append(
-                        CutEventIssue(
-                            event_name,
-                            network,
-                            station_name,
-                            "output_failed",
-                            f"{type(exc).__name__}: {exc}",
-                        )
-                    )
-    existing_skipped = int(not outputs and existing_outputs > 0 and not had_issue)
-    skipped = int(
-        existing_skipped
-        or (not outputs and traces_filtered > 0 and channels == 0 and not had_issue)
-    )
-    if not outputs and not skipped:
-        no_data = int(not had_issue and channels == 0)
-        had_issue = True
-        if len(samples) < max_error_samples:
-            samples.append(
-                CutEventIssue(
-                    event_name,
-                    network,
-                    station_name,
-                    "no_data" if no_data else "no_output",
-                    "no event channel was written",
-                )
+    event_dir = Path(dest_dir) / event_name
+    for identity, stream in waveform_data.items():
+        totals.add(
+            _cut_channel(
+                stream,
+                identity,
+                event,
+                event_dir,
+                annotate,
+                issues,
+                max(0, totals.coverage_limit - len(totals.coverage_samples)),
+                trace_filter,
             )
-    return _CutCounts(
-        tasks=1,
-        succeeded=int(not had_issue and not skipped),
-        skipped=skipped,
-        traces_filtered=traces_filtered,
-        failed=int(had_issue),
-        outputs=outputs,
-        read_failed=read_failed,
-        no_data=no_data,
-        samples=tuple(samples),
-        channels=channels,
-        partial_channels=partial_channels,
-        gapped_channels=gapped_channels,
-        overlapping_channels=overlapping_channels,
-        existing_outputs=existing_outputs,
-        existing_skipped=existing_skipped,
-        coverage_samples=tuple(coverage_samples),
-    )
+        )
+    return _finish_cut_task(totals.counts(), issues)
+
+
+def _cut_channel(
+    stream, identity, event, event_dir, annotate, issues, coverage_limit, trace_filter
+):
+    """Cut one channel, retaining partial counts if a later output fails."""
+    totals = _CutAccumulator(0, coverage_limit)
+    try:
+        merged = merge_contiguous_segments(stream)
+        trimmed = [
+            trace.trim(event["start"], event["end"], nearest_sample=True)
+            for trace in merged
+            if trace.stats.starttime <= event["end"] + trace.stats.delta / 2
+            and trace.stats.endtime >= event["start"] - trace.stats.delta / 2
+        ]
+        trimmed = [trace for trace in trimmed if trace.stats.npts > 0]
+        if trace_filter is not None:
+            trimmed, rejected = split_traces_by_filter(trimmed, trace_filter)
+            totals.add(_CutCounts(traces_filtered=len(rejected)))
+        if not trimmed:
+            return totals.counts()
+        for trace in trimmed:
+            annotate(trace)
+        event_dir.mkdir(parents=True, exist_ok=True)
+        coverage = _channel_coverage(trimmed, identity, event)
+        sampled = (
+            coverage.coverage_fraction < 1
+            or coverage.has_overlaps
+            or coverage.segments > 1
+        )
+        totals.add(
+            _CutCounts(
+                channels=1,
+                partial_channels=int(coverage.coverage_fraction < 1),
+                gapped_channels=int(coverage.has_gaps),
+                overlapping_channels=int(coverage.has_overlaps),
+                coverage_samples=(coverage,) if sampled and coverage_limit else (),
+            )
+        )
+        for index, trace in enumerate(trimmed):
+            name = _event_output_name(
+                identity,
+                event["origin"],
+                index if len(trimmed) > 1 else None,
+            )
+            totals.add(_write_or_validate_event_output(trace, event_dir / name, issues))
+    except Exception as exc:
+        issues.exception("output_failed", exc)
+    return totals.counts()
+
+
+def _write_or_validate_event_output(trace, destination, issues):
+    """Preserve existing files or atomically commit one new SAC output."""
+    if destination.exists():
+        if not _existing_event_output_matches(destination, trace):
+            issues.add(
+                "output_conflict",
+                f"Existing output differs from expected SAC: {destination}",
+            )
+        return _CutCounts(existing_outputs=1)
+    temporary = temporary_output_path(destination)
+    try:
+        _write_event_sac(trace, str(temporary))
+        commit_output(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return _CutCounts(outputs=1)
+
+
+def _finish_cut_task(counts, issues):
+    """Choose a task status once, after all channel results are known."""
+    if issues.failed:
+        if not counts.outputs:
+            issues.add("no_output", "no event channel was written")
+        status = {"failed": 1}
+    elif counts.outputs:
+        status = {"succeeded": 1}
+    elif counts.existing_outputs:
+        status = {"skipped": 1, "existing_skipped": 1}
+    elif counts.traces_filtered and not counts.channels:
+        status = {"skipped": 1}
+    else:
+        no_data = int(counts.channels == 0)
+        issues.add(
+            "no_data" if no_data else "no_output", "no event channel was written"
+        )
+        status = {"failed": 1, "no_data": no_data}
+    return replace(counts, tasks=1, samples=tuple(issues.samples), **status)
 
 
 def _nslc(identity):
@@ -864,61 +854,48 @@ def _event_output_name(identity_key, event_time, segment_index):
     return f"{identity}.s{segment_index + 1:02d}.sac"
 
 
+def _write_event_sac(trace, destination):
+    """Use the fixed SAC writer without repeated waveform-plugin dispatch."""
+    if np.ma.isMaskedArray(trace.data):
+        raise NotImplementedError("Cannot write masked samples to SAC")
+    SACTrace.from_obspy_trace(trace, keep_sac_header=True).write(
+        destination, ascii=False, byteorder="little"
+    )
+
+
 def _existing_event_output_matches(destination, expected):
     """Compare full SAC headers and samples against the rebuilt expected cut."""
     try:
+        # Binary SAC output has a 632-byte header and four bytes per sample.
+        expected_size = 632 + 4 * expected.stats.npts
+        if destination.stat().st_size != expected_size:
+            return False
         with BytesIO() as buffer:
-            expected.write(buffer, format="SAC")
-            return destination.read_bytes() == buffer.getvalue()
+            _write_event_sac(expected, buffer)
+            buffer.seek(0)
+            with destination.open("rb") as existing:
+                while chunk := buffer.read(1024 * 1024):
+                    if existing.read(len(chunk)) != chunk:
+                        return False
+                return not existing.read(1)
     except Exception:
         return False
 
 
 def _combine_cut_counts(items, limit):
-    samples = []
+    totals = _CutAccumulator(limit)
     for item in items:
-        samples.extend(item.samples[: max(0, limit - len(samples))])
-    return _CutCounts(
-        tasks=sum(item.tasks for item in items),
-        succeeded=sum(item.succeeded for item in items),
-        failed=sum(item.failed for item in items),
-        outputs=sum(item.outputs for item in items),
-        read_failed=sum(item.read_failed for item in items),
-        no_data=sum(item.no_data for item in items),
-        samples=tuple(samples),
-        channels=sum(item.channels for item in items),
-        partial_channels=sum(item.partial_channels for item in items),
-        gapped_channels=sum(item.gapped_channels for item in items),
-        overlapping_channels=sum(item.overlapping_channels for item in items),
-        existing_outputs=sum(item.existing_outputs for item in items),
-        existing_skipped=sum(item.existing_skipped for item in items),
-        traces_filtered=sum(item.traces_filtered for item in items),
-        skipped=sum(item.skipped for item in items),
-        coverage_samples=tuple(
-            sample for item in items for sample in item.coverage_samples
-        )[:limit],
-    )
+        totals.add(item)
+    return totals.counts()
 
 
-def _trimmed_trace(merged_tr, event, station):
-    event = _integer_second_window(event)
-    # trim to event time window
-    trimed_tr = merged_tr.trim(event["start"], event["end"], nearest_sample=True)
-
-    # header information
-    data = trimed_tr.data
-    npts = len(data)
+def _set_event_headers(trimed_tr, event, station, nztimes, reference, geometry_cache):
+    """Annotate an accepted window, sharing event time and geometry work."""
+    npts = trimed_tr.stats.npts
     delta = trimed_tr.stats.delta
-    if npts == 0:
-        # The index deliberately uses a conservative half-sample margin.
-        # An exact tie can select no sample from this segment; other segments
-        # of the same channel must still be processed.
-        return None
     start = trimed_tr.stats.starttime
     # Use the whole-second cut start as reference, retain the precise origin
     # in o, and shift existing picks to preserve their absolute times.
-    nztimes, _ = utcdatetime_to_sac_nztimes(event["start"])
-    reference = get_sac_reftime(nztimes)
     if "sac" not in trimed_tr.stats:
         trimed_tr.stats.sac = {}
     sac = trimed_tr.stats.sac
@@ -933,9 +910,6 @@ def _trimmed_trace(merged_tr, event, station):
         "delta": delta,
         "b": float(time_offset),
         "e": float(time_offset) + (npts - 1) * delta,
-        "depmin": np.min(data),
-        "depmax": np.max(data),
-        "depmen": np.mean(data),
         **nztimes,
         "o": float(event["origin"] - reference),
         # IO (11) is valid only when the origin equals the whole-second reference.
@@ -945,7 +919,6 @@ def _trimmed_trace(merged_tr, event, station):
         "evlo": event["longitude"],
         "evdp": event["depth"],
         "mag": event["mag"],
-        "lcalda": 1,
     }
     optional_station_headers = {
         "stla": "latitude",
@@ -958,8 +931,8 @@ def _trimmed_trace(merged_tr, event, station):
         if value is not None and value == value:
             header_updates[sac_name] = value
 
-    trimed_tr.stats.sac.update(header_updates)
-    sac.update(
-        sac_geometry(*(sac.get(name) for name in ("evla", "evlo", "stla", "stlo")))
-    )
-    return trimed_tr
+    sac.update(header_updates)
+    coords = tuple(sac.get(name) for name in ("evla", "evlo", "stla", "stlo"))
+    if coords not in geometry_cache:
+        geometry_cache[coords] = sac_geometry(*coords)
+    sac.update(geometry_cache[coords])

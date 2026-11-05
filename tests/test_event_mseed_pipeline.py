@@ -249,3 +249,45 @@ def test_multitrace_pipeline(tmp_path, scenario):
         original.write(path, format="MSEED")
         with pytest.raises(ValueError, match="headers changed"):
             WaveformReader().read(record)
+
+
+@pytest.mark.parametrize("budget", [0, 1, 1_000_000])
+def test_one_event_loads_multichannel_file_once(tmp_path, budget):
+    path = tmp_path / "multi.mseed"
+    Stream([trace(channel=channel) for channel in ("BHZ", "BHN", "BHE")]).write(
+        path, format="MSEED"
+    )
+    index = WaveformArchiveIndex.build(tmp_path, pattern="*.mseed")
+    reader = WaveformReader(max_bytes=budget)
+    with patch("seispy.event.archive_index.obspy.read", wraps=read) as load:
+        result = cut_event_station(
+            event(),
+            {"network": "NZ", "station": "WEL"},
+            tmp_path / "out",
+            archive_index=index,
+            waveform_reader=reader,
+        )
+    assert result.succeeded == 1
+    assert result.outputs == 3
+    assert load.call_count == 1
+    assert reader.cached_bytes <= budget
+
+
+def test_batch_read_failure_does_not_discard_other_files_or_traces(tmp_path):
+    for name, channel in (("bad", "BHZ"), ("good", "BHN")):
+        Stream([trace(channel=channel)]).write(
+            tmp_path / f"{name}.mseed", format="MSEED"
+        )
+    index = WaveformArchiveIndex.build(tmp_path, pattern="*.mseed")
+    # Corrupt only after indexing so this exercises data reads, not index errors.
+    (tmp_path / "bad.mseed").write_bytes(b"invalid")
+    result = cut_event_station(
+        event(),
+        {"network": "NZ", "station": "WEL"},
+        tmp_path / "out",
+        archive_index=index,
+        waveform_reader=WaveformReader(max_bytes=0),
+    )
+    assert result.failed == result.read_failed == 1
+    assert result.outputs == 1
+    assert read(next((tmp_path / "out").rglob("*.sac")))[0].stats.channel == "BHN"
