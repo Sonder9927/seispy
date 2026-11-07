@@ -37,16 +37,15 @@ suite size; pytest's passed/skipped totals count expanded cases, not functions.
 - `test_mcmc_gridding.py`: grid geometry, alignment and spatial table validation.
 - `test_mcmc_priors.py`: spline geometry, physical bounds and serialized priors.
 - `test_mcmc_plotting.py`: complete figures from memory and saved point inputs.
-- `test_mcmc_collection.py`: collection products, failures, chain records,
-  multiplicity-weighted statistics, Fortran reconstruction, LAB detection and
-  LAB distribution summaries.
+- `test_mcmc_collection.py`: minimal output tables, failure isolation, source
+  preservation and mean-profile LAB detection.
 - `test_mcmc_workflow.py`: initialization, point diagnostics and the real
   `init_grids` to `collect_results` path.
 
-Preserve independent numerical evidence, especially the external Fortran model
-fixture, posterior repeat weights, and LAB boundary and ambiguity cases.
-Waveform tests similarly retain sample preservation, atomic writes, process
-recycling, recovery and numerical equivalence checks.
+Preserve independent numerical evidence, especially LAB boundary and ambiguity
+cases.
+Waveform tests retain sample preservation, atomic writes, process recycling,
+recovery and numerical equivalence checks.
 
 ## Running
 

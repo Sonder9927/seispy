@@ -21,26 +21,23 @@ stopping the others.
 
 ::: seispy.mcmc.collection.collect_results
 
-`collect_results` silently writes `profiles.parquet`, `interfaces.parquet`,
-`diagnostics.parquet`, and `metadata.json`. It preserves the historical
-`x,y,vs,misfit,moho` values and adds explicitly named full-chain statistics.
-All depths, including `z` and `lab`, are positive downward in kilometres;
-these two fields had the opposite sign in older collected outputs.
-Updated LAB estimates use per-state mantle gradients with native-spacing-aware
-smoothing, adaptive contrast thresholds and doubled-scale confirmation, including
-rejection multiplicities. Inspect `lab_main_rejection_reason`,
-`lab_interval_status` and `lab_chain_quality` alongside the reported depth. See [LAB calculation and default rules](../recipes/mcmc.md#lab-calculation),
-[references](../recipes/mcmc.md#references), and
-[collection definitions and quality states](../recipes/mcmc.md#collect-results).
+`collect_results` silently writes just two tables: `profiles.parquet`
+(`x,y,z,vs`) and `interfaces.parquet` (`x,y,misfit,moho,lab`). It reads only
+`mean_prob.lst`, `Litmod_output.log` and `moho.lst` in each point directory.
+Vs, misfit and Moho retain their historical definitions. LAB is calculated once
+from the mean Vs profile; no chain reconstruction or posterior uncertainty
+statistics are performed. All depths are positive downward in kilometres.
 
-`CollectionSummary.success_count` includes partial historical-only results;
-`posterior_count` and `partial_count` distinguish complete posterior products.
-Set `LABSettings(min_detection_fraction=0.5)` to configure the reporting support
-threshold (allowed range `(0, 1]`). `summary.lab_valid_count`,
-`summary.lab_nan_count` and `summary.lab_status_counts` summarize exported
-interface rows; failed grids are excluded and counted by `failed_count`.
-Read `summary.diagnostics` to manage failures centrally. No automatic print
-or per-grid logger output is emitted.
+The returned summary provides `grid_count`, `success_count`, `failed_count`,
+`lab_nan_count`, `lab_valid_count`, `errors` and `output_paths`. NaN counts cover
+exported interface rows; failed grids have no interface row and are counted
+separately. Set `collect_prob_figures=True` to copy existing `probalCr.png`
+files from collected grids (default: `False`). `probability_figures` counts
+successful copies; `output_paths["prob_figures"]` identifies the current figure
+directory when created. `errors` holds grid and optional image-copy errors for
+centralized reporting; copy failures do not increase `failed_count`.
+See the [collection recipe](../recipes/mcmc.md#collect-results) and
+[mean-profile LAB rules](../recipes/mcmc.md#lab-calculation).
 
 ::: seispy.mcmc.lab.LABSettings
 
