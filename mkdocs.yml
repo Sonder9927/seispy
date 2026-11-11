@@ -65,6 +65,7 @@ nav:
           - Orientation: recipes/correct-orientation.md
       - Events and headers:
           - Cut events: recipes/cut-events.md
+          - Select events: recipes/select-events.md
           - SAC headers: recipes/format-headers.md
       - MCMC: recipes/mcmc.md
       - Complete workflows:
