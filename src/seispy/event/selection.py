@@ -41,23 +41,34 @@ class EventSelectionSummary:
         return self.failed > 0
 
 
-def _distance_bounds(value, maximum):
+def _range_bounds(value, maximum=None, *, label="distance"):
     if value is None:
         return None
     if len(value) != 2:
-        raise ValueError("distance range must contain two bounds")
+        raise ValueError(f"{label} range must contain two bounds")
     low, high = (None if x is None else float(x) for x in value)
     if any(x is not None and (not math.isfinite(x) or x < 0) for x in (low, high)):
-        raise ValueError("distance bounds must be finite and non-negative")
+        raise ValueError(f"{label} bounds must be finite and non-negative")
     if maximum is not None and any(x is not None and x > maximum for x in (low, high)):
-        raise ValueError(f"distance bounds must not exceed {maximum}")
+        raise ValueError(f"{label} bounds must not exceed {maximum}")
     if low is not None and high is not None and low > high:
-        raise ValueError("distance lower bound exceeds upper bound")
+        raise ValueError(f"{label} lower bound exceeds upper bound")
     return low, high
 
 
 def _select_one(task):
-    source, destination, conflict, start, end, field, bounds, policy, overwrite = task
+    (
+        source,
+        destination,
+        conflict,
+        start,
+        end,
+        field,
+        bounds,
+        depth_bounds,
+        policy,
+        overwrite,
+    ) = task
     temporary = None
     try:
         if conflict:
@@ -84,6 +95,13 @@ def _select_one(task):
             low, high = bounds
             if (low is not None and value < low) or (high is not None and value > high):
                 return "distance", None
+        if depth_bounds is not None:
+            depth = getattr(trace.stats.sac, "evdp", None)
+            if depth is None or not math.isfinite(depth) or depth < 0:
+                raise ValueError("missing or invalid SAC header: evdp")
+            low, high = depth_bounds
+            if (low is not None and depth < low) or (high is not None and depth > high):
+                return "depth", None
         if policy is not None and trace_rejection_reason(trace, policy) is not None:
             return "quality", None
         temporary = temporary_output_path(destination)
@@ -106,6 +124,7 @@ def select_event_waveforms(
     endtime=None,
     distance_km=None,
     distance_deg=None,
+    depth_km=None,
     trace_filter: TraceFilter | None = None,
     overwrite: bool = False,
     max_workers: int = 5,
@@ -123,8 +142,9 @@ def select_event_waveforms(
     inclusive start and exclusive end. Distance ranges have inclusive bounds,
     either of which may be None. ``distance_km`` uses SAC ``dist`` and
     ``distance_deg`` uses ``gcarc``; they are mutually exclusive. Required
-    missing metadata is a failure. Conditions are checked in time, distance,
-    quality order; only the first rejection is counted. No traces are trimmed.
+    missing metadata is a failure. ``depth_km`` is an inclusive depth range
+    in kilometres using SAC ``evdp``, with either bound optionally None.
+    Conditions are checked in time, distance, depth, quality order; only the first rejection is counted. No traces are trimmed.
 
     Files are copied byte-for-byte. Existing outputs fail unless overwrite is
     True. Output and CSV paths must be separate from input trees. A compact
@@ -140,10 +160,11 @@ def select_event_waveforms(
     if distance_km is not None and distance_deg is not None:
         raise ValueError("distance_km and distance_deg are mutually exclusive")
     field = "dist" if distance_km is not None else "gcarc"
-    bounds = _distance_bounds(
+    bounds = _range_bounds(
         distance_km if distance_km is not None else distance_deg,
         None if field == "dist" else 180,
     )
+    depth_bounds = _range_bounds(depth_km, label="depth")
     start = obspy.UTCDateTime(starttime) if starttime is not None else None
     end = obspy.UTCDateTime(endtime) if endtime is not None else None
     if start is not None and end is not None and start >= end:
@@ -178,7 +199,18 @@ def select_event_waveforms(
         raise ValueError("errors_csv conflicts with a waveform output")
     counts = Counter(destinations)
     tasks = (
-        (p, dest, counts[dest] > 1, start, end, field, bounds, trace_filter, overwrite)
+        (
+            p,
+            dest,
+            counts[dest] > 1,
+            start,
+            end,
+            field,
+            bounds,
+            depth_bounds,
+            trace_filter,
+            overwrite,
+        )
         for p, dest in zip(sources, destinations, strict=True)
     )
     totals = Counter()
@@ -199,7 +231,7 @@ def select_event_waveforms(
             commit_output(temporary, report, overwrite=True)
         finally:
             temporary.unlink(missing_ok=True)
-    skipped = {key: totals[key] for key in ("time", "distance", "quality")}
+    skipped = {key: totals[key] for key in ("time", "distance", "depth", "quality")}
     summary = EventSelectionSummary(
         len(sources),
         totals["succeeded"],

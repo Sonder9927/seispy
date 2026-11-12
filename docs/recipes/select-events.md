@@ -18,6 +18,7 @@ summary = event.select_event_waveforms(
     starttime="2024-01-01",
     endtime="2025-01-01",
     distance_deg=(30, 90),
+    depth_km=(0, 70),  # Inclusive source-depth range in kilometres (SAC evdp).
     trace_filter=waveform.TraceFilter(min_duration_seconds=90 * 60),
     errors_csv="data/selection_errors.csv",  # Optional; no report by default.
 )
@@ -41,7 +42,13 @@ headers count as failures; unused headers are not required.
 `trace_filter=None` disables quality filtering. Pass a `waveform.TraceFilter`
 for duration, sample-count, and sample-quality checks; its duration convention
 is `npts / sampling_rate`. Selection does not trim or merge waveforms.
-Rejections are counted once, in time, distance, quality order.
+`depth_km=None` disables source-depth filtering. Set `depth_km=(0, 70)`
+for shallow events or `(300, None)` for events at least 300 km deep. Bounds
+are inclusive, finite, and non-negative. The SAC `evdp` header is interpreted
+in kilometres without conversion. When depth filtering is enabled, missing,
+undefined, non-finite, or negative `evdp` counts as a failure.
+
+Rejections are counted once, in time, distance, depth, quality order.
 
 Existing output files fail unless `overwrite=True`. Output directories must
 be separate from input trees. Files rejected by conditions are skipped;

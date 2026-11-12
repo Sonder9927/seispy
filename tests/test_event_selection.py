@@ -128,3 +128,59 @@ def test_invalid_distance_and_unreadable_file(tmp_path):
     bad.write_text("not a SAC file")
     result = select_event_waveforms(source, tmp_path / "out", distance_deg=(0, 180))
     assert result.failed == 2
+
+
+@pytest.mark.parametrize("depth", [0, 35, 70])
+def test_depth_inclusive(tmp_path, depth):
+    source = tmp_path / "input"
+    path = sac(source, evdp=depth)
+    result = select_event_waveforms(source, tmp_path / "out", depth_km=(0, 70))
+    assert result.succeeded == 1
+    assert (
+        result.output_dir / path.parent.name / path.name
+    ).read_bytes() == path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "bounds,depth,kept",
+    [
+        ((300, None), 300, True),
+        ((300, None), 299, False),
+        ((None, 70), 71, False),
+        ((None, 70), 70, True),
+    ],
+)
+def test_depth_open_ranges(tmp_path, bounds, depth, kept):
+    source = tmp_path / "input"
+    sac(source, evdp=depth)
+    result = select_event_waveforms(source, tmp_path / "out", depth_km=bounds)
+    assert result.succeeded == int(kept)
+    assert result.skipped_by_reason["depth"] == int(not kept)
+    assert result.failed == 0
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"evdp": -12345},
+        {"evdp": -1},
+        {"evdp": float("nan")},
+        {"evdp": float("inf")},
+    ],
+)
+def test_depth_invalid_header(tmp_path, headers):
+    source = tmp_path / "input"
+    sac(source, **headers)
+    result = select_event_waveforms(source, tmp_path / "out", depth_km=(0, 70))
+    assert result.failed == 1
+    assert "evdp" in result.issue_samples[0].error
+    assert select_event_waveforms(source, tmp_path / "no_filter").succeeded == 1
+
+
+@pytest.mark.parametrize(
+    "bounds", [(-1, 70), (70, 0), (0, float("nan")), (0, float("inf")), (1,)]
+)
+def test_depth_invalid_bounds(tmp_path, bounds):
+    with pytest.raises(ValueError, match="depth"):
+        select_event_waveforms(tmp_path / "input", tmp_path / "out", depth_km=bounds)
