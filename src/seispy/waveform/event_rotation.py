@@ -16,6 +16,7 @@ from seispy.waveform.orientation import _directions
 from seispy.workflow import commit_output, temporary_output_path
 
 _TIME_TOLERANCE_SAMPLES = 1e-5
+_TIME_PRECISION_NS = 1000  # ObsPy SAC timestamps are rounded to microseconds.
 
 
 @dataclass(frozen=True)
@@ -91,8 +92,8 @@ def _compatible(first, second):
     return (
         a.sampling_rate == b.sampling_rate
         and a.npts == b.npts
-        and abs(a.starttime.ns - b.starttime.ns) / 1e9 * a.sampling_rate
-        <= _TIME_TOLERANCE_SAMPLES
+        and abs(a.starttime.ns - b.starttime.ns)
+        <= max(_TIME_PRECISION_NS, 1e9 * _TIME_TOLERANCE_SAMPLES / a.sampling_rate)
     )
 
 
@@ -168,7 +169,8 @@ def rotate_event_horizontals(
 
     Recursively match a basename glob under src. Pair by parent event directory,
     header network/station/location/channel prefix, sample rate, sample count,
-    and start time (tolerance 1e-5 samples). Both axes must match pattern.
+    and start time (tolerance max(1 microsecond, 1e-5 samples)). Both axes
+    must match pattern.
     Segments pair one-to-one; overlapping or ambiguous segments fail. No trim,
     interpolation, merging, or resampling is performed. Z and existing N/E
     are untouched. Filename channel tokens must agree with SAC headers.

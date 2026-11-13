@@ -219,3 +219,31 @@ def test_report_cannot_overwrite_source(tmp_path):
     paths, _, _ = pair(tmp_path)
     with pytest.raises(ValueError, match="outside src"):
         rotate_event_horizontals(tmp_path, inventory(), errors_csv=paths[0])
+
+
+@pytest.mark.parametrize("rate", [25, 100])
+def test_microsecond_timestamp_roundoff_at_high_sample_rate(tmp_path, rate):
+    paths, north, east = pair(tmp_path, offset=1e-6)
+    for path in paths:
+        trace = obspy.read(str(path))[0]
+        trace.stats.sampling_rate = rate
+        trace.write(str(path), format="SAC")
+    result = rotate_event_horizontals(tmp_path, inventory())
+    assert result.rotated_pairs == 1
+    assert not result.has_issues
+    for suffix, expected in zip("NE", (north, east), strict=True):
+        output = obspy.read(str(next(tmp_path.rglob(f"*.HH{suffix}.*.sac"))))[0]
+        assert output.stats.starttime == START
+        assert output.stats.npts == len(expected)
+        np.testing.assert_allclose(output.data, expected, atol=2e-7)
+
+
+def test_larger_timestamp_offset_at_high_sample_rate_is_rejected(tmp_path):
+    paths, _, _ = pair(tmp_path, offset=20e-6)
+    for path in paths:
+        trace = obspy.read(str(path))[0]
+        trace.stats.sampling_rate = 25
+        trace.write(str(path), format="SAC")
+    result = rotate_event_horizontals(tmp_path, inventory())
+    assert result.unpaired_files == 2
+    assert all(path.exists() for path in paths)

@@ -29,9 +29,10 @@ That token is replaced with N in the component-1 filename and E in the
 component-2 filename. Event names and segment suffixes are preserved.
 
 Only pairs with equal sample rates and sample counts are accepted. Start
-times may differ by at most 1e-5 samples; both outputs use component 1's
-start time. Segments must pair uniquely without overlapping other segments
-of the same component. No trimming, interpolation, gap filling, segment
+times may differ by at most the larger of 1 microsecond and 1e-5 samples.
+The 1-microsecond floor accommodates SAC timestamp rounding at higher sample
+rates (such as 25 Hz). Both outputs use component 1's start time. Segments
+must pair uniquely without overlapping other segments of the same component. No trimming, interpolation, gap filling, segment
 merging, or resampling takes place. Incompatible or unmatched files remain
 unchanged and are reported separately from failed pairs.
 
