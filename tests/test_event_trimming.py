@@ -81,17 +81,17 @@ def test_precise_origin_picks_and_non_aligned_window(tmp_path, rate):
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    "kwargs, reason",
     [
-        {"begin": 30, "npts": 10801},
-        {"npts": 5399},
+        ({"begin": 30, "npts": 10801}, "missing_start"),
+        ({"npts": 5399}, "missing_end"),
     ],
 )
-def test_insufficient_coverage_skips_without_padding(tmp_path, kwargs):
+def test_insufficient_coverage_skips_without_padding(tmp_path, kwargs, reason):
     source = tmp_path / "input"
     put(source, **kwargs)
     result = trim_event_waveforms(source, tmp_path / "out")
-    assert result.skipped_by_reason["incomplete_coverage"] == 1
+    assert result.skipped_by_reason[reason] == 1
     assert not result.has_issues
     assert not list(result.output_dir.rglob("*.sac"))
 
@@ -213,3 +213,81 @@ def test_non_aligned_edge_keeps_sample_time(tmp_path):
     assert trimmed.b == np.float32(original.b + 1)
     assert trimmed.o == original.o
     np.testing.assert_array_equal(trimmed.data, original.data[1:5401])
+
+
+def test_none_start_keeps_late_record_start(tmp_path):
+    source = tmp_path / "input"
+    path = put(source, begin=900)
+    result = trim_event_waveforms(source, tmp_path / "out", time_window=(None, 5400))
+    trimmed = SACTrace.read(str(output_for(result, path)))
+    assert trimmed.b == 900 and trimmed.npts == 4500
+    np.testing.assert_array_equal(trimmed.data, np.arange(4500, dtype=np.float32))
+
+
+def test_none_end_keeps_original_last_sample(tmp_path):
+    source = tmp_path / "input"
+    path = put(source, npts=100)
+    result = trim_event_waveforms(source, tmp_path / "out", time_window=(10, None))
+    trimmed = SACTrace.read(str(output_for(result, path)))
+    assert trimmed.b == 10 and trimmed.npts == 90
+    np.testing.assert_array_equal(trimmed.data, np.arange(10, 100, dtype=np.float32))
+
+
+def test_both_none_copy_exact_bytes_without_origin(tmp_path):
+    source = tmp_path / "input"
+    path = put(source, begin=900)
+    sac = SACTrace.read(str(path))
+    sac.o = None
+    sac.write(str(path))
+    original = path.read_bytes()
+    result = trim_event_waveforms(source, tmp_path / "out", time_window=(None, None))
+    assert result.succeeded == 1
+    assert output_for(result, path).read_bytes() == original
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "begin, expected", [(599.5, 1), (600, 1), (600.25, 0), (900, 0)]
+)
+def test_explicit_start_requires_temporal_coverage(tmp_path, begin, expected):
+    source = tmp_path / "input"
+    put(source, begin=begin)
+    result = trim_event_waveforms(source, tmp_path / "out", time_window=(600, 5400))
+    assert result.succeeded == expected
+    assert result.skipped_by_reason["missing_start"] == 1 - expected
+
+
+def test_subsample_missing_start_is_not_complete(tmp_path):
+    source = tmp_path / "input"
+    put(source, rate=25, npts=270001, begin=0.001)
+    result = trim_event_waveforms(source, tmp_path / "out")
+    assert result.skipped_by_reason["missing_start"] == 1
+
+
+@pytest.mark.parametrize("begin, expected", [(0.000001, 1), (0.000002, 0)])
+def test_explicit_start_microsecond_tolerance(tmp_path, begin, expected):
+    source = tmp_path / "input"
+    put(source, begin=begin)
+    result = trim_event_waveforms(source, tmp_path / "out")
+    assert result.succeeded == expected
+    assert result.skipped_by_reason["missing_start"] == 1 - expected
+
+
+def test_none_start_does_not_relax_end_coverage(tmp_path):
+    source = tmp_path / "input"
+    put(source, begin=900, npts=100)
+    result = trim_event_waveforms(source, tmp_path / "out", time_window=(None, 5400))
+    assert result.skipped_by_reason["missing_end"] == 1
+
+
+def test_none_start_end_before_record_is_empty(tmp_path):
+    source = tmp_path / "input"
+    put(source, begin=900)
+    result = trim_event_waveforms(source, tmp_path / "out", time_window=(None, 600))
+    assert result.skipped_by_reason["empty_window"] == 1
+
+
+@pytest.mark.parametrize("window", [(None, float("nan")), (float("inf"), None)])
+def test_invalid_open_bounds(tmp_path, window):
+    with pytest.raises(ValueError, match="time_window"):
+        trim_event_waveforms(tmp_path, tmp_path.parent / "out", time_window=window)

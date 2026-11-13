@@ -4,6 +4,7 @@ import csv
 import fnmatch
 import math
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from fractions import Fraction
@@ -49,7 +50,9 @@ class EventTrimSummary:
 def _sample_window(trace, window):
     """Use exact rational arithmetic to avoid including a rounded end sample."""
     header = SACTrace.from_obspy_trace(trace)
-    if header.o is None or not math.isfinite(header.o):
+    if any(offset is not None for offset in window) and (
+        header.o is None or not math.isfinite(header.o)
+    ):
         raise ValueError("missing or invalid SAC header: o")
     if header.b is None or not math.isfinite(header.b):
         raise ValueError("missing or invalid SAC header: b")
@@ -60,12 +63,27 @@ def _sample_window(trace, window):
     # Match ObsPy's microsecond-normalized SAC sampling interval (e.g. 0.04 s),
     # rather than accumulating float32 delta error over a long window.
     step = Fraction(str(trace.stats.delta))
-    origin = Fraction(str(header.o))
-    begin = Fraction(str(header.b))
-    first, stop = (
-        math.ceil((origin + Fraction(str(offset)) - begin) / step) for offset in window
+    origin = (
+        Fraction(str(header.o))
+        if any(offset is not None for offset in window)
+        else Fraction(0)
     )
-    return first, stop, step
+    begin = Fraction(str(header.b))
+    start, end = window
+    first, stop = 0, trace.stats.npts
+    if start is not None:
+        target = origin + Fraction(str(start))
+        # An explicit start requires temporal coverage, even when the late
+        # first sample would be less than one sample interval from the target.
+        if begin - target > Fraction(1, 1_000_000):
+            return first, stop, step, "missing_start"
+        first = max(0, math.ceil((target - begin) / step))
+    if end is not None:
+        stop = math.ceil((origin + Fraction(str(end)) - begin) / step)
+        if stop > trace.stats.npts:
+            return first, stop, step, "missing_end"
+    reason = "empty_window" if first >= stop else None
+    return first, stop, step, reason
 
 
 def _trim_one(task):
@@ -80,14 +98,16 @@ def _trim_one(task):
         if len(stream) != 1:
             raise ValueError("expected a single-trace SAC file")
         trace = stream[0]
-        first, stop, step = _sample_window(trace, window)
-        # Require every sample of the requested half-open window on this grid.
-        if first < 0 or stop > trace.stats.npts:
-            return "incomplete_coverage", None
-        if first >= stop:
-            return "empty_window", None
+        first, stop, step, reason = _sample_window(trace, window)
+        if reason is not None:
+            return reason, None
         if not overwrite and (destination.exists() or destination.is_symlink()):
             raise FileExistsError(f"output already exists: {destination}")
+        if window == (None, None):
+            temporary = temporary_output_path(destination)
+            shutil.copyfile(source, temporary)
+            commit_output(temporary, destination, overwrite=overwrite)
+            return "succeeded", None
         full = obspy.read(str(source), format="SAC")[0]
         if full.stats != trace.stats:
             raise ValueError("source headers changed during processing")
@@ -134,15 +154,21 @@ def trim_event_waveforms(
 ) -> EventTrimSummary:
     """Trim existing event files to [origin + start, origin + end).
 
-    Offsets in time_window are finite seconds relative to the precise SAC
-    origin (reference time plus o); only reference='origin' is supported.
+    Numeric offsets in time_window are finite seconds relative to the precise
+    SAC origin (reference time plus o); only reference='origin' is supported.
+    A None start keeps the original first sample; a None end keeps the original
+    last sample, including it. (None, None) copies the original file byte-for-byte
+    and does not require o. The default remains (0, 5400).
     Recursively match a basename glob, preserving relative directories and
     filenames in a separate output tree. Inputs are never modified.
 
     Keep original samples whose times fall inside the half-open window.
-    Require all such samples on the original grid: missing leading/trailing
-    samples skip the file. An edge can lie between sample instants; no sample
-    must fall exactly on an edge. A 5400-second window at 1/25 Hz contains
+    An explicit start requires the original first sample to be no later than
+    origin + start (allowing 1 microsecond of timestamp representation error).
+    Otherwise skip as missing_start. An explicit end requires every grid sample
+    before origin + end; missing trailing samples skip as missing_end. Empty
+    resolved windows skip as empty_window. No sample must fall exactly on an
+    edge. A complete fixed 5400-second window at 1/25 Hz contains
     5400/135000 samples respectively. Files are handled independently, without
     component alignment, padding, interpolation, resampling or segment merging.
 
@@ -164,12 +190,14 @@ def trim_event_waveforms(
     try:
         if isinstance(time_window, (str, bytes)) or len(time_window) != 2:
             raise ValueError
-        window = tuple(float(value) for value in time_window)
-        if not all(math.isfinite(x) for x in window) or window[0] >= window[1]:
+        window = tuple(None if value is None else float(value) for value in time_window)
+        if any(x is not None and not math.isfinite(x) for x in window):
+            raise ValueError
+        if all(x is not None for x in window) and window[0] >= window[1]:
             raise ValueError
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(
-            "time_window must contain two finite increasing offsets"
+            "time_window must contain two offsets, each finite or None, increasing when both are numeric"
         ) from exc
     if (
         isinstance(max_workers, bool)
@@ -196,7 +224,13 @@ def trim_event_waveforms(
         (path, destination, output, window, overwrite)
         for path, destination in zip(paths, destinations, strict=True)
     )
-    counts = {"succeeded": 0, "failed": 0, "incomplete_coverage": 0, "empty_window": 0}
+    counts = {
+        "succeeded": 0,
+        "failed": 0,
+        "missing_start": 0,
+        "missing_end": 0,
+        "empty_window": 0,
+    }
     issues = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         for status, issue in pool.map(_trim_one, tasks):
@@ -213,7 +247,9 @@ def trim_event_waveforms(
             commit_output(temp, report, overwrite=True)
         finally:
             temp.unlink(missing_ok=True)
-    skipped = {key: counts[key] for key in ("incomplete_coverage", "empty_window")}
+    skipped = {
+        key: counts[key] for key in ("missing_start", "missing_end", "empty_window")
+    }
     summary = EventTrimSummary(
         len(paths),
         counts["succeeded"],
