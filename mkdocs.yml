@@ -63,6 +63,8 @@ nav:
           - Decimate: recipes/decimate.md
           - Clock drift: recipes/correct-clock-drift.md
           - Orientation: recipes/correct-orientation.md
+          - Event horizontal rotation: recipes/rotate-event-horizontals.md
+          - Rename channels: recipes/rename-channels.md
       - Events and headers:
           - Cut events: recipes/cut-events.md
           - Select events: recipes/select-events.md

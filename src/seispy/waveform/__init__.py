@@ -3,6 +3,15 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "rename_channels": ("seispy.waveform.channel_rename", "rename_channels"),
+    "ChannelRenameSummary": ("seispy.waveform.channel_rename", "ChannelRenameSummary"),
+    "ChannelRenameIssue": ("seispy.waveform.channel_rename", "ChannelRenameIssue"),
+    "rotate_event_horizontals": (
+        "seispy.waveform.event_rotation",
+        "rotate_event_horizontals",
+    ),
+    "EventRotationSummary": ("seispy.waveform.event_rotation", "EventRotationSummary"),
+    "EventRotationIssue": ("seispy.waveform.event_rotation", "EventRotationIssue"),
     "correct_clock_drift": ("seispy.waveform.clock", "correct_clock_drift"),
     "correct_orientation": ("seispy.waveform.orientation", "correct_orientation"),
     "CorrectionSummary": ("seispy.waveform._correction", "CorrectionSummary"),
