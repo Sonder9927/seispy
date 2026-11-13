@@ -68,6 +68,7 @@ nav:
       - Events and headers:
           - Cut events: recipes/cut-events.md
           - Select events: recipes/select-events.md
+          - Trim event windows: recipes/trim-events.md
           - SAC headers: recipes/format-headers.md
       - MCMC: recipes/mcmc.md
       - Complete workflows:

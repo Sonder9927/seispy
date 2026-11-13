@@ -3,6 +3,9 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "trim_event_waveforms": ("seispy.event.trimming", "trim_event_waveforms"),
+    "EventTrimSummary": ("seispy.event.trimming", "EventTrimSummary"),
+    "EventTrimIssue": ("seispy.event.trimming", "EventTrimIssue"),
     "select_event_waveforms": ("seispy.event.selection", "select_event_waveforms"),
     "EventSelectionSummary": ("seispy.event.selection", "EventSelectionSummary"),
     "EventSelectionIssue": ("seispy.event.selection", "EventSelectionIssue"),
